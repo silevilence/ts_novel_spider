@@ -7,6 +7,7 @@ import { healthRouter } from './routes/health';
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
+const host = process.env.HOST ?? '127.0.0.1';
 const webDistPath = path.resolve(process.cwd(), 'dist/web');
 const webIndexPath = path.join(webDistPath, 'index.html');
 
@@ -30,6 +31,6 @@ app.use((request, response, next) => {
   response.sendFile(webIndexPath);
 });
 
-app.listen(port, () => {
-  console.log(`Server listening on http://localhost:${port}`);
+app.listen(port, host, () => {
+  console.log(`Server listening on http://${host}:${port}`);
 });

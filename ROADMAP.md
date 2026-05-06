@@ -4,11 +4,6 @@
 
 ## 🚧 开发中
 
-- [ ] **Syosetu & Syosetu18 业务爬虫实例开发**
-    - [ ] 继承并实现 Spider 核心接口
-        - 迁移并重构原 `C:\Users\silev\Documents\GitHub\PyNovelSpider` 库中的 DOM 解析逻辑
-        - 依托原业务侧 `syosetu_spider.py` 与 `syosetu_18_spider.py` 代码，实现 TypeScript 版本的具体策略类
-
 - [ ] **前端交互界面与管控中心开发**
     - [ ] 视图层基础功能与数据展板
         - [ ] 渲染爬虫策略选择器（支持动态挂载多类爬虫实例）
@@ -56,3 +51,9 @@
         - [x] 实现章节内容的并发与聚合抓取（批量模式）
         - [x] 封装持久化逻辑（同步入库至本地 SQLite）
     - [x] 开发 Mock/测试爬虫适配器以验证核心调度逻辑
+
+- [x] **Syosetu & Syosetu18 业务爬虫实例开发**
+    - [x] 继承并实现 Spider 核心接口
+        - 迁移并重构原 `C:\Users\silev\Documents\GitHub\PyNovelSpider` 库中的 DOM 解析逻辑
+        - 依托原业务侧 `syosetu_spider.py` 与 `syosetu_18_spider.py` 代码，实现 TypeScript 版本的具体策略类
+    - [x] 补充站点解析测试，覆盖信息页、目录页与章节正文结构
