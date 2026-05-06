@@ -1,0 +1,40 @@
+{
+  "name": "ts-novel-spider",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript novel spider with Express backend and React control panel.",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:web": "vite --config src/web/vite.config.ts",
+    "build": "npm run build:web && npm run build:server",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:web": "vite build --config src/web/vite.config.ts",
+    "test": "npm run test:server",
+    "test:server": "tsx --test src/server/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p src/web/tsconfig.json --noEmit",
+    "start": "node dist/server/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "cheerio": "^1.2.0",
+    "express": "^5.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.15.21",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
