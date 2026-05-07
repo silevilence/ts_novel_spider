@@ -7,13 +7,18 @@ import test from 'node:test';
 import { MockHtmlSpiderAdapter } from '../adapters/spider/mock-html-spider-adapter';
 import { createServerApp } from '../app';
 import { ControlCenterService } from '../core/control-center';
+import { NetworkProxyService } from '../core/network-proxy';
 import { SqliteNovelRepository } from '../core/novel-repository';
 
 function createTestServer() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-spider-routes-'));
   const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  const networkProxy = new NetworkProxyService({
+    fetchImpl: async () => new Response('proxy-ok', { status: 200 }),
+  });
   const controlCenter = new ControlCenterService({
     repository,
+    networkProxy,
     spiders: [
       {
         descriptor: {
@@ -53,6 +58,7 @@ function createTestServer() {
     controlCenter,
     cleanup: () => {
       controlCenter.close();
+      networkProxy.close();
       repository.close();
       fs.rmSync(tempDir, { recursive: true, force: true });
     },
@@ -87,6 +93,67 @@ test('control-center routes expose sources, preview and task lifecycle', async (
     assert.equal(previewResponse.status, 200);
     assert.equal(previewPayload.metadata.title, '路由测试小说');
 
+    const proxyStateResponse = await fetch(`${baseUrl}/api/control/network-proxy`);
+    const proxyStatePayload = (await proxyStateResponse.json()) as {
+      config: {
+        enabled: boolean;
+        isConfigured: boolean;
+      };
+    };
+    assert.equal(proxyStateResponse.status, 200);
+    assert.equal(proxyStatePayload.config.enabled, false);
+    assert.equal(proxyStatePayload.config.isConfigured, false);
+
+    const updateProxyResponse = await fetch(`${baseUrl}/api/control/network-proxy`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        enabled: true,
+        protocol: 'http',
+        host: '127.0.0.1',
+        port: 7890,
+        username: 'demo',
+        password: 'secret',
+        bypassHosts: ['localhost'],
+      }),
+    });
+    const updateProxyPayload = (await updateProxyResponse.json()) as {
+      config: {
+        enabled: boolean;
+        host: string;
+        port: number;
+      };
+      validation: null;
+    };
+    assert.equal(updateProxyResponse.status, 200);
+    assert.equal(updateProxyPayload.config.enabled, true);
+    assert.equal(updateProxyPayload.config.host, '127.0.0.1');
+    assert.equal(updateProxyPayload.config.port, 7890);
+    assert.equal(updateProxyPayload.validation, null);
+
+    const validateProxyResponse = await fetch(`${baseUrl}/api/control/network-proxy/validate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        targetUrl: 'https://example.com/probe',
+      }),
+    });
+    const validateProxyPayload = (await validateProxyResponse.json()) as {
+      validation: {
+        ok: boolean;
+        usingProxy: boolean;
+        targetUrl: string;
+      } | null;
+    };
+    assert.equal(validateProxyResponse.status, 200);
+    assert.equal(validateProxyPayload.validation?.ok, true);
+    assert.equal(validateProxyPayload.validation?.usingProxy, true);
+    assert.equal(validateProxyPayload.validation?.targetUrl, 'https://example.com/probe');
+
     const createTaskResponse = await fetch(`${baseUrl}/api/control/tasks`, {
       method: 'POST',
       headers: {
@@ -103,6 +170,103 @@ test('control-center routes expose sources, preview and task lifecycle', async (
     const completedTask = await waitForCompletedTask(baseUrl, createTaskPayload.task.id);
     assert.equal(completedTask.status, 'completed');
     assert.equal(completedTask.chapters.length, 2);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
+test('task events endpoint sends SSE headers before the initial snapshot event', async () => {
+  const { app, cleanup } = createTestServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const createTaskResponse = await fetch(`${baseUrl}/api/control/tasks`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sourceId: 'mock-html',
+        novelId: 'demo',
+      }),
+    });
+    const createTaskPayload = (await createTaskResponse.json()) as { task: { id: string } };
+
+    const eventsResponse = await fetch(
+      `${baseUrl}/api/control/tasks/${createTaskPayload.task.id}/events`,
+    );
+    assert.equal(eventsResponse.status, 200);
+    assert.match(eventsResponse.headers.get('content-type') ?? '', /text\/event-stream/i);
+
+    const reader = eventsResponse.body?.getReader();
+    assert.ok(reader, 'Expected an SSE response body reader.');
+
+    const firstChunk = await reader.read();
+    assert.equal(firstChunk.done, false);
+
+    const firstPayload = new TextDecoder().decode(firstChunk.value);
+    assert.match(firstPayload, /"type":"task_updated"/);
+    assert.match(firstPayload, /"id":"/);
+
+    await reader.cancel();
+
+    const completedTask = await waitForCompletedTask(baseUrl, createTaskPayload.task.id);
+    assert.equal(completedTask.status, 'completed');
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
+test('task events endpoint returns 404 for unknown tasks', async () => {
+  const { app, cleanup } = createTestServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const response = await fetch(`${baseUrl}/api/control/tasks/missing/events`);
+    const payload = (await response.json()) as { message: string };
+
+    assert.equal(response.status, 404);
+    assert.equal(payload.message, 'Task missing was not found.');
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {

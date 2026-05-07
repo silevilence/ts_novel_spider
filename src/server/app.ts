@@ -20,6 +20,7 @@ export function createServerApp(options: ServerAppOptions = {}): Express {
   app.use(express.json());
   app.use('/api/health', healthRouter);
   app.use('/api/control', createControlCenterRouter({ service: controlCenter }));
+
   app.use(express.static(webDistPath));
 
   app.use((request, response, next) => {

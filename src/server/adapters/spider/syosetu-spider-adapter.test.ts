@@ -27,6 +27,7 @@ function createFixtureFetch(
 test('Syosetu18SpiderAdapter parses metadata, catalog and chapter content', async () => {
   const infoUrl = 'https://novel18.syosetu.com/novelview/infotop/ncode/n7777aa/';
   const catalogUrl = 'https://novel18.syosetu.com/n7777aa/';
+  const catalogPage2Url = 'https://novel18.syosetu.com/n7777aa/?p=2';
   const chapter1Url = 'https://novel18.syosetu.com/n7777aa/1/';
   const chapter2Url = 'https://novel18.syosetu.com/n7777aa/2/';
   const requests: SpiderHtmlRequest[] = [];
@@ -55,13 +56,20 @@ test('Syosetu18SpiderAdapter parses metadata, catalog and chapter content', asyn
         [catalogUrl]: `
           <div class="p-eplist">
             <div class="p-eplist__chapter-title">第一幕</div>
-            <dl class="p-eplist__sublist">
-              <dd class="p-eplist__subtitle"><a href="/n7777aa/1/">迷宮へ</a></dd>
-            </dl>
+            <div class="p-eplist__sublist">
+              <a class="p-eplist__subtitle" href="/n7777aa/1/">迷宮へ</a>
+            </div>
+            <div class="c-pager">
+              <a href="/n7777aa/?p=2" class="c-pager__item c-pager__item--next">次へ</a>
+            </div>
+          </div>
+        `,
+        [catalogPage2Url]: `
+          <div class="p-eplist">
             <div class="p-eplist__chapter-title">第二幕</div>
-            <dl class="p-eplist__sublist">
-              <dd class="p-eplist__subtitle"><a href="/n7777aa/2/">地下二層</a></dd>
-            </dl>
+            <div class="p-eplist__sublist">
+              <a class="p-eplist__subtitle" href="/n7777aa/2/">地下二層</a>
+            </div>
           </div>
         `,
         [chapter1Url]: `
@@ -135,6 +143,7 @@ test('Syosetu18SpiderAdapter parses metadata, catalog and chapter content', asyn
     content: '![挿絵](https://cdn.example/illust.jpg)\n\n戦闘開始。',
   });
   assert.equal(requests[0]?.headers.Cookie, 'over18=yes');
+  assert.equal(requests[2]?.url, catalogPage2Url);
 });
 
 test('SyosetuSpiderAdapter reuses parser and switches site endpoints', async () => {
@@ -162,9 +171,9 @@ test('SyosetuSpiderAdapter reuses parser and switches site endpoints', async () 
         `,
         [catalogUrl]: `
           <div class="p-eplist">
-            <dl class="p-eplist__sublist">
-              <dd class="p-eplist__subtitle"><a href="/n2516ia/1/">一話</a></dd>
-            </dl>
+            <div class="p-eplist__sublist">
+              <a class="p-eplist__subtitle" href="/n2516ia/1/">一話</a>
+            </div>
           </div>
         `,
         [chapterUrl]: `
@@ -195,4 +204,82 @@ test('SyosetuSpiderAdapter reuses parser and switches site endpoints', async () 
   ]);
   assert.equal(chapter.content, 'ここから始まる。');
   assert.equal(requests[0]?.headers.Cookie, undefined);
+});
+
+test('SyosetuSpiderAdapter carries volume title across paginated catalog pages', async () => {
+  const infoUrl = 'https://ncode.syosetu.com/novelview/infotop/ncode/n3130lr/';
+  const catalogUrl = 'https://ncode.syosetu.com/n3130lr/';
+  const catalogPage2Url = 'https://ncode.syosetu.com/n3130lr/?p=2';
+  const requests: SpiderHtmlRequest[] = [];
+
+  const adapter = new SyosetuSpiderAdapter({
+    fetchHtml: createFixtureFetch(
+      {
+        [infoUrl]: `
+          <article>
+            <h1 class="p-infotop-title"><a href="${catalogUrl}">曇りの聖女</a></h1>
+            <div class="p-infotop-type__left">
+              <span class="p-infotop-type__allep">全117エピソード</span>
+            </div>
+            <dl class="p-infotop-data">
+              <dt>作者名</dt>
+              <dd>川崎悠</dd>
+              <dt>あらすじ</dt>
+              <dd>テスト用。</dd>
+            </dl>
+          </article>
+        `,
+        [catalogUrl]: `
+          <div class="p-eplist">
+            <div class="p-eplist__chapter-title">第４章　破滅フラグは降妖伏魔</div>
+            <div class="p-eplist__sublist">
+              <a class="p-eplist__subtitle" href="/n3130lr/100/">100 侍女</a>
+            </div>
+            <div class="c-pager">
+              <a href="/n3130lr/?p=2" class="c-pager__item c-pager__item--next">次へ</a>
+            </div>
+          </div>
+        `,
+        [catalogPage2Url]: `
+          <div class="p-eplist">
+            <div class="p-eplist__sublist">
+              <a class="p-eplist__subtitle" href="/n3130lr/101/">101 マリンとお話し</a>
+            </div>
+            <div class="p-eplist__sublist">
+              <a class="p-eplist__subtitle" href="/n3130lr/117/">117 紅孩児の変化</a>
+            </div>
+          </div>
+        `,
+      },
+      requests,
+    ),
+  });
+
+  const metadata = await adapter.fetchMetadata({ novelId: 'n3130lr' });
+  const chapters = await adapter.fetchChapterIndex({ novelId: 'n3130lr' }, metadata);
+
+  assert.deepEqual(chapters, [
+    {
+      id: '100',
+      index: 1,
+      title: '100 侍女',
+      volumeTitle: '第４章　破滅フラグは降妖伏魔',
+      url: 'https://ncode.syosetu.com/n3130lr/100/',
+    },
+    {
+      id: '101',
+      index: 2,
+      title: '101 マリンとお話し',
+      volumeTitle: '第４章　破滅フラグは降妖伏魔',
+      url: 'https://ncode.syosetu.com/n3130lr/101/',
+    },
+    {
+      id: '117',
+      index: 3,
+      title: '117 紅孩児の変化',
+      volumeTitle: '第４章　破滅フラグは降妖伏魔',
+      url: 'https://ncode.syosetu.com/n3130lr/117/',
+    },
+  ]);
+  assert.equal(requests[2]?.url, catalogPage2Url);
 });

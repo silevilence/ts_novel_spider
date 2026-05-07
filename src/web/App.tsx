@@ -2,6 +2,7 @@ import { startTransition, useEffect, useEffectEvent, useState } from 'react';
 
 import { ChapterDirectory } from './components/chapter-directory';
 import { MetadataBoard } from './components/metadata-board';
+import { NetworkProxyPanel } from './components/network-proxy-panel';
 import { StatusPanel } from './components/status-panel';
 import { TaskMonitor } from './components/task-monitor';
 import {
@@ -26,12 +27,13 @@ export function App() {
   const [preview, setPreview] = useState<ControlPreviewPayload | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [sources, setSources] = useState<ControlSourcesPayload['sources']>([]);
-  const [selectedSourceId, setSelectedSourceId] = useState('mock-html');
-  const [novelId, setNovelId] = useState('demo');
+  const [selectedSourceId, setSelectedSourceId] = useState('');
+  const [novelId, setNovelId] = useState('');
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([]);
   const [currentTask, setCurrentTask] = useState<ApiTaskSnapshot | null>(null);
   const [recentTasks, setRecentTasks] = useState<ApiTaskSnapshot[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [taskBusy, setTaskBusy] = useState(false);
   const [streamState, setStreamState] = useState<'idle' | 'connected' | 'reconnecting'>('idle');
   const [forceRefetch, setForceRefetch] = useState(false);
   const [chapterConcurrency, setChapterConcurrency] = useState(4);
@@ -57,7 +59,8 @@ export function App() {
   });
 
   const refreshPreview = useEffectEvent(async (sourceId: string, targetNovelId: string) => {
-    setBusy(true);
+    setPreviewBusy(true);
+    setPreviewError(null);
 
     try {
       const payload = await fetchNovelPreview(sourceId, targetNovelId);
@@ -65,7 +68,7 @@ export function App() {
     } catch (error) {
       setPreviewError(error instanceof Error ? error.message : 'Preview request failed.');
     } finally {
-      setBusy(false);
+      setPreviewBusy(false);
     }
   });
 
@@ -100,7 +103,6 @@ export function App() {
         if (defaultSource) {
           setSelectedSourceId(defaultSource.sourceId);
           setNovelId(defaultSource.defaultNovelId);
-          void refreshPreview(defaultSource.sourceId, defaultSource.defaultNovelId);
         }
 
         const activeTask = tasksPayload.tasks.find(
@@ -120,7 +122,7 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [refreshPreview]);
+  }, []);
 
   useEffect(() => {
     if (!currentTask || (currentTask.status !== 'queued' && currentTask.status !== 'running')) {
@@ -155,16 +157,18 @@ export function App() {
       unsubscribe();
       window.clearInterval(pollId);
     };
-  }, [currentTask?.id, currentTask?.status, hydrateTask]);
+  }, [currentTask?.id, currentTask?.status]);
 
   const selectedSource = sources.find((source) => source.sourceId === selectedSourceId) ?? null;
+  const isBusy = previewBusy || taskBusy;
+  const sourceLabelMap = new Map(sources.map((source) => [source.sourceId, source.label]));
 
   async function handlePreviewSubmit() {
     await refreshPreview(selectedSourceId, novelId.trim());
   }
 
   async function handleCreateTask(chapterIds?: string[]) {
-    setBusy(true);
+    setTaskBusy(true);
 
     try {
       const payload = await createControlTask({
@@ -181,7 +185,7 @@ export function App() {
     } catch (error) {
       setPreviewError(error instanceof Error ? error.message : 'Task creation failed.');
     } finally {
-      setBusy(false);
+      setTaskBusy(false);
     }
   }
 
@@ -238,7 +242,7 @@ export function App() {
           }}
         >
           <label>
-            <span>爬虫策略</span>
+            <span>目标站点</span>
             <select value={selectedSourceId} onChange={(event) => handleSourceChange(event.target.value)}>
               {sources.map((source) => (
                 <option key={source.sourceId} value={source.sourceId}>
@@ -247,12 +251,13 @@ export function App() {
               ))}
             </select>
           </label>
+          {selectedSource ? <p className="panel-note">{selectedSource.description}</p> : null}
           <label>
-            <span>目标 ID</span>
+            <span>作品编号</span>
             <input
               value={novelId}
               onChange={(event) => setNovelId(event.target.value)}
-              placeholder={selectedSource?.defaultNovelId ?? '输入小说 ID'}
+              placeholder={selectedSource?.defaultNovelId ?? '输入作品编号'}
             />
           </label>
           <label>
@@ -280,18 +285,21 @@ export function App() {
             <span>强制重新抓取已下载章节</span>
           </label>
           <div className="action-row wide">
-            <button type="submit" className="primary-button" disabled={busy || novelId.trim().length === 0}>
-              解析目录
+            <button type="submit" className="primary-button" disabled={isBusy || novelId.trim().length === 0}>
+              {previewBusy ? '解析中...' : '解析目录'}
             </button>
             <button
               type="button"
               className="secondary-button"
-              disabled={busy || novelId.trim().length === 0}
+              disabled={isBusy || novelId.trim().length === 0}
               onClick={() => void handleCreateTask(selectedChapterIds.length > 0 ? selectedChapterIds : undefined)}
             >
-              下发抓取任务
+              {taskBusy ? '下发中...' : '下发抓取任务'}
             </button>
           </div>
+          {previewBusy ? (
+            <p className="panel-note">正在解析目录，请稍候。系统会先抓取元数据，再生成章节分组与本地快照差异。</p>
+          ) : null}
         </form>
       </section>
 
@@ -300,14 +308,18 @@ export function App() {
         errorMessage={errorMessage}
         sourceCount={sources.length}
         currentTask={currentTask}
+        currentTaskSourceLabel={currentTask ? sourceLabelMap.get(currentTask.sourceId) ?? currentTask.sourceId : null}
       />
 
-      <MetadataBoard preview={preview} loading={busy} errorMessage={previewError} />
+      <NetworkProxyPanel />
+
+      <MetadataBoard preview={preview} loading={previewBusy} errorMessage={previewError} />
 
       <ChapterDirectory
         chapters={preview?.chapters ?? []}
         selectedChapterIds={selectedChapterIds}
-        busy={busy}
+        busy={isBusy}
+        loading={previewBusy}
         onToggleChapter={toggleChapterSelection}
         onSelectAll={() => setSelectedChapterIds((preview?.chapters ?? []).map((chapter) => chapter.id))}
         onSelectPending={() => setSelectedChapterIds(defaultSelectedChapterIds(preview?.chapters ?? []))}
@@ -319,6 +331,7 @@ export function App() {
         currentTask={currentTask}
         recentTasks={recentTasks}
         streamState={streamState}
+        getSourceLabel={(sourceId) => sourceLabelMap.get(sourceId) ?? sourceId}
         onPickTask={(taskId) => void handlePickTask(taskId)}
         onRetryFailed={() => void handleRetryFailed()}
       />

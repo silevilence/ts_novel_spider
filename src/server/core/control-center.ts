@@ -2,10 +2,15 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { MockHtmlSpiderAdapter } from '../adapters/spider/mock-html-spider-adapter';
 import { Syosetu18SpiderAdapter } from '../adapters/spider/syosetu-18-spider-adapter';
 import { SyosetuSpiderAdapter } from '../adapters/spider/syosetu-spider-adapter';
 import { SpiderLogDispatcher, type SpiderLogAdapter, type SpiderLogEvent } from './logging';
+import {
+  createProxyAwareHtmlFetcher,
+  NetworkProxyService,
+  type NetworkProxyConfigInput,
+  type NetworkProxyState,
+} from './network-proxy';
 import { SqliteNovelRepository } from './novel-repository';
 import { SpiderRunner } from './spider-runner';
 import {
@@ -130,6 +135,7 @@ export interface ControlCenterServiceOptions {
   databasePath?: string;
   repository?: SqliteNovelRepository;
   spiders?: SpiderRegistryEntry[];
+  networkProxy?: NetworkProxyService;
 }
 
 const MAX_STORED_EVENTS = 200;
@@ -137,15 +143,20 @@ const MAX_STORED_EVENTS = 200;
 export class ControlCenterService {
   readonly #repository: SqliteNovelRepository;
   readonly #ownsRepository: boolean;
+  readonly #networkProxy: NetworkProxyService;
+  readonly #ownsNetworkProxy: boolean;
   readonly #registry: Map<string, SpiderRegistryEntry>;
   readonly #tasks = new Map<string, CrawlTaskState>();
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
     this.#ownsRepository = options.repository === undefined;
+    this.#ownsNetworkProxy = options.networkProxy === undefined;
     this.#repository = options.repository ?? new SqliteNovelRepository(databasePath);
+    this.#networkProxy =
+      options.networkProxy ?? new NetworkProxyService({ storageFilePath: defaultNetworkProxyConfigPath() });
     this.#registry = new Map(
-      (options.spiders ?? createDefaultSpiderRegistry()).map((entry) => [entry.descriptor.sourceId, entry]),
+      (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
     );
   }
 
@@ -157,10 +168,28 @@ export class ControlCenterService {
     if (this.#ownsRepository) {
       this.#repository.close();
     }
+
+    if (this.#ownsNetworkProxy) {
+      this.#networkProxy.close();
+    }
   }
 
   listSources(): SpiderSourceDescriptor[] {
     return [...this.#registry.values()].map((entry) => entry.descriptor);
+  }
+
+  getNetworkProxyState(): NetworkProxyState {
+    return this.#networkProxy.getState();
+  }
+
+  updateNetworkProxy(input: NetworkProxyConfigInput): NetworkProxyState {
+    this.#networkProxy.updateConfig(input);
+    return this.#networkProxy.getState();
+  }
+
+  async validateNetworkProxy(targetUrl?: string): Promise<NetworkProxyState> {
+    await this.#networkProxy.validate(targetUrl);
+    return this.#networkProxy.getState();
   }
 
   async previewNovel(input: PreviewNovelInput): Promise<PreviewNovelResult> {
@@ -343,34 +372,27 @@ export class ControlCenterService {
   }
 }
 
-export function createDefaultSpiderRegistry(): SpiderRegistryEntry[] {
+export function createDefaultSpiderRegistry(networkProxy = new NetworkProxyService()): SpiderRegistryEntry[] {
+  const fetchHtml = createProxyAwareHtmlFetcher({ proxyService: networkProxy });
+
   return [
     {
       descriptor: {
-        sourceId: 'mock-html',
-        label: 'Mock HTML Demo',
-        description: '本地演示源，可稳定验证目录 Diff、失败重试与日志桥接。',
-        defaultNovelId: 'demo',
-      },
-      spider: new MockHtmlSpiderAdapter(createDemoFixture()),
-    },
-    {
-      descriptor: {
         sourceId: 'syosetu',
-        label: 'Syosetu',
-        description: '小説家になろう 正式站点。',
+        label: '小説家になろう（全年龄）',
+        description: '日本网文主站，适合全年龄作品。请输入作品编号，例如 n9669bk。',
         defaultNovelId: 'n9669bk',
       },
-      spider: new SyosetuSpiderAdapter(),
+      spider: new SyosetuSpiderAdapter({ fetchHtml }),
     },
     {
       descriptor: {
         sourceId: 'syosetu18',
-        label: 'Syosetu18',
-        description: 'ノクターンノベルズ 成人站点。',
+        label: 'ノクターンノベルズ（成人向）',
+        description: '成人向分站。请输入作品编号，例如 n1557gm。',
         defaultNovelId: 'n1557gm',
       },
-      spider: new Syosetu18SpiderAdapter(),
+      spider: new Syosetu18SpiderAdapter({ fetchHtml }),
     },
   ];
 }
@@ -516,44 +538,9 @@ function defaultDatabasePath(): string {
   return path.join(databaseDir, 'novels.db');
 }
 
-function createDemoFixture() {
-  const chapterHtmlById: Record<string, string> = {};
-  const catalogEntries: string[] = [];
-
-  for (let index = 1; index <= 6; index += 1) {
-    const chapterId = `chapter-${index}`;
-    const volumeTitle = `卷 ${Math.ceil(index / 2)}`;
-
-    catalogEntries.push(
-      `<li data-chapter-id="${chapterId}" data-volume="${volumeTitle}"><a href="/novels/demo/${index}">第 ${index} 章</a></li>`,
-    );
-
-    chapterHtmlById[chapterId] = `
-      <article>
-        <h1 data-testid="chapter-title">第 ${index} 章</h1>
-        <div data-testid="volume-title">${volumeTitle}</div>
-        <section data-testid="content">
-          <p>这是第 ${index} 章的第一段。</p>
-          <p>这是第 ${index} 章的第二段。</p>
-        </section>
-      </article>
-    `;
-  }
-
-  return {
-    metadataHtml: `
-      <article>
-        <h1 data-testid="title">演示小说：风与铁的巡夜人</h1>
-        <div data-testid="author">控制台演示源</div>
-        <div data-testid="description">用于联调前端控制中心的本地 Mock 小说，包含卷分组、增量对比与可重试章节。</div>
-        <ul data-testid="tags"><li>演示</li><li>冒险</li><li>任务调度</li></ul>
-        <div data-testid="chapter-count">6</div>
-      </article>
-    `,
-    catalogHtml: `<ol data-testid="catalog">${catalogEntries.join('')}</ol>`,
-    chapterHtmlById,
-    transientFailuresByChapterId: {
-      'chapter-4': 1,
-    },
-  };
+function defaultNetworkProxyConfigPath(): string {
+  const dataDir = path.resolve(process.cwd(), '.data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  return path.join(dataDir, 'network-proxy.json');
 }
+

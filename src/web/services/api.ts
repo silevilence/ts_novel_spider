@@ -1,10 +1,21 @@
 import type { HealthPayload } from '../../server/routes/health';
 import type {
+  ControlNetworkProxyPayload,
   ControlPreviewPayload,
   ControlSourcesPayload,
   ControlTaskPayload,
   ControlTasksPayload,
 } from '../../server/routes/control-center';
+
+export interface UpdateNetworkProxyInput {
+  enabled: boolean;
+  protocol: 'http' | 'https';
+  host: string;
+  port: number | null;
+  username: string;
+  password: string;
+  bypassHosts: string[];
+}
 
 export async function fetchHealth(): Promise<HealthPayload> {
   const response = await fetch('/api/health');
@@ -18,6 +29,46 @@ export async function fetchHealth(): Promise<HealthPayload> {
 
 export async function fetchControlSources(): Promise<ControlSourcesPayload> {
   return requestJson<ControlSourcesPayload>('/api/control/sources');
+}
+
+export async function fetchNetworkProxy(): Promise<ControlNetworkProxyPayload> {
+  return requestJson<ControlNetworkProxyPayload>('/api/control/network-proxy');
+}
+
+export async function updateNetworkProxy(
+  input: UpdateNetworkProxyInput,
+): Promise<ControlNetworkProxyPayload> {
+  const response = await fetch('/api/control/network-proxy', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Proxy config update failed');
+  }
+
+  return (await response.json()) as ControlNetworkProxyPayload;
+}
+
+export async function validateNetworkProxy(targetUrl?: string): Promise<ControlNetworkProxyPayload> {
+  const response = await fetch('/api/control/network-proxy/validate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...(targetUrl ? { targetUrl } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Proxy validation failed');
+  }
+
+  return (await response.json()) as ControlNetworkProxyPayload;
 }
 
 export async function fetchNovelPreview(

@@ -88,37 +88,42 @@ export class Syosetu18SpiderAdapter extends BaseHtmlSpiderAdapter {
     context: SpiderRunContext,
     _metadata: NovelMetadata,
   ): Promise<ChapterIndexEntry[]> {
-    const document = this.parseHtml(await this.loadHtml(this.buildNovelPageUrl(context.novelId)));
-    const chapterNodes = document('dl.p-eplist__sublist, dl.novel_sublist2').toArray();
+    const chapters: ChapterIndexEntry[] = [];
+    const visitedCatalogPages = new Set<string>();
+    let currentPageUrl: string | undefined = this.buildNovelPageUrl(context.novelId);
+    let currentVolumeTitle: string | undefined;
 
-    if (chapterNodes.length === 0) {
-      throw new Error(`No catalog entries found for novel ${context.novelId}`);
-    }
-
-    return chapterNodes.map((element, index) => {
-      const entry = document(element);
-      const link = entry
-        .find('dd.p-eplist__subtitle a, dd.subtitle a, a.p-eplist__subtitle, a.subtitle')
-        .first();
-      const href = link.attr('href');
-
-      if (!href) {
-        throw new Error(`Catalog entry ${index + 1} is missing href.`);
+    while (currentPageUrl) {
+      if (visitedCatalogPages.has(currentPageUrl)) {
+        throw new Error(`Detected catalog pagination loop for novel ${context.novelId}: ${currentPageUrl}`);
       }
 
-      const url = this.buildAbsoluteUrl(href);
-      const id = extractChapterId(url) ?? String(index + 1);
-      const volumeTitle =
-        readText(entry.prevAll('.p-eplist__chapter-title, .chapter_title').first()) ?? undefined;
+      visitedCatalogPages.add(currentPageUrl);
 
-      return {
-        id,
-        index: index + 1,
-        title: requiredTextFromNode(link),
-        url,
-        ...(volumeTitle ? { volumeTitle } : {}),
-      } satisfies ChapterIndexEntry;
-    });
+      const document = this.parseHtml(await this.loadHtml(currentPageUrl));
+      const pageCatalog = extractChapterIndexEntries(
+        document,
+        this.buildAbsoluteUrl.bind(this),
+        currentVolumeTitle,
+      );
+      const pageChapters = pageCatalog.chapters;
+      currentVolumeTitle = pageCatalog.lastVolumeTitle;
+
+      if (pageChapters.length === 0) {
+        throw new Error(`No catalog entries found for novel ${context.novelId} at ${currentPageUrl}`);
+      }
+
+      chapters.push(
+        ...pageChapters.map((chapter, index) => ({
+          ...chapter,
+          index: chapters.length + index + 1,
+        })),
+      );
+
+      currentPageUrl = readNextCatalogPageUrl(document, this.buildAbsoluteUrl.bind(this));
+    }
+
+    return chapters;
   }
 
   async fetchChapter(
@@ -250,6 +255,67 @@ function extractChapterId(url: string): string | undefined {
   const match = pathname.match(/\/(\d+)\/?$/);
 
   return match?.[1];
+}
+
+function extractChapterIndexEntries(
+  document: CheerioAPI,
+  toAbsoluteUrl: (urlOrPath: string) => string,
+  initialVolumeTitle?: string,
+): {
+  chapters: Array<Omit<ChapterIndexEntry, 'index'>>;
+  lastVolumeTitle: string | undefined;
+} {
+  const orderedCatalogNodes = document(
+    '.p-eplist__chapter-title, .chapter_title, div.p-eplist__sublist, dl.p-eplist__sublist, div.novel_sublist2, dl.novel_sublist2',
+  ).toArray();
+  const chapters: Array<Omit<ChapterIndexEntry, 'index'>> = [];
+  let currentVolumeTitle = initialVolumeTitle;
+
+  orderedCatalogNodes.forEach((element) => {
+    const node = document(element);
+
+    if (node.is('.p-eplist__chapter-title, .chapter_title')) {
+      currentVolumeTitle = readText(node) ?? currentVolumeTitle;
+      return;
+    }
+
+    const link = node
+      .find('dd.p-eplist__subtitle a, dd.subtitle a, a.p-eplist__subtitle, a.subtitle')
+      .first();
+    const href = link.attr('href');
+
+    if (!href) {
+      throw new Error(`Catalog entry ${chapters.length + 1} is missing href.`);
+    }
+
+    const url = toAbsoluteUrl(href);
+    const id = extractChapterId(url) ?? String(chapters.length + 1);
+
+    chapters.push({
+      id,
+      title: requiredTextFromNode(link),
+      url,
+      ...(currentVolumeTitle ? { volumeTitle: currentVolumeTitle } : {}),
+    } satisfies Omit<ChapterIndexEntry, 'index'>);
+  });
+
+  return {
+    chapters,
+    lastVolumeTitle: currentVolumeTitle,
+  };
+}
+
+function readNextCatalogPageUrl(
+  document: CheerioAPI,
+  toAbsoluteUrl: (urlOrPath: string) => string,
+): string | undefined {
+  const href = document('a.c-pager__item--next').first().attr('href');
+
+  if (!href) {
+    return undefined;
+  }
+
+  return toAbsoluteUrl(href);
 }
 
 /**

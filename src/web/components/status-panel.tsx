@@ -6,9 +6,10 @@ interface StatusPanelProps {
   errorMessage: string | null;
   sourceCount: number;
   currentTask: ApiTaskSnapshot | null;
+  currentTaskSourceLabel: string | null;
 }
 
-export function StatusPanel({ health, errorMessage, sourceCount, currentTask }: StatusPanelProps) {
+export function StatusPanel({ health, errorMessage, sourceCount, currentTask, currentTaskSourceLabel }: StatusPanelProps) {
   return (
     <section className="status-panel">
       <div>
@@ -26,7 +27,7 @@ export function StatusPanel({ health, errorMessage, sourceCount, currentTask }: 
         </div>
         <div>
           <dt>当前任务</dt>
-          <dd>{currentTask ? `${currentTask.sourceId} / ${currentTask.status}` : '空闲'}</dd>
+          <dd>{currentTask ? `${currentTaskSourceLabel} / ${formatTaskStatus(currentTask.status)}` : '空闲'}</dd>
         </div>
         <div>
           <dt>最近心跳</dt>
@@ -35,4 +36,19 @@ export function StatusPanel({ health, errorMessage, sourceCount, currentTask }: 
       </dl>
     </section>
   );
+}
+
+function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
+  switch (status) {
+    case 'queued':
+      return '排队中';
+    case 'running':
+      return '执行中';
+    case 'completed':
+      return '已完成';
+    case 'failed':
+      return '已失败';
+    default:
+      return status;
+  }
 }

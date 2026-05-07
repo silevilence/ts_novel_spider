@@ -4,6 +4,7 @@ interface TaskMonitorProps {
   currentTask: ApiTaskSnapshot | null;
   recentTasks: ApiTaskSnapshot[];
   streamState: 'idle' | 'connected' | 'reconnecting';
+  getSourceLabel: (sourceId: string) => string;
   onPickTask: (taskId: string) => void;
   onRetryFailed: () => void;
 }
@@ -12,6 +13,7 @@ export function TaskMonitor({
   currentTask,
   recentTasks,
   streamState,
+  getSourceLabel,
   onPickTask,
   onRetryFailed,
 }: TaskMonitorProps) {
@@ -35,9 +37,9 @@ export function TaskMonitor({
               <div className="split align-start">
                 <div>
                   <p className="label">任务</p>
-                  <h3>{currentTask.sourceId} / {currentTask.novelId}</h3>
+                  <h3>{getSourceLabel(currentTask.sourceId)} / {currentTask.novelId}</h3>
                 </div>
-                <span className={`status-badge state-${currentTask.status}`}>{currentTask.status}</span>
+                <span className={`status-badge state-${currentTask.status}`}>{formatTaskStatus(currentTask.status)}</span>
               </div>
               <div className="progress-track" aria-hidden="true">
                 <div className="progress-fill" style={{ width: `${progress?.percent ?? 0}%` }} />
@@ -83,8 +85,8 @@ export function TaskMonitor({
             {recentTasks.length > 0 ? recentTasks.map((task) => (
               <li key={task.id}>
                 <button type="button" className="history-button" onClick={() => onPickTask(task.id)}>
-                  <span>{task.sourceId} / {task.novelId}</span>
-                  <span className={`status-badge state-${task.status}`}>{task.status}</span>
+                  <span>{getSourceLabel(task.sourceId)} / {task.novelId}</span>
+                  <span className={`status-badge state-${task.status}`}>{formatTaskStatus(task.status)}</span>
                 </button>
               </li>
             )) : <li className="muted">暂无任务记录。</li>}
@@ -98,4 +100,19 @@ export function TaskMonitor({
 function formatTimestamp(timestamp: string): string {
   const date = new Date(timestamp);
   return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleTimeString();
+}
+
+function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
+  switch (status) {
+    case 'queued':
+      return '排队中';
+    case 'running':
+      return '执行中';
+    case 'completed':
+      return '已完成';
+    case 'failed':
+      return '已失败';
+    default:
+      return status;
+  }
 }

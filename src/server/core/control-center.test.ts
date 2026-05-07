@@ -6,7 +6,8 @@ import test from 'node:test';
 
 import { MockHtmlSpiderAdapter } from '../adapters/spider/mock-html-spider-adapter';
 import { SqliteNovelRepository } from './novel-repository';
-import { ControlCenterService, type ControlCenterStreamEvent } from './control-center';
+import { ControlCenterService, createDefaultSpiderRegistry, type ControlCenterStreamEvent } from './control-center';
+import { NetworkProxyService } from './network-proxy';
 
 function createService() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-spider-control-'));
@@ -113,6 +114,25 @@ test('ControlCenterService previews novels and tracks retryable background tasks
     assert.equal(recoveredTask.chapters.find((chapter) => chapter.id === 'chapter-3')?.status, 'downloaded');
   } finally {
     cleanup();
+  }
+});
+
+test('createDefaultSpiderRegistry exposes only user-facing real sources', () => {
+  const networkProxy = new NetworkProxyService();
+
+  try {
+    const registry = createDefaultSpiderRegistry(networkProxy);
+
+    assert.deepEqual(
+      registry.map((entry) => entry.descriptor.sourceId),
+      ['syosetu', 'syosetu18'],
+    );
+    assert.deepEqual(
+      registry.map((entry) => entry.descriptor.label),
+      ['小説家になろう（全年龄）', 'ノクターンノベルズ（成人向）'],
+    );
+  } finally {
+    networkProxy.close();
   }
 });
 

@@ -8,6 +8,11 @@ import {
   type SnapshotSummary,
 } from '../core/control-center';
 import type { SpiderLogEvent } from '../core/logging';
+import type {
+  NetworkProxyConfig,
+  NetworkProxyConfigInput,
+  NetworkProxyValidationResult,
+} from '../core/network-proxy';
 import type { NovelMetadata, ResolvedChapterState, SpiderRunFailure } from '../core/spider';
 
 export interface ApiLogEvent {
@@ -59,6 +64,11 @@ export interface ControlTaskPayload {
   task: ApiTaskSnapshot;
 }
 
+export interface ControlNetworkProxyPayload {
+  config: NetworkProxyConfig;
+  validation: NetworkProxyValidationResult | null;
+}
+
 export interface ControlCenterRouterOptions {
   service: ControlCenterService;
 }
@@ -72,6 +82,20 @@ interface CreateTaskRequestBody {
   chapterRetryCount?: unknown;
 }
 
+interface UpdateNetworkProxyRequestBody {
+  enabled?: unknown;
+  protocol?: unknown;
+  host?: unknown;
+  port?: unknown;
+  username?: unknown;
+  password?: unknown;
+  bypassHosts?: unknown;
+}
+
+interface ValidateNetworkProxyRequestBody {
+  targetUrl?: unknown;
+}
+
 export function createControlCenterRouter({ service }: ControlCenterRouterOptions): Router {
   const router = Router();
 
@@ -81,6 +105,40 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     };
 
     response.json(payload);
+  });
+
+  router.get('/network-proxy', (_request, response) => {
+    response.json(serializeNetworkProxyState(service.getNetworkProxyState()));
+  });
+
+  router.put('/network-proxy', (request, response) => {
+    try {
+      const body = request.body as UpdateNetworkProxyRequestBody;
+      const payload = serializeNetworkProxyState(
+        service.updateNetworkProxy(parseNetworkProxyBody(body)),
+      );
+
+      response.json(payload);
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid network proxy request.',
+      });
+    }
+  });
+
+  router.post('/network-proxy/validate', async (request, response) => {
+    try {
+      const body = (request.body ?? {}) as ValidateNetworkProxyRequestBody;
+      const payload = serializeNetworkProxyState(
+        await service.validateNetworkProxy(optionalUrlString(body.targetUrl)),
+      );
+
+      response.json(payload);
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid proxy validation request.',
+      });
+    }
   });
 
   router.get('/preview', async (request, response) => {
@@ -152,6 +210,20 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
   });
 
   router.get('/tasks/:taskId/events', (request, response) => {
+    const task = service.getTask(request.params.taskId);
+
+    if (!task) {
+      response.status(404).json({
+        message: `Task ${request.params.taskId} was not found.`,
+      });
+      return;
+    }
+
+    response.setHeader('Content-Type', 'text/event-stream');
+    response.setHeader('Cache-Control', 'no-cache');
+    response.setHeader('Connection', 'keep-alive');
+    response.flushHeaders();
+
     const unsubscribe = service.subscribeToTask(request.params.taskId, (event) => {
       const payload =
         event.type === 'task_updated'
@@ -169,16 +241,9 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     });
 
     if (!unsubscribe) {
-      response.status(404).json({
-        message: `Task ${request.params.taskId} was not found.`,
-      });
+      response.end();
       return;
     }
-
-    response.setHeader('Content-Type', 'text/event-stream');
-    response.setHeader('Cache-Control', 'no-cache');
-    response.setHeader('Connection', 'keep-alive');
-    response.flushHeaders();
 
     const keepAlive = setInterval(() => {
       response.write(': keepalive\n\n');
@@ -237,6 +302,16 @@ function serializeLogEvent(event: SpiderLogEvent): ApiLogEvent {
   };
 }
 
+function serializeNetworkProxyState(state: {
+  config: NetworkProxyConfig;
+  validation: NetworkProxyValidationResult | null;
+}): ControlNetworkProxyPayload {
+  return {
+    config: state.config,
+    validation: state.validation,
+  };
+}
+
 function requiredQueryString(value: unknown, key: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new Error(`Query parameter ${key} is required.`);
@@ -263,6 +338,30 @@ function parseChapterIds(chapterIds: unknown[]): string[] {
   });
 }
 
+function parseNetworkProxyBody(body: UpdateNetworkProxyRequestBody): NetworkProxyConfigInput {
+  const enabled = requiredBoolean(body.enabled, 'enabled');
+  const protocol = optionalProtocol(body.protocol);
+  const host = optionalBodyString(body.host);
+  const port = optionalPort(body.port);
+  const username = optionalBodyString(body.username);
+  const password = optionalBodyString(body.password);
+  const bypassHosts = parseStringArray(body.bypassHosts, 'bypassHosts');
+
+  if (enabled && (!host || port === null)) {
+    throw new Error('Enabled proxy requires both host and port.');
+  }
+
+  return {
+    enabled,
+    ...(protocol ? { protocol } : {}),
+    ...(host !== undefined ? { host } : {}),
+    ...(port !== undefined ? { port } : {}),
+    ...(username !== undefined ? { username } : {}),
+    ...(password !== undefined ? { password } : {}),
+    ...(bypassHosts !== undefined ? { bypassHosts } : {}),
+  };
+}
+
 function positiveInteger(value: unknown, key: string): number {
   const parsed = Number(value);
 
@@ -283,10 +382,84 @@ function nonNegativeInteger(value: unknown, key: string): number {
   return parsed;
 }
 
+function optionalPort(value: unknown): number | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null || value === '') {
+    return null;
+  }
+
+  return positiveInteger(value, 'port');
+}
+
 function optionalPositiveInteger(value: unknown, fallback: number): number {
   if (value === undefined) {
     return fallback;
   }
 
   return positiveInteger(value, 'limit');
+}
+
+function requiredBoolean(value: unknown, key: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`Request field ${key} must be a boolean.`);
+  }
+
+  return value;
+}
+
+function optionalProtocol(value: unknown): 'http' | 'https' | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (value === 'http' || value === 'https') {
+    return value;
+  }
+
+  throw new Error('Request field protocol must be either http or https.');
+}
+
+function optionalBodyString(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('Expected a string field.');
+  }
+
+  return value.trim();
+}
+
+function parseStringArray(value: unknown, key: string): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error(`Request field ${key} must be an array of strings.`);
+  }
+
+  return value.map((entry, index) => {
+    if (typeof entry !== 'string') {
+      throw new Error(`Request field ${key}[${index}] must be a string.`);
+    }
+
+    return entry.trim();
+  });
+}
+
+function optionalUrlString(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('Request field targetUrl must be a string.');
+  }
+
+  return value.trim();
 }

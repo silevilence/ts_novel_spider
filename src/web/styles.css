@@ -117,7 +117,8 @@ body {
 }
 
 .control-form input,
-.control-form select {
+.control-form select,
+.proxy-grid textarea {
   width: 100%;
   min-height: 44px;
   padding: 0.8rem 0.95rem;
@@ -126,6 +127,11 @@ body {
   background: rgba(255, 255, 255, 0.9);
   color: var(--ink);
   font: inherit;
+}
+
+.proxy-grid textarea {
+  min-height: 120px;
+  resize: vertical;
 }
 
 .checkbox-field {
@@ -322,6 +328,49 @@ button:disabled {
   gap: 1.25rem;
 }
 
+.proxy-panel {
+  gap: 1.25rem;
+}
+
+.proxy-summary,
+.proxy-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.proxy-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.proxy-summary .card p,
+.proxy-validation-card p {
+  margin: 0.45rem 0 0;
+}
+
+.proxy-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.proxy-grid label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.proxy-span-full {
+  grid-column: 1 / -1;
+}
+
+.proxy-toggle {
+  align-self: end;
+  min-height: 44px;
+}
+
+.error-text {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .volume-list {
   display: grid;
   gap: 1rem;
@@ -483,7 +532,9 @@ button:disabled {
 
   .control-hero,
   .task-layout,
-  .panel-grid {
+  .panel-grid,
+  .proxy-summary,
+  .proxy-grid {
     grid-template-columns: 1fr;
   }
 

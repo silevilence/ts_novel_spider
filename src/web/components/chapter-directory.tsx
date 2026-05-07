@@ -4,6 +4,7 @@ interface ChapterDirectoryProps {
   chapters: ResolvedChapterState[];
   selectedChapterIds: string[];
   busy: boolean;
+  loading: boolean;
   onToggleChapter: (chapterId: string) => void;
   onSelectAll: () => void;
   onSelectPending: () => void;
@@ -15,6 +16,7 @@ export function ChapterDirectory({
   chapters,
   selectedChapterIds,
   busy,
+  loading,
   onToggleChapter,
   onSelectAll,
   onSelectPending,
@@ -49,7 +51,7 @@ export function ChapterDirectory({
 
       {chapters.length === 0 ? (
         <div className="empty-state">
-          <p>解析后将在这里显示目录结构和章节状态。</p>
+          <p>{loading ? '正在解析目录，章节分组会在这里自动展开。' : '解析后将在这里显示目录结构和章节状态。'}</p>
         </div>
       ) : (
         <div className="volume-list">
@@ -80,7 +82,7 @@ export function ChapterDirectory({
                       <div className="badge-row">
                         {chapter.isNew ? <span className="status-badge new">新增</span> : null}
                         {chapter.wasDownloaded ? <span className="status-badge ok">已下载</span> : null}
-                        <span className={`status-badge state-${chapter.status}`}>{chapter.status}</span>
+                        <span className={`status-badge state-${chapter.status}`}>{formatChapterStatus(chapter.status)}</span>
                       </div>
                     </li>
                   );
@@ -113,4 +115,17 @@ function groupChapters(chapters: ResolvedChapterState[]) {
     volumeTitle,
     chapters: groupedChapters,
   }));
+}
+
+function formatChapterStatus(status: ResolvedChapterState['status']): string {
+  switch (status) {
+    case 'indexed':
+      return '已索引';
+    case 'downloaded':
+      return '已下载';
+    case 'failed':
+      return '已失败';
+    default:
+      return status;
+  }
 }
