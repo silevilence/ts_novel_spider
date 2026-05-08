@@ -3,12 +3,31 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { InMemoryLogAdapter } from '../adapters/log/in-memory-log-adapter';
 import { MockHtmlSpiderAdapter, type MockHtmlSpiderFixture } from '../adapters/spider/mock-html-spider-adapter';
 import { SpiderLogDispatcher } from './logging';
 import { SqliteNovelRepository } from './novel-repository';
 import { SpiderRunner } from './spider-runner';
+
+class DelayedMockHtmlSpiderAdapter extends MockHtmlSpiderAdapter {
+  readonly #delayByChapterId: Record<string, number>;
+
+  constructor(fixture: MockHtmlSpiderFixture, delayByChapterId: Record<string, number>) {
+    super(fixture);
+    this.#delayByChapterId = delayByChapterId;
+  }
+
+  override async fetchChapter(context: { novelId: string }, chapter: { id: string }) {
+    const waitMs = this.#delayByChapterId[chapter.id] ?? 0;
+    if (waitMs > 0) {
+      await delay(waitMs);
+    }
+
+    return super.fetchChapter(context, chapter);
+  }
+}
 
 function createFixture(chapterCount = 2): MockHtmlSpiderFixture {
   const catalogItems: string[] = [];
@@ -100,8 +119,8 @@ test('SpiderRunner persists metadata, catalog and chapter content', async () => 
         'chapter_started',
         'chapter_started',
         'chapter_fetched',
-        'chapter_persisted',
         'chapter_fetched',
+        'chapter_persisted',
         'chapter_persisted',
         'task_completed',
       ],
@@ -169,6 +188,47 @@ test('SpiderRunner retries transient chapter failures before succeeding', async 
       result.currentSnapshot.chapters.map((chapter) => chapter.status),
       ['downloaded', 'downloaded'],
     );
+  } finally {
+    cleanup();
+  }
+});
+
+test('SpiderRunner persists completed chapters before the whole batch finishes', async () => {
+  const { repository, cleanup } = createRepository();
+
+  try {
+    const logAdapter = new InMemoryLogAdapter();
+    const runner = new SpiderRunner({
+      spider: new DelayedMockHtmlSpiderAdapter(createFixture(2), {
+        'chapter-1': 80,
+      }),
+      repository,
+      logger: new SpiderLogDispatcher([logAdapter]),
+    });
+
+    const crawlPromise = runner.crawlNovel({
+      novelId: 'demo',
+      chapterConcurrency: 2,
+    });
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const snapshot = repository.getSnapshot('mock-html', 'demo');
+      const chapter1 = snapshot?.chapters.find((chapter) => chapter.id === 'chapter-1');
+      const chapter2 = snapshot?.chapters.find((chapter) => chapter.id === 'chapter-2');
+
+      if (chapter1?.status === 'indexed' && chapter2?.status === 'downloaded') {
+        break;
+      }
+
+      await delay(10);
+    }
+
+    const snapshot = repository.getSnapshot('mock-html', 'demo');
+    assert.equal(snapshot?.chapters.find((chapter) => chapter.id === 'chapter-1')?.status, 'indexed');
+    assert.equal(snapshot?.chapters.find((chapter) => chapter.id === 'chapter-2')?.status, 'downloaded');
+    assert.ok(logAdapter.events.some((event) => event.type === 'chapter_persisted' && event.payload?.chapterId === 'chapter-2'));
+
+    await crawlPromise;
   } finally {
     cleanup();
   }

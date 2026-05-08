@@ -106,15 +106,16 @@ export class SpiderRunner {
           : {}),
       };
 
-      const fetchResults = await this.#spider.fetchChapters(
-        { novelId: options.novelId },
-        selectedChapters,
-        batchOptions,
-      );
-
       const failures: SpiderRunFailure[] = [];
+      const handledChapterIds = new Set<string>();
 
-      for (const result of fetchResults) {
+      const handleFetchResult = async (result: Awaited<ReturnType<SpiderAdapter['fetchChapters']>>[number]): Promise<void> => {
+        if (handledChapterIds.has(result.chapter.id)) {
+          return;
+        }
+
+        handledChapterIds.add(result.chapter.id);
+
         if (isChapterFetchFailure(result)) {
           this.#repository.markChapterFailure(
             this.#spider.sourceId,
@@ -143,7 +144,7 @@ export class SpiderRunner {
             timestamp: new Date().toISOString(),
           });
 
-          continue;
+          return;
         }
 
         this.#repository.saveChapterContent(this.#spider.sourceId, options.novelId, result.content);
@@ -170,6 +171,19 @@ export class SpiderRunner {
           },
           timestamp: new Date().toISOString(),
         });
+      };
+
+      const fetchResults = await this.#spider.fetchChapters(
+        { novelId: options.novelId },
+        selectedChapters,
+        {
+          ...batchOptions,
+          onResult: handleFetchResult,
+        },
+      );
+
+      for (const result of fetchResults) {
+        await handleFetchResult(result);
       }
 
       const currentSnapshot = this.#repository.getSnapshot(this.#spider.sourceId, options.novelId);

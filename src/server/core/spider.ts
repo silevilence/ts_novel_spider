@@ -42,10 +42,12 @@ export interface ChapterFetchFailure {
 }
 
 export type ChapterFetchResult = ChapterFetchSuccess | ChapterFetchFailure;
+export type ChapterFetchResultHandler = (result: ChapterFetchResult) => void | Promise<void>;
 
 export interface SpiderBatchOptions {
   concurrency?: number;
   retryCount?: number;
+  onResult?: ChapterFetchResultHandler;
 }
 
 export interface SpiderRunContext {
@@ -126,11 +128,13 @@ export abstract class BaseHtmlSpiderAdapter implements SpiderAdapter {
           return;
         }
 
-        results[currentIndex] = await this.fetchChapterWithRetry(
+        const result = await this.fetchChapterWithRetry(
           context,
           chapter,
           options.retryCount ?? 0,
         );
+        results[currentIndex] = result;
+        await options.onResult?.(result);
       }
     };
 
