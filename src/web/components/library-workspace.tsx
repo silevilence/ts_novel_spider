@@ -3,6 +3,10 @@ import { useEffect, useState } from 'react';
 import { ChapterDirectory } from './chapter-directory';
 import type { LibraryModel } from '../services/library-model';
 import {
+  buildLibraryExportDownloadUrl,
+  type LibraryExportFormat,
+} from '../services/api';
+import {
   findPreferredReaderChapter,
   splitChapterContent,
   toLibraryDirectoryChapters,
@@ -13,12 +17,62 @@ interface LibraryWorkspaceProps {
   onOpenControl: () => void;
 }
 
+const LIBRARY_EXPORT_OPTIONS: Array<{
+  format: LibraryExportFormat;
+  label: string;
+  summary: string;
+  bestFor: string;
+  example: string;
+}> = [
+  {
+    format: 'markdown',
+    label: 'Markdown 文档',
+    summary: '像一份整理好的笔记稿，章节层次清楚，适合你后面继续改内容、做摘录或再排版。',
+    bestFor: '想继续整理内容',
+    example: '打开后会看到分卷、分章，读起来和整理资料都方便。',
+  },
+  {
+    format: 'epub',
+    label: 'EPUB 电子书',
+    summary: '最适合直接拿去阅读器、手机或平板里看，整体体验会更像一本正常电子书。',
+    bestFor: '想直接拿去阅读',
+    example: '导入阅读器后，可以像普通电子书一样翻页和跳目录。',
+  },
+  {
+    format: 'txt',
+    label: 'TXT 纯文本',
+    summary: '最省事的一份纯文字，只保留章节标题和正文，适合备份、复制或在简单设备里打开。',
+    bestFor: '想留一份纯文字备份',
+    example: '打开后就是连续的文字内容，不会有复杂排版。',
+  },
+];
+
 export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps) {
   const [isReaderDirectoryOpen, setIsReaderDirectoryOpen] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
 
   useEffect(() => {
     setIsReaderDirectoryOpen(false);
+    setIsExportDialogOpen(false);
   }, [model.location.path]);
+
+  useEffect(() => {
+    if (!isExportDialogOpen) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsExportDialogOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isExportDialogOpen]);
 
   if (model.location.view === 'page') {
     const totalNovels = model.novels.length;
@@ -395,6 +449,124 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
           <strong>{detail.media.cached}/{detail.media.total}</strong>
         </div>
       </section>
+
+      <section className="panel export-hub">
+        <div className="panel-heading split align-start">
+          <div>
+            <p className="eyebrow">文件导出</p>
+            <h2>导出文件</h2>
+            <p className="panel-note">
+              导出会使用你已经下载好的正文来生成文件。图片如果还没保存下来，也不会影响你先把正文导出去。
+            </p>
+          </div>
+
+          <div className="export-hub-actions">
+            <div className="badge-row">
+              <span className="status-badge ok">正文 {detail.stats.downloaded} 章</span>
+              <span className="status-badge state-indexed">图片缓存 {detail.media.cached}/{detail.media.total}</span>
+              <span className="count-chip accent">3 种格式</span>
+            </div>
+
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => setIsExportDialogOpen(true)}
+              disabled={detail.stats.downloaded === 0}
+            >
+              选择导出格式
+            </button>
+          </div>
+        </div>
+
+        {detail.stats.downloaded === 0 ? (
+          <div className="empty-state compact">
+            <p>当前还没有已下载章节，先补录正文后才能导出文件。</p>
+          </div>
+        ) : (
+          <div className="card export-hub-card">
+            <p className="label">导出说明</p>
+            <h3>一个入口，按用途选格式</h3>
+            <p className="library-card-copy">
+              如果你想继续整理内容，优先选 Markdown；如果要直接导入阅读器，选 EPUB；如果只想留一份纯文本备份，选 TXT。
+            </p>
+            <p className="panel-note">不确定选哪个也没关系，点开后会看到每种格式适合做什么、导出后大概是什么样子。</p>
+          </div>
+        )}
+      </section>
+
+      {isExportDialogOpen ? (
+        <div className="reader-directory-overlay export-dialog-overlay" role="presentation" onClick={() => setIsExportDialogOpen(false)}>
+          <section
+            className="export-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="library-export-dialog-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="reader-directory-drawer-header export-dialog-header">
+              <div>
+                <p className="eyebrow">选择格式</p>
+                <h2 id="library-export-dialog-title">导出 {detail.metadata.title}</h2>
+                <p className="panel-note">只要按你的使用场景选就行。点一下就会开始生成并下载文件。</p>
+              </div>
+
+              <button
+                type="button"
+                className="ghost-button reader-directory-close"
+                onClick={() => setIsExportDialogOpen(false)}
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="card export-dialog-intro">
+              <div className="badge-row">
+                <span className="status-badge ok">已下载 {detail.stats.downloaded} 章</span>
+                <span className="status-badge state-indexed">图片没保存也能先导出正文</span>
+              </div>
+              <p className="library-card-copy">
+                下面的说明主要是帮你判断哪种更适合自己。示例描述的是导出后的阅读感觉，不用纠结文件名细节。
+              </p>
+            </div>
+
+            <div className="export-option-list">
+              {LIBRARY_EXPORT_OPTIONS.map((option) => (
+                <article key={option.format} className="card export-option-card">
+                  <div className="badge-row">
+                    <span className="status-badge state-downloaded">{option.format.toUpperCase()}</span>
+                    <span className="count-chip subtle">适合：{option.bestFor}</span>
+                  </div>
+
+                  <div className="export-option-copy">
+                    <h3>{option.label}</h3>
+                    <p className="library-card-copy">{option.summary}</p>
+                  </div>
+
+                  <div className="export-option-meta">
+                    <div>
+                      <p className="label">示例</p>
+                      <strong>{option.example}</strong>
+                    </div>
+                    <div>
+                      <p className="label">推荐给</p>
+                      <strong>{option.bestFor}</strong>
+                    </div>
+                  </div>
+
+                  <div className="action-row wrap">
+                    <a
+                      className="primary-link"
+                      href={buildLibraryExportDownloadUrl(detail.sourceId, detail.metadata.novelId, option.format)}
+                    >
+                      下载 {option.format.toUpperCase()}
+                    </a>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <ChapterDirectory
         chapters={toLibraryDirectoryChapters(detail.chapters)}

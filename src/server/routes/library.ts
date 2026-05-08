@@ -4,6 +4,10 @@ import {
   type CrawlTaskSnapshot,
   ControlCenterService,
 } from '../core/control-center';
+import {
+  isLibraryExportFormat,
+  type LibraryExportFormat,
+} from '../core/export-engine';
 import type {
   LibraryChapterDetail,
   LibraryMediaAsset,
@@ -26,6 +30,15 @@ export interface LibraryChapterDetailPayload {
 
 export interface LibraryMediaPayload {
   media: LibraryMediaAsset;
+}
+
+export interface LibraryExportPayload {
+  export: {
+    format: LibraryExportFormat;
+    fileName: string;
+    generatedAt: string;
+    size: number;
+  };
 }
 
 export interface LibraryRouterOptions {
@@ -116,6 +129,38 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     }
 
     response.sendFile(filePath);
+  });
+
+  router.get('/novels/:sourceId/:novelId/exports/:format/download', async (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const format = request.params.format;
+
+      if (!format || !isLibraryExportFormat(format)) {
+        response.status(400).json({
+          message: `Unsupported library export format: ${format ?? 'unknown'}.`,
+        });
+        return;
+      }
+
+      const artifact = await service.exportLibraryNovel(sourceId, novelId, format);
+
+      if (!artifact) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      response.setHeader('Content-Type', artifact.contentType);
+      response.setHeader('X-Library-Export-Generated-At', artifact.generatedAt);
+      response.setHeader('X-Library-Export-Size', String(artifact.size));
+      response.download(artifact.filePath, artifact.fileName);
+    } catch (error) {
+      response.status(422).json({
+        message: error instanceof Error ? error.message : 'Library export failed.',
+      });
+    }
   });
 
   return router;

@@ -17,6 +17,11 @@ import {
   type LibraryNovelDetail,
   type LibraryNovelSummary,
 } from './offline-library';
+import {
+  LocalExportEngine,
+  type GeneratedLibraryExport,
+  type LibraryExportFormat,
+} from './export-engine';
 import { SqliteNovelRepository } from './novel-repository';
 import { SpiderRunner } from './spider-runner';
 import {
@@ -143,6 +148,7 @@ export interface ControlCenterServiceOptions {
   spiders?: SpiderRegistryEntry[];
   networkProxy?: NetworkProxyService;
   offlineAssetStoragePath?: string;
+  exportStoragePath?: string;
   assetFetchImpl?: typeof fetch;
 }
 
@@ -156,6 +162,7 @@ export class ControlCenterService {
   readonly #registry: Map<string, SpiderRegistryEntry>;
   readonly #tasks = new Map<string, CrawlTaskState>();
   readonly #offlineLibrary: OfflineLibraryAssetService;
+  readonly #exportEngine: LocalExportEngine;
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
@@ -167,6 +174,10 @@ export class ControlCenterService {
     this.#offlineLibrary = new OfflineLibraryAssetService({
       ...(options.offlineAssetStoragePath ? { storageRoot: options.offlineAssetStoragePath } : {}),
       ...(options.assetFetchImpl ? { fetchImpl: options.assetFetchImpl } : {}),
+    });
+    this.#exportEngine = new LocalExportEngine({
+      ...(options.exportStoragePath ? { outputRoot: options.exportStoragePath } : { outputRoot: defaultExportStoragePath() }),
+      assetService: this.#offlineLibrary,
     });
     this.#registry = new Map(
       (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
@@ -245,6 +256,20 @@ export class ControlCenterService {
 
   getLibraryActiveTask(sourceId: string, novelId: string): CrawlTaskSnapshot | null {
     return this.findActiveTask(sourceId, novelId);
+  }
+
+  async exportLibraryNovel(
+    sourceId: string,
+    novelId: string,
+    format: LibraryExportFormat,
+  ): Promise<GeneratedLibraryExport | null> {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+
+    if (!snapshot) {
+      return null;
+    }
+
+    return this.#exportEngine.generate(snapshot, format);
   }
 
   getNetworkProxyState(): NetworkProxyState {
@@ -611,5 +636,11 @@ function defaultNetworkProxyConfigPath(): string {
   const dataDir = path.resolve(process.cwd(), '.data');
   fs.mkdirSync(dataDir, { recursive: true });
   return path.join(dataDir, 'network-proxy.json');
+}
+
+function defaultExportStoragePath(): string {
+  const exportDir = path.resolve(process.cwd(), 'data', 'exports');
+  fs.mkdirSync(exportDir, { recursive: true });
+  return exportDir;
 }
 

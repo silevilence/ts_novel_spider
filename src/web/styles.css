@@ -345,6 +345,24 @@ button:focus-visible {
   box-shadow: 0 16px 32px rgba(255, 140, 66, 0.2);
 }
 
+.primary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.8rem 1rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ff8c42, #e06b2f);
+  color: #09111a;
+  box-shadow: 0 16px 32px rgba(255, 140, 66, 0.2);
+  text-decoration: none;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.primary-link:hover {
+  transform: translateY(-1px);
+}
+
 .secondary-button,
 .ghost-button {
   background: rgba(8, 24, 39, 0.86);
@@ -735,6 +753,89 @@ button:focus-visible {
   color: var(--muted);
 }
 
+.export-hub {
+  gap: 1rem;
+}
+
+.export-hub-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0.8rem;
+}
+
+.export-hub-card {
+  display: grid;
+  gap: 0.65rem;
+  padding: 1.1rem 1.2rem;
+  border-color: rgba(127, 208, 255, 0.12);
+  background: linear-gradient(180deg, rgba(11, 28, 43, 0.94), rgba(8, 23, 36, 0.84));
+}
+
+.export-dialog-overlay {
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
+}
+
+.export-dialog {
+  width: min(920px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: rgba(6, 18, 30, 0.98);
+  box-shadow: 0 26px 90px rgba(2, 6, 12, 0.52);
+}
+
+.export-dialog-header {
+  margin-bottom: 1rem;
+}
+
+.export-dialog-intro {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.export-option-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.export-option-card {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.export-option-copy {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.export-option-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.export-option-meta > div {
+  padding: 0.85rem 0.9rem;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(6, 19, 30, 0.78);
+}
+
+.export-option-meta p,
+.export-option-meta strong {
+  margin: 0;
+}
+
+.export-option-meta strong {
+  display: block;
+  margin-top: 0.3rem;
+}
+
 .reader-layout {
   display: block;
 }
@@ -1042,6 +1143,20 @@ button:focus-visible {
   .reader-directory-drawer {
     width: min(100vw, 100%);
     padding: 0.85rem;
+  }
+
+  .export-hub-actions {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .export-dialog {
+    width: min(100vw, 100%);
+    padding: 0.85rem;
+  }
+
+  .export-option-meta {
+    grid-template-columns: 1fr;
   }
 
   .toolbar-search {

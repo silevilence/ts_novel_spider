@@ -13,6 +13,8 @@ import type {
   LibraryNovelSummaryPayload,
 } from '../../server/routes/library';
 
+export type LibraryExportFormat = 'markdown' | 'txt' | 'epub';
+
 export interface UpdateNetworkProxyInput {
   enabled: boolean;
   protocol: 'http' | 'https';
@@ -157,6 +159,14 @@ export async function cacheLibraryMedia(
   }
 
   return (await response.json()) as LibraryMediaPayload;
+}
+
+export function buildLibraryExportDownloadUrl(
+  sourceId: string,
+  novelId: string,
+  format: LibraryExportFormat,
+): string {
+  return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/exports/${encodeURIComponent(format)}/download`;
 }
 
 async function requestJson<TPayload>(url: string): Promise<TPayload> {

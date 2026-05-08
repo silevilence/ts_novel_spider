@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import JSZip from 'jszip';
+
 import { createServerApp } from '../app';
 import { ControlCenterService } from '../core/control-center';
 import { SqliteNovelRepository } from '../core/novel-repository';
@@ -15,6 +17,7 @@ function createLibraryServer() {
     repository,
     spiders: [],
     offlineAssetStoragePath: path.join(tempDir, 'assets'),
+    exportStoragePath: path.join(tempDir, 'exports'),
   });
 
   repository.saveMetadata('syosetu', {
@@ -55,7 +58,7 @@ function createLibraryServer() {
     title: '第一章',
     volumeTitle: '第一卷',
     url: 'https://example.com/n1000lib/1',
-    content: '第一段。\n\n插图 https://cdn.example.com/cover/chapter-1.png',
+    content: '第一段。\n\n![插图](https://cdn.example.com/cover/chapter-1.png)',
   });
   repository.saveChapterContent('syosetu', 'n1000lib', {
     chapterId: 'chapter-2',
@@ -145,6 +148,76 @@ test('library routes expose stored novels, detail stats and chapter reading data
       chapterPayload.chapter.mediaAssets[0]?.sourceUrl,
       'https://cdn.example.com/cover/chapter-1.png',
     );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
+test('library routes export markdown, txt and epub packages for a stored novel', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const markdownResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/exports/markdown/download`);
+    assert.equal(markdownResponse.status, 200);
+    assert.match(markdownResponse.headers.get('content-type') ?? '', /application\/zip/);
+    assert.match(markdownResponse.headers.get('content-disposition') ?? '', /n1000lib/);
+    const markdownZip = await JSZip.loadAsync(Buffer.from(await markdownResponse.arrayBuffer()));
+    const markdownEntryName = Object.keys(markdownZip.files).find((entry) => entry.endsWith('.md'));
+    assert.ok(markdownEntryName);
+    const markdown = await markdownZip.file(markdownEntryName!)?.async('string');
+    assert.match(markdown ?? '', /^# 离线书库样例/m);
+    assert.match(markdown ?? '', /## 第1卷/m);
+    assert.match(markdown ?? '', /### 第1章 第一章/m);
+    assert.match(markdown ?? '', /!\[插图\]\(https:\/\/cdn\.example\.com\/cover\/chapter-1\.png\)/);
+
+    const textResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/exports/txt/download`);
+    assert.equal(textResponse.status, 200);
+    assert.match(textResponse.headers.get('content-type') ?? '', /text\/plain/);
+    const text = await textResponse.text();
+    assert.match(text, /^离线书库样例/m);
+    assert.match(text, /第1章 第一章/);
+    assert.match(text, /第1章 第一章\n第一段。/);
+    assert.doesNotMatch(text, /第1章 第一章\n\n第一段。/);
+    assert.doesNotMatch(text, /第一卷/);
+
+    const epubResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/exports/epub/download`);
+    assert.equal(epubResponse.status, 200);
+    assert.match(epubResponse.headers.get('content-type') ?? '', /application\/epub\+zip/);
+    const epubZip = await JSZip.loadAsync(Buffer.from(await epubResponse.arrayBuffer()));
+    assert.equal(await epubZip.file('mimetype')?.async('string'), 'application/epub+zip');
+    const nav = await epubZip.file('OEBPS/nav.xhtml')?.async('string');
+    assert.match(nav ?? '', /<a href="volume-0001\.xhtml">第1卷<\/a>/);
+    assert.match(nav ?? '', /第1章 第一章/);
+    const intro = await epubZip.file('OEBPS/intro.xhtml')?.async('string');
+    assert.match(intro ?? '', /离线书库样例/);
+    const volume1 = await epubZip.file('OEBPS/volume-0001.xhtml')?.async('string');
+    assert.match(volume1 ?? '', /第1卷/);
+    assert.match(volume1 ?? '', /chapter-0001.xhtml/);
+    const chapter1 = await epubZip.file('OEBPS/chapter-0001.xhtml')?.async('string');
+    assert.match(chapter1 ?? '', /第1章 第一章/);
+    assert.match(chapter1 ?? '', /第1卷/);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
