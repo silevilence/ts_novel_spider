@@ -10,8 +10,9 @@
     "build": "npm run build:web && npm run build:server",
     "build:server": "tsc -p tsconfig.server.json",
     "build:web": "vite build --config src/web/vite.config.ts",
-    "test": "npm run test:server",
+    "test": "npm run test:server && npm run test:web",
     "test:server": "tsx --test src/server/**/*.test.ts",
+    "test:web": "tsx --test src/web/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p src/web/tsconfig.json --noEmit",
     "start": "node dist/server/index.js"
   },

@@ -14,15 +14,15 @@ export function StatusPanel({ health, errorMessage, sourceCount, currentTask, cu
     <section className="status-panel">
       <div>
         <p className="eyebrow">运行总览</p>
-        <h2>前端管控中心与后台任务已接通</h2>
+        <h2>当前状态</h2>
       </div>
       <dl>
         <div>
-          <dt>后端服务</dt>
-          <dd>{health?.status ?? 'loading'}</dd>
+          <dt>服务状态</dt>
+          <dd>{health?.status ?? '加载中'}</dd>
         </div>
         <div>
-          <dt>已挂载源</dt>
+          <dt>可用站点</dt>
           <dd>{sourceCount > 0 ? `${sourceCount} 个` : '加载中'}</dd>
         </div>
         <div>
@@ -30,7 +30,7 @@ export function StatusPanel({ health, errorMessage, sourceCount, currentTask, cu
           <dd>{currentTask ? `${currentTaskSourceLabel} / ${formatTaskStatus(currentTask.status)}` : '空闲'}</dd>
         </div>
         <div>
-          <dt>最近心跳</dt>
+          <dt>最近更新时间</dt>
           <dd>{health?.timestamp ?? errorMessage ?? '等待响应'}</dd>
         </div>
       </dl>

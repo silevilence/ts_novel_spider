@@ -25,9 +25,9 @@ export function TaskMonitor({
       <div className="panel-heading split">
         <div>
           <p className="eyebrow">任务监控</p>
-          <h2>后台守护态执行与实时日志</h2>
+          <h2>实时进度和下载记录</h2>
         </div>
-        <span className={`stream-indicator stream-${streamState}`}>SSE {streamState}</span>
+        <span className={`stream-indicator stream-${streamState}`}>实时同步 {formatStreamState(streamState)}</span>
       </div>
 
       <div className="task-layout">
@@ -74,7 +74,7 @@ export function TaskMonitor({
             </>
           ) : (
             <div className="empty-state compact">
-              <p>任务创建后，这里会展示后台进度、失败节点与日志流。</p>
+              <p>开始下载后，这里会显示进度、错误信息和最近记录。</p>
             </div>
           )}
         </div>
@@ -114,5 +114,16 @@ function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
       return '已失败';
     default:
       return status;
+  }
+}
+
+function formatStreamState(streamState: TaskMonitorProps['streamState']): string {
+  switch (streamState) {
+    case 'connected':
+      return '正常';
+    case 'reconnecting':
+      return '重连中';
+    default:
+      return '未连接';
   }
 }

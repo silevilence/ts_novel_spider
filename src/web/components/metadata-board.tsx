@@ -14,10 +14,10 @@ export function MetadataBoard({ preview, loading, errorMessage }: MetadataBoardP
     <section className="panel panel-grid metadata-board">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">元数据看板</p>
-          <h2>小说基础信息与本地快照</h2>
+          <p className="eyebrow">作品信息</p>
+          <h2>作品简介和下载情况</h2>
         </div>
-        <p className="panel-note">{loading ? '正在解析远端信息页与目录...' : errorMessage ?? '优先对照本地 SQLite 快照，标记已下载与新增章节。'}</p>
+        <p className="panel-note">{loading ? '正在读取作品信息和章节目录...' : errorMessage ?? '这里会显示作品简介，并标记哪些章节已经下载、哪些是新章节。'}</p>
       </div>
 
       {metadata ? (
@@ -63,7 +63,7 @@ export function MetadataBoard({ preview, loading, errorMessage }: MetadataBoardP
         </>
       ) : (
         <div className="card empty-state span-full">
-          <p>选择爬虫并输入目标 ID 后，点击“解析目录”开始载入元数据与章节索引。</p>
+          <p>选择站点并输入作品编号后，点击“解析目录”即可查看作品信息。</p>
         </div>
       )}
     </section>

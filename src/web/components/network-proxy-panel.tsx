@@ -6,6 +6,7 @@ import {
   validateNetworkProxy,
   type UpdateNetworkProxyInput,
 } from '../services/api';
+import type { NoticeInput } from '../services/control-center-model';
 import type { ControlNetworkProxyPayload } from '../../server/routes/control-center';
 
 interface ProxyDraft {
@@ -21,7 +22,11 @@ interface ProxyDraft {
 
 const DEFAULT_TARGET_URL = 'https://ncode.syosetu.com/';
 
-export function NetworkProxyPanel() {
+interface NetworkProxyPanelProps {
+  onNotice?: (notice: NoticeInput) => void;
+}
+
+export function NetworkProxyPanel({ onNotice }: NetworkProxyPanelProps) {
   const [state, setState] = useState<ControlNetworkProxyPayload | null>(null);
   const [draft, setDraft] = useState<ProxyDraft>(() => createEmptyDraft());
   const [loading, setLoading] = useState(true);
@@ -70,8 +75,15 @@ export function NetworkProxyPanel() {
     try {
       const payload = await updateNetworkProxy(toUpdateInput(draft));
       hydrateState(payload);
+      onNotice?.({
+        tone: 'success',
+        title: '代理配置已保存',
+        message: formatProxySummary(payload.config),
+      });
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to save proxy config.');
+      const message = error instanceof Error ? error.message : 'Failed to save proxy config.';
+      setErrorMessage(message);
+      onNotice?.({ tone: 'error', title: '代理配置保存失败', message });
     } finally {
       setSaving(false);
     }
@@ -86,8 +98,15 @@ export function NetworkProxyPanel() {
         setState(payload);
         setErrorMessage(null);
       });
+      onNotice?.({
+        tone: payload.validation?.ok ? 'success' : 'error',
+        title: '代理测试完成',
+        message: payload.validation?.message ?? '代理连接测试已完成。',
+      });
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Proxy validation failed.');
+      const message = error instanceof Error ? error.message : 'Proxy validation failed.';
+      setErrorMessage(message);
+      onNotice?.({ tone: 'error', title: '代理测试失败', message });
     } finally {
       setValidating(false);
     }
@@ -101,10 +120,10 @@ export function NetworkProxyPanel() {
     <section className="panel proxy-panel">
       <div className="panel-heading split align-start">
         <div>
-          <p className="eyebrow">网络代理策略</p>
-          <h2>代理路由调度与全局下发</h2>
+          <p className="eyebrow">网络代理</p>
+          <h2>设置代理连接</h2>
           <p className="panel-note">
-            为真实站点抓取请求配置统一代理出口。保存后，Syosetu 与 Syosetu18 的预览和任务抓取都会复用这份配置。
+            如果访问站点需要代理，可以在这里统一设置。保存后，后续预览和下载都会使用这份配置。
           </p>
         </div>
         <div className="badge-row">
@@ -210,11 +229,11 @@ export function NetworkProxyPanel() {
       <div className="card proxy-validation-card">
         <div className="split align-start">
           <div>
-            <h3>链路状态</h3>
+            <h3>连接状态</h3>
             <p className="panel-note">
               {validation
                 ? `${validation.message} ${validation.statusCode ? `HTTP ${validation.statusCode} · ` : ''}${validation.latencyMs} ms`
-                : '保存配置后可对目标地址发起探测，请先保存再校验。'}
+                : '先保存设置，再测试是否可以正常连接目标地址。'}
             </p>
           </div>
           <div className="badge-row">
@@ -235,11 +254,11 @@ export function NetworkProxyPanel() {
           onClick={handleValidate}
           disabled={loading || saving || validating || state === null || isDirty}
         >
-          {validating ? '校验中...' : '校验链路'}
+          {validating ? '测试中...' : '测试连接'}
         </button>
       </div>
 
-      {isDirty ? <p className="panel-note">表单存在未保存变更，校验按钮会在保存后恢复可用。</p> : null}
+      {isDirty ? <p className="panel-note">你有未保存的修改，先保存后才能测试连接。</p> : null}
       {errorMessage ? <p className="error-text">{errorMessage}</p> : null}
     </section>
   );
