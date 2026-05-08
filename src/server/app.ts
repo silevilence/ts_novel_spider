@@ -6,6 +6,7 @@ import express, { type Express } from 'express';
 import { ControlCenterService } from './core/control-center';
 import { healthRouter } from './routes/health';
 import { createControlCenterRouter } from './routes/control-center';
+import { createLibraryRouter } from './routes/library';
 
 export interface ServerAppOptions {
   controlCenter?: ControlCenterService;
@@ -20,6 +21,7 @@ export function createServerApp(options: ServerAppOptions = {}): Express {
   app.use(express.json());
   app.use('/api/health', healthRouter);
   app.use('/api/control', createControlCenterRouter({ service: controlCenter }));
+  app.use('/api/library', createLibraryRouter({ service: controlCenter }));
 
   app.use(express.static(webDistPath));
 

@@ -1,9 +1,17 @@
 import type { ResolvedChapterState } from '../../server/core/spider';
 
-export interface ChapterVolumeGroup {
+type GroupableChapter = ResolvedChapterState & {
+  media?: {
+    total: number;
+    cached: number;
+    pending: number;
+  };
+};
+
+export interface ChapterVolumeGroup<TChapter extends GroupableChapter = GroupableChapter> {
   id: string;
   title: string;
-  chapters: ResolvedChapterState[];
+  chapters: TChapter[];
   summary: {
     total: number;
     pendingCount: number;
@@ -13,8 +21,10 @@ export interface ChapterVolumeGroup {
   };
 }
 
-export function groupResolvedChapters(chapters: ResolvedChapterState[]): ChapterVolumeGroup[] {
-  const groups = new Map<string, ResolvedChapterState[]>();
+export function groupResolvedChapters<TChapter extends GroupableChapter>(
+  chapters: TChapter[],
+): ChapterVolumeGroup<TChapter>[] {
+  const groups = new Map<string, TChapter[]>();
 
   for (const chapter of chapters) {
     const groupTitle = chapter.volumeTitle?.trim() || '未分卷';
@@ -42,7 +52,10 @@ export function groupResolvedChapters(chapters: ResolvedChapterState[]): Chapter
   }));
 }
 
-export function filterChapterGroups(groups: ChapterVolumeGroup[], query: string): ChapterVolumeGroup[] {
+export function filterChapterGroups<TChapter extends GroupableChapter>(
+  groups: ChapterVolumeGroup<TChapter>[],
+  query: string,
+): ChapterVolumeGroup<TChapter>[] {
   const normalizedQuery = query.trim().toLowerCase();
 
   if (normalizedQuery.length === 0) {
@@ -70,7 +83,7 @@ export function filterChapterGroups(groups: ChapterVolumeGroup[], query: string)
           downloadedCount: chapters.filter((chapter) => chapter.wasDownloaded).length,
           failedCount: chapters.filter((chapter) => chapter.status === 'failed').length,
         },
-      } satisfies ChapterVolumeGroup;
+      } satisfies ChapterVolumeGroup<TChapter>;
     })
-    .filter((group): group is ChapterVolumeGroup => group !== null);
+    .filter((group): group is ChapterVolumeGroup<TChapter> => group !== null);
 }

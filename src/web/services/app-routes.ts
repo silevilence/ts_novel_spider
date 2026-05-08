@@ -1,4 +1,13 @@
-export type AppRouteId = 'control' | 'monitor' | 'settings';
+export type AppRouteId = 'control' | 'library' | 'monitor' | 'settings';
+
+export interface AppLocation {
+  route: AppRouteDefinition;
+  path: string;
+  view: 'page' | 'detail' | 'reader';
+  sourceId: string | null;
+  novelId: string | null;
+  chapterId: string | null;
+}
 
 export interface AppRouteDefinition {
   id: AppRouteId;
@@ -15,6 +24,13 @@ export const APP_ROUTES: AppRouteDefinition[] = [
     label: '开始抓取',
     title: '开始抓取',
     description: '选择站点和作品后，先查看目录，再挑选章节开始下载。',
+  },
+  {
+    id: 'library',
+    path: '/library',
+    label: '本地书库',
+    title: '本地书库',
+    description: '查看已经下载到本地的小说，继续补抓缺少章节，或者直接开始阅读。',
   },
   {
     id: 'monitor',
@@ -43,6 +59,10 @@ export function normalizePathname(pathname: string): string {
 }
 
 export function resolveAppRoute(pathname: string): AppRouteDefinition {
+  return resolveAppLocation(pathname).route;
+}
+
+export function resolveAppLocation(pathname: string): AppLocation {
   const normalizedPath = normalizePathname(pathname);
   const fallbackRoute = APP_ROUTES[0];
 
@@ -50,5 +70,52 @@ export function resolveAppRoute(pathname: string): AppRouteDefinition {
     throw new Error('APP_ROUTES must define at least one route.');
   }
 
-  return APP_ROUTES.find((route) => route.path === normalizedPath) ?? fallbackRoute;
+  const libraryRoute = APP_ROUTES.find((route) => route.id === 'library');
+
+  if (!libraryRoute) {
+    throw new Error('APP_ROUTES must define a library route.');
+  }
+
+  const readerMatch = normalizedPath.match(/^\/library\/([^/]+)\/([^/]+)\/read\/([^/]+)$/);
+  if (readerMatch) {
+    return {
+      route: libraryRoute,
+      path: normalizedPath,
+      view: 'reader',
+      sourceId: decodeURIComponent(readerMatch[1] ?? ''),
+      novelId: decodeURIComponent(readerMatch[2] ?? ''),
+      chapterId: decodeURIComponent(readerMatch[3] ?? ''),
+    };
+  }
+
+  const detailMatch = normalizedPath.match(/^\/library\/([^/]+)\/([^/]+)$/);
+  if (detailMatch) {
+    return {
+      route: libraryRoute,
+      path: normalizedPath,
+      view: 'detail',
+      sourceId: decodeURIComponent(detailMatch[1] ?? ''),
+      novelId: decodeURIComponent(detailMatch[2] ?? ''),
+      chapterId: null,
+    };
+  }
+
+  const route = APP_ROUTES.find((candidate) => candidate.path === normalizedPath) ?? fallbackRoute;
+
+  return {
+    route,
+    path: route.path,
+    view: 'page',
+    sourceId: null,
+    novelId: null,
+    chapterId: null,
+  };
+}
+
+export function buildLibraryNovelPath(sourceId: string, novelId: string): string {
+  return `/library/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}`;
+}
+
+export function buildLibraryReaderPath(sourceId: string, novelId: string, chapterId: string): string {
+  return `${buildLibraryNovelPath(sourceId, novelId)}/read/${encodeURIComponent(chapterId)}`;
 }

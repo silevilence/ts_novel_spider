@@ -2,21 +2,27 @@ import { useEffect, useState } from 'react';
 
 import { AppShell } from './components/app-shell';
 import { ControlConsole } from './components/control-console';
+import { LibraryWorkspace } from './components/library-workspace';
 import { MonitorDashboard } from './components/monitor-dashboard';
 import { NotificationCenter } from './components/notification-center';
 import { SystemPreferences } from './components/system-preferences';
-import { APP_ROUTES, normalizePathname, resolveAppRoute } from './services/app-routes';
+import {
+  APP_ROUTES,
+  normalizePathname,
+  resolveAppLocation,
+} from './services/app-routes';
 import {
   type NoticeInput,
   useControlCenterModel,
 } from './services/control-center-model';
+import { useLibraryModel } from './services/library-model';
 
 interface AppNotice extends NoticeInput {
   id: string;
 }
 
 export function App() {
-  const [currentPath, setCurrentPath] = useState(() => resolveAppRoute(window.location.pathname).path);
+  const [currentLocation, setCurrentLocation] = useState(() => resolveAppLocation(window.location.pathname));
   const [notices, setNotices] = useState<AppNotice[]>([]);
 
   function pushNotice(input: NoticeInput) {
@@ -29,18 +35,23 @@ export function App() {
   }
 
   const model = useControlCenterModel(pushNotice);
-  const activeRoute = resolveAppRoute(currentPath);
+  const activeRoute = currentLocation.route;
+  const libraryModel = useLibraryModel({
+    location: currentLocation,
+    onNavigate: navigate,
+    onNotice: pushNotice,
+  });
 
   useEffect(() => {
     const pathname = normalizePathname(window.location.pathname);
-    const resolvedRoute = resolveAppRoute(pathname);
+    const resolvedLocation = resolveAppLocation(pathname);
 
-    if (pathname !== resolvedRoute.path) {
-      window.history.replaceState(null, '', resolvedRoute.path);
+    if (pathname !== resolvedLocation.path) {
+      window.history.replaceState(null, '', resolvedLocation.path);
     }
 
     const handlePopState = () => {
-      setCurrentPath(resolveAppRoute(window.location.pathname).path);
+      setCurrentLocation(resolveAppLocation(window.location.pathname));
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -50,14 +61,14 @@ export function App() {
   }, []);
 
   function navigate(nextPath: string) {
-    const resolvedRoute = resolveAppRoute(nextPath);
+    const resolvedLocation = resolveAppLocation(nextPath);
 
-    if (resolvedRoute.path === currentPath) {
+    if (resolvedLocation.path === currentLocation.path) {
       return;
     }
 
-    window.history.pushState(null, '', resolvedRoute.path);
-    setCurrentPath(resolvedRoute.path);
+    window.history.pushState(null, '', resolvedLocation.path);
+    setCurrentLocation(resolvedLocation);
   }
 
   return (
@@ -74,6 +85,9 @@ export function App() {
       >
         {activeRoute.id === 'control' ? (
           <ControlConsole model={model} onOpenSettings={() => navigate('/settings')} />
+        ) : null}
+        {activeRoute.id === 'library' ? (
+          <LibraryWorkspace model={libraryModel} onOpenControl={() => navigate('/')} />
         ) : null}
         {activeRoute.id === 'monitor' ? <MonitorDashboard model={model} /> : null}
         {activeRoute.id === 'settings' ? (

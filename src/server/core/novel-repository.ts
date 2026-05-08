@@ -20,6 +20,16 @@ interface NovelRow {
   updated_at: string;
 }
 
+export interface StoredNovelLibraryRow {
+  sourceId: string;
+  metadata: NovelMetadata;
+  updatedAt: string;
+  downloadedChapters: number;
+  failedChapters: number;
+  indexedChapters: number;
+  latestDownloadedAt: string | null;
+}
+
 interface ChapterRow {
   source_id: string;
   novel_id: string;
@@ -80,6 +90,73 @@ export class SqliteNovelRepository {
       chapters: chapterRows.map(mapChapterRow),
       updatedAt: novelRow.updated_at,
     };
+  }
+
+  listNovels(): StoredNovelLibraryRow[] {
+    const rows = this.#database
+      .prepare(
+        `
+          SELECT
+            n.source_id,
+            n.novel_id,
+            n.title,
+            n.author,
+            n.description,
+            n.tags_json,
+            n.chapter_count,
+            n.info_page_url,
+            n.updated_at,
+            COALESCE(SUM(CASE WHEN c.status = 'downloaded' THEN 1 ELSE 0 END), 0) AS downloaded_chapters,
+            COALESCE(SUM(CASE WHEN c.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_chapters,
+            COALESCE(SUM(CASE WHEN c.status = 'indexed' THEN 1 ELSE 0 END), 0) AS indexed_chapters,
+            MAX(c.downloaded_at) AS latest_downloaded_at
+          FROM novels n
+          LEFT JOIN chapters c
+            ON c.source_id = n.source_id
+           AND c.novel_id = n.novel_id
+          GROUP BY
+            n.source_id,
+            n.novel_id,
+            n.title,
+            n.author,
+            n.description,
+            n.tags_json,
+            n.chapter_count,
+            n.info_page_url,
+            n.updated_at
+          ORDER BY n.updated_at DESC, n.title COLLATE NOCASE ASC
+        `,
+      )
+      .all() as Array<NovelRow & {
+      downloaded_chapters: number;
+      failed_chapters: number;
+      indexed_chapters: number;
+      latest_downloaded_at: string | null;
+    }>;
+
+    return rows.map((row) => ({
+      sourceId: row.source_id,
+      metadata: mapNovelRow(row),
+      updatedAt: row.updated_at,
+      downloadedChapters: row.downloaded_chapters,
+      failedChapters: row.failed_chapters,
+      indexedChapters: row.indexed_chapters,
+      latestDownloadedAt: row.latest_downloaded_at,
+    }));
+  }
+
+  getChapter(sourceId: string, novelId: string, chapterId: string): StoredChapterRecord | null {
+    const chapterRow = this.#database
+      .prepare(
+        `
+          SELECT source_id, novel_id, chapter_id, chapter_index, title, volume_title, url, content, status, error_message, downloaded_at, updated_at
+          FROM chapters
+          WHERE source_id = ? AND novel_id = ? AND chapter_id = ?
+        `,
+      )
+      .get(sourceId, novelId, chapterId) as ChapterRow | undefined;
+
+    return chapterRow ? mapChapterRow(chapterRow) : null;
   }
 
   saveMetadata(sourceId: string, metadata: NovelMetadata): void {

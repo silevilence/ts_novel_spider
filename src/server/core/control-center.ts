@@ -11,6 +11,12 @@ import {
   type NetworkProxyConfigInput,
   type NetworkProxyState,
 } from './network-proxy';
+import {
+  OfflineLibraryAssetService,
+  type LibraryChapterDetail,
+  type LibraryNovelDetail,
+  type LibraryNovelSummary,
+} from './offline-library';
 import { SqliteNovelRepository } from './novel-repository';
 import { SpiderRunner } from './spider-runner';
 import {
@@ -136,6 +142,8 @@ export interface ControlCenterServiceOptions {
   repository?: SqliteNovelRepository;
   spiders?: SpiderRegistryEntry[];
   networkProxy?: NetworkProxyService;
+  offlineAssetStoragePath?: string;
+  assetFetchImpl?: typeof fetch;
 }
 
 const MAX_STORED_EVENTS = 200;
@@ -147,6 +155,7 @@ export class ControlCenterService {
   readonly #ownsNetworkProxy: boolean;
   readonly #registry: Map<string, SpiderRegistryEntry>;
   readonly #tasks = new Map<string, CrawlTaskState>();
+  readonly #offlineLibrary: OfflineLibraryAssetService;
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
@@ -155,6 +164,10 @@ export class ControlCenterService {
     this.#repository = options.repository ?? new SqliteNovelRepository(databasePath);
     this.#networkProxy =
       options.networkProxy ?? new NetworkProxyService({ storageFilePath: defaultNetworkProxyConfigPath() });
+    this.#offlineLibrary = new OfflineLibraryAssetService({
+      ...(options.offlineAssetStoragePath ? { storageRoot: options.offlineAssetStoragePath } : {}),
+      ...(options.assetFetchImpl ? { fetchImpl: options.assetFetchImpl } : {}),
+    });
     this.#registry = new Map(
       (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
     );
@@ -176,6 +189,62 @@ export class ControlCenterService {
 
   listSources(): SpiderSourceDescriptor[] {
     return [...this.#registry.values()].map((entry) => entry.descriptor);
+  }
+
+  listLibraryNovels(): LibraryNovelSummary[] {
+    return this.#repository.listNovels().map((novel) => ({
+      sourceId: novel.sourceId,
+      metadata: novel.metadata,
+      updatedAt: novel.updatedAt,
+      downloadedChapters: novel.downloadedChapters,
+      failedChapters: novel.failedChapters,
+      indexedChapters: novel.indexedChapters,
+      latestDownloadedAt: novel.latestDownloadedAt,
+    }));
+  }
+
+  getLibraryNovel(sourceId: string, novelId: string): LibraryNovelDetail | null {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    return snapshot ? this.#offlineLibrary.buildNovelDetail(snapshot) : null;
+  }
+
+  getLibraryChapter(sourceId: string, novelId: string, chapterId: string): LibraryChapterDetail | null {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    return snapshot ? this.#offlineLibrary.buildChapterDetail(snapshot, chapterId) : null;
+  }
+
+  async cacheLibraryChapterMedia(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+    mediaId: string,
+  ) {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+
+    if (!snapshot) {
+      return null;
+    }
+
+    return this.#offlineLibrary.cacheMediaAsset(snapshot, chapterId, mediaId);
+  }
+
+  getLibraryMediaFilePath(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+    mediaId: string,
+  ): string | null {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+
+    if (!snapshot) {
+      return null;
+    }
+
+    return this.#offlineLibrary.getCachedMediaFilePath(snapshot, chapterId, mediaId);
+  }
+
+  getLibraryActiveTask(sourceId: string, novelId: string): CrawlTaskSnapshot | null {
+    return this.findActiveTask(sourceId, novelId);
   }
 
   getNetworkProxyState(): NetworkProxyState {

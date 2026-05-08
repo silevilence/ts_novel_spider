@@ -1,34 +1,63 @@
 import { useDeferredValue, useEffect, useState } from 'react';
 
-import type { ResolvedChapterState } from '../../server/core/spider';
+import type { ChapterPersistStatus } from '../../server/core/spider';
 import {
   filterChapterGroups,
   groupResolvedChapters,
 } from '../services/chapter-groups';
 
+export interface ChapterDirectoryEntry {
+  id: string;
+  index: number;
+  title: string;
+  url: string;
+  volumeTitle?: string;
+  status: ChapterPersistStatus;
+  isNew: boolean;
+  wasDownloaded: boolean;
+  media?: {
+    total: number;
+    cached: number;
+    pending: number;
+  };
+}
+
 interface ChapterDirectoryProps {
-  chapters: ResolvedChapterState[];
-  selectedChapterIds: string[];
-  busy: boolean;
+  chapters: ChapterDirectoryEntry[];
+  mode?: 'select' | 'inspect';
+  selectedChapterIds?: string[];
+  activeChapterId?: string | null;
+  busy?: boolean;
   loading: boolean;
-  onToggleChapter: (chapterId: string) => void;
-  onSelectAll: () => void;
-  onSelectPending: () => void;
-  onSelectFailed: () => void;
-  onClearSelection: () => void;
+  title?: string;
+  subtitle?: string;
+  emptyMessage?: string;
+  onToggleChapter?: (chapterId: string) => void;
+  onSelectAll?: () => void;
+  onSelectPending?: () => void;
+  onSelectFailed?: () => void;
+  onClearSelection?: () => void;
+  onPickChapter?: (chapterId: string) => void;
 }
 
 export function ChapterDirectory({
   chapters,
-  selectedChapterIds,
-  busy,
+  mode = 'select',
+  selectedChapterIds = [],
+  activeChapterId = null,
+  busy = false,
   loading,
+  title = '选择要下载的章节',
+  subtitle,
+  emptyMessage = '读取目录后，这里会显示所有章节。',
   onToggleChapter,
   onSelectAll,
   onSelectPending,
   onSelectFailed,
   onClearSelection,
+  onPickChapter,
 }: ChapterDirectoryProps) {
+  const selectionMode = mode === 'select';
   const selectedSet = new Set(selectedChapterIds);
   const [query, setQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
@@ -55,21 +84,25 @@ export function ChapterDirectory({
       <div className="panel-heading split">
         <div>
           <p className="eyebrow">章节目录</p>
-          <h2>选择要下载的章节</h2>
+          <h2>{title}</h2>
         </div>
         <div className="action-row wrap">
-          <button type="button" className="ghost-button" onClick={onSelectAll} disabled={busy || chapters.length === 0}>
-            全选
-          </button>
-          <button type="button" className="ghost-button" onClick={onSelectPending} disabled={busy || chapters.length === 0}>
-            选中待抓取
-          </button>
-          <button type="button" className="ghost-button" onClick={onSelectFailed} disabled={busy || chapters.length === 0}>
-            选中失败项
-          </button>
-          <button type="button" className="ghost-button" onClick={onClearSelection} disabled={busy || selectedChapterIds.length === 0}>
-            清空
-          </button>
+          {selectionMode ? (
+            <>
+              <button type="button" className="ghost-button" onClick={onSelectAll} disabled={busy || chapters.length === 0}>
+                全选
+              </button>
+              <button type="button" className="ghost-button" onClick={onSelectPending} disabled={busy || chapters.length === 0}>
+                选中待抓取
+              </button>
+              <button type="button" className="ghost-button" onClick={onSelectFailed} disabled={busy || chapters.length === 0}>
+                选中失败项
+              </button>
+              <button type="button" className="ghost-button" onClick={onClearSelection} disabled={busy || selectedChapterIds.length === 0}>
+                清空
+              </button>
+            </>
+          ) : null}
           <button
             type="button"
             className="ghost-button"
@@ -102,14 +135,17 @@ export function ChapterDirectory({
           />
         </label>
         <div className="badge-row">
-          <span className="status-badge state-indexed">已选 {selectedChapterIds.length}</span>
-          <span className="status-badge ok">待抓取 {chapters.filter((chapter) => chapter.status !== 'downloaded').length}</span>
+          {selectionMode ? <span className="status-badge state-indexed">已选 {selectedChapterIds.length}</span> : null}
+          {!selectionMode ? <span className="status-badge ok">可阅读 {chapters.filter((chapter) => chapter.wasDownloaded).length}</span> : null}
+          <span className="status-badge state-indexed">{selectionMode ? '待抓取' : '未下载'} {chapters.filter((chapter) => chapter.status !== 'downloaded').length}</span>
         </div>
       </div>
 
+      {subtitle ? <p className="panel-note">{subtitle}</p> : null}
+
       {chapters.length === 0 ? (
         <div className="empty-state">
-          <p>{loading ? '正在读取目录，请稍候。' : '读取目录后，这里会显示所有章节。'}</p>
+          <p>{loading ? '正在读取目录，请稍候。' : emptyMessage}</p>
         </div>
       ) : filteredGroups.length === 0 ? (
         <div className="empty-state compact">
@@ -140,7 +176,7 @@ export function ChapterDirectory({
                   </div>
                   <div className="volume-summary">
                     <span className="count-chip">{group.summary.total} 章</span>
-                    <span className="count-chip accent">待抓取 {group.summary.pendingCount}</span>
+                    <span className="count-chip accent">{selectionMode ? '待抓取' : '未下载'} {group.summary.pendingCount}</span>
                     {group.summary.newCount > 0 ? <span className="count-chip">新增 {group.summary.newCount}</span> : null}
                     {group.summary.failedCount > 0 ? <span className="count-chip danger">失败 {group.summary.failedCount}</span> : null}
                     <span className="count-chip subtle">{isCollapsed ? '展开' : '收起'}</span>
@@ -150,25 +186,46 @@ export function ChapterDirectory({
                   <ul className="chapter-list compact-density">
                     {group.chapters.map((chapter) => {
                   const checked = selectedSet.has(chapter.id);
+                  const isActive = activeChapterId === chapter.id;
 
                   return (
-                    <li key={chapter.id} className={`chapter-item status-${chapter.status}`}>
-                      <label className="chapter-row">
-                        <input
-                          type="checkbox"
-                          checked={checked}
+                    <li key={chapter.id} className={`chapter-item status-${chapter.status} ${isActive ? 'active' : ''}`}>
+                      {selectionMode ? (
+                        <label className="chapter-row">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={busy}
+                            onChange={() => onToggleChapter?.(chapter.id)}
+                          />
+                          <span className="chapter-copy">
+                            <span className="chapter-index">#{chapter.index}</span>
+                            <strong>{chapter.title}</strong>
+                          </span>
+                        </label>
+                      ) : (
+                        <button
+                          type="button"
+                          className="chapter-link-button"
+                          onClick={() => onPickChapter?.(chapter.id)}
                           disabled={busy}
-                          onChange={() => onToggleChapter(chapter.id)}
-                        />
-                        <span className="chapter-copy">
-                          <span className="chapter-index">#{chapter.index}</span>
-                          <strong>{chapter.title}</strong>
-                        </span>
-                      </label>
+                        >
+                          <span className="chapter-copy">
+                            <span className="chapter-index">#{chapter.index}</span>
+                            <strong>{chapter.title}</strong>
+                          </span>
+                          {isActive ? <span className="status-badge ok">阅读中</span> : null}
+                        </button>
+                      )}
                       <div className="badge-row">
                         {chapter.isNew ? <span className="status-badge new">新增</span> : null}
-                        {chapter.wasDownloaded ? <span className="status-badge ok">已下载</span> : null}
-                        <span className={`status-badge state-${chapter.status}`}>{formatChapterStatus(chapter.status)}</span>
+                        {chapter.wasDownloaded ? <span className="status-badge ok">{selectionMode ? '已下载' : '可阅读'}</span> : null}
+                        {chapter.media && chapter.media.total > 0 ? (
+                          <span className="status-badge state-indexed">
+                            媒体 {chapter.media.cached}/{chapter.media.total}
+                          </span>
+                        ) : null}
+                        {chapter.status !== 'downloaded' ? <span className={`status-badge state-${chapter.status}`}>{formatChapterStatus(chapter.status)}</span> : null}
                       </div>
                     </li>
                   );
@@ -184,7 +241,7 @@ export function ChapterDirectory({
   );
 }
 
-function formatChapterStatus(status: ResolvedChapterState['status']): string {
+function formatChapterStatus(status: ChapterPersistStatus): string {
   switch (status) {
     case 'indexed':
       return '已索引';

@@ -6,6 +6,12 @@ import type {
   ControlTaskPayload,
   ControlTasksPayload,
 } from '../../server/routes/control-center';
+import type {
+  LibraryChapterDetailPayload,
+  LibraryMediaPayload,
+  LibraryNovelDetailPayload,
+  LibraryNovelSummaryPayload,
+} from '../../server/routes/library';
 
 export interface UpdateNetworkProxyInput {
   enabled: boolean;
@@ -108,6 +114,49 @@ export async function fetchTask(taskId: string): Promise<ControlTaskPayload> {
 
 export async function fetchRecentTasks(limit = 8): Promise<ControlTasksPayload> {
   return requestJson<ControlTasksPayload>(`/api/control/tasks?limit=${limit}`);
+}
+
+export async function fetchLibraryNovels(): Promise<LibraryNovelSummaryPayload> {
+  return requestJson<LibraryNovelSummaryPayload>('/api/library/novels');
+}
+
+export async function fetchLibraryNovel(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryNovelDetailPayload> {
+  return requestJson<LibraryNovelDetailPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}`,
+  );
+}
+
+export async function fetchLibraryChapter(
+  sourceId: string,
+  novelId: string,
+  chapterId: string,
+): Promise<LibraryChapterDetailPayload> {
+  return requestJson<LibraryChapterDetailPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}`,
+  );
+}
+
+export async function cacheLibraryMedia(
+  sourceId: string,
+  novelId: string,
+  chapterId: string,
+  mediaId: string,
+): Promise<LibraryMediaPayload> {
+  const response = await fetch(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}/media/${encodeURIComponent(mediaId)}/cache`,
+    {
+      method: 'POST',
+    },
+  );
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Media cache failed');
+  }
+
+  return (await response.json()) as LibraryMediaPayload;
 }
 
 async function requestJson<TPayload>(url: string): Promise<TPayload> {
