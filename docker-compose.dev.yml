@@ -1,0 +1,21 @@
+services:
+  ts-novel-spider-dev:
+    image: ${TS_NOVEL_SPIDER_DEV_IMAGE:-ts_novel_spider:dev}
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-mirrors.aliyun.com}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    container_name: ts_novel_spider_dev
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "${TS_NOVEL_SPIDER_DEV_PORT:-3000}:3000"
+    volumes:
+      - ./.data:/app/.data
+      - ./data:/app/data

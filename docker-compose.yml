@@ -1,0 +1,15 @@
+services:
+  ts-novel-spider:
+    image: ${TS_NOVEL_SPIDER_IMAGE:-ghcr.io/silevilence/ts_novel_spider:latest}
+    container_name: ts_novel_spider
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "${TS_NOVEL_SPIDER_PORT:-3000}:3000"
+    volumes:
+      - ./.data:/app/.data
+      - ./data:/app/data

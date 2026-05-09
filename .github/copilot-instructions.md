@@ -12,7 +12,7 @@
 - **通用**：全栈 TypeScript (开启 strict 模式)。
 - **后端 (src/server)**：Node.js, Express, SQLite (建议使用 `better-sqlite3` 或 `sqlite3`), 高性能 HTML 解析库 (建议使用 `cheerio`)。
 - **前端 (src/web)**：React, Vite。
-- **工程化**：使用 `concurrently` 管理全栈开发环境的并行启动。
+- **工程化**：本地脚本开发使用 `concurrently` 管理全栈开发环境的并行启动；容器化开发与部署遵循仓库中的 Docker / Compose 配置。
 
 ## 3. 目录结构规范 (Directory Structure)
 在生成或修改文件时，请严格遵守以下目录划分：
@@ -28,6 +28,10 @@
 │       ├── components/   # UI 组件
 │       ├── services/     # API 请求封装
 │       └── App.tsx       # 前端入口
+├── Dockerfile            # 生产环境镜像构建脚本
+├── Dockerfile.dev        # 开发环境镜像构建脚本
+├── docker-compose.yml    # 生产环境容器编排配置
+├── docker-compose.dev.yml # 开发环境容器编排配置
 ├── package.json          # 根配置，包含 concurrently 启动脚本
 └── tsconfig.json         # 全局 TS 配置
 ```
@@ -54,8 +58,9 @@
 2. **异步处理**：统一使用 `async/await`，避免回调地狱。
 3. **注释规范**：对于核心的适配器接口、复杂 DOM 解析逻辑（如 CSS 选择器定位），必须添加 JSDoc 注释。
 4. **命名规范**：文件和目录使用 `kebab-case` 或 `snake_case`；类名使用 `PascalCase`；变量和函数使用 `camelCase`。
-5. **测试覆盖**：所有实现功能、问题修复必须伴随单元测试验证。
+5. **测试覆盖**：所有可测试的功能实现与问题修复必须补充或更新自动化测试；基础设施配置类变更（如 Docker / Compose）至少需要完成对应的构建、启动或配置解析验证。
 6. **手动更新文档**：禁止自动修改 `ROADMAP.md`，并且在用户没有明确要求时，禁止修改 `README.md`和`copilot-instructions.md`。
+7. **任务与问题修改完成验收**：代码类变更必须在相关测试通过后才能算完成，并且必须通过 `typecheck` 和 `build` 验证没有编译错误；纯配置或文档变更至少需要完成与改动直接相关的可执行验证。
 
 ## 6. 上下文记忆与默认行为 (Default AI Behaviors)
 - 如果我要求“新增一个爬虫”，请自动继承已有的爬虫核心接口，并在指定的目录下创建适配器文件。
