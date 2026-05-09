@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'V*'
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve release context
+        id: release
+        run: node scripts/ci/prepare-release.mjs "${GITHUB_REF_NAME}"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Run automated tests
+        run: npm test
+
+      - name: Build application
+        run: npm run build
+
+      - name: Resolve image name
+        id: image
+        shell: bash
+        run: echo "registry_image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build production image
+        env:
+          LOCAL_IMAGE: ts-novel-spider-release:${{ steps.release.outputs.version }}
+        run: docker build --pull --tag "$LOCAL_IMAGE" .
+
+      - name: Smoke test image health probe
+        shell: bash
+        env:
+          CONTAINER_NAME: ts-novel-spider-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          LOCAL_IMAGE: ts-novel-spider-release:${{ steps.release.outputs.version }}
+          SMOKE_PORT: '38080'
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          }
+
+          trap cleanup EXIT
+
+          docker run -d --name "$CONTAINER_NAME" -p "${SMOKE_PORT}:3000" "$LOCAL_IMAGE" >/dev/null
+
+          deadline=$((SECONDS + 120))
+          endpoint_ready='false'
+
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            container_state="$(docker inspect --format='{{.State.Status}}' "$CONTAINER_NAME")"
+
+            if [ "$container_state" != 'running' ]; then
+              docker logs "$CONTAINER_NAME"
+              echo 'Container exited before the smoke test completed.'
+              exit 1
+            fi
+
+            if curl --fail --silent --show-error "http://127.0.0.1:${SMOKE_PORT}/api/health" >/dev/null; then
+              endpoint_ready='true'
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ "$endpoint_ready" != 'true' ]; then
+            docker logs "$CONTAINER_NAME"
+            echo 'The health endpoint did not return 200 before the timeout.'
+            exit 1
+          fi
+
+          curl --fail --silent --show-error "http://127.0.0.1:${SMOKE_PORT}/api/health"
+
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish image to GHCR
+        env:
+          LOCAL_IMAGE: ts-novel-spider-release:${{ steps.release.outputs.version }}
+          REGISTRY_IMAGE: ${{ steps.image.outputs.registry_image }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE:$VERSION"
+          docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE:latest"
+          docker push "$REGISTRY_IMAGE:$VERSION"
+          docker push "$REGISTRY_IMAGE:latest"
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES_PATH: ${{ steps.release.outputs.release_notes_path }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file "$RELEASE_NOTES_PATH"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file "$RELEASE_NOTES_PATH"
+          fi
