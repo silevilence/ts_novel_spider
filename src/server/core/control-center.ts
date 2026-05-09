@@ -242,6 +242,16 @@ export class ControlCenterService {
     return this.#offlineLibrary.cacheMediaAsset(snapshot, chapterId, mediaId);
   }
 
+  async cacheLibraryNovelMedia(sourceId: string, novelId: string) {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+
+    if (!snapshot) {
+      return null;
+    }
+
+    return this.#offlineLibrary.cacheNovelMediaAssets(snapshot);
+  }
+
   getLibraryMediaFilePath(
     sourceId: string,
     novelId: string,

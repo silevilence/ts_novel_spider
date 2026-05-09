@@ -8,6 +8,7 @@ import type {
 } from '../../server/routes/control-center';
 import type {
   LibraryChapterDetailPayload,
+  LibraryMediaBatchPayload,
   LibraryMediaPayload,
   LibraryNovelDetailPayload,
   LibraryNovelSummaryPayload,
@@ -159,6 +160,24 @@ export async function cacheLibraryMedia(
   }
 
   return (await response.json()) as LibraryMediaPayload;
+}
+
+export async function cacheLibraryNovelMedia(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryMediaBatchPayload> {
+  const response = await fetch(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/media/cache`,
+    {
+      method: 'POST',
+    },
+  );
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Media batch cache failed');
+  }
+
+  return (await response.json()) as LibraryMediaBatchPayload;
 }
 
 export function buildLibraryExportDownloadUrl(

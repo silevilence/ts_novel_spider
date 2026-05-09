@@ -10,6 +10,7 @@ import {
 } from '../core/export-engine';
 import type {
   LibraryChapterDetail,
+  LibraryMediaCacheBatchResult,
   LibraryMediaAsset,
   LibraryNovelDetail,
   LibraryNovelSummary,
@@ -30,6 +31,10 @@ export interface LibraryChapterDetailPayload {
 
 export interface LibraryMediaPayload {
   media: LibraryMediaAsset;
+}
+
+export interface LibraryMediaBatchPayload {
+  result: LibraryMediaCacheBatchResult;
 }
 
 export interface LibraryExportPayload {
@@ -113,6 +118,30 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     } catch (error) {
       response.status(502).json({
         message: error instanceof Error ? error.message : 'Media cache failed.',
+      });
+    }
+  });
+
+  router.post('/novels/:sourceId/:novelId/media/cache', async (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const result = await service.cacheLibraryNovelMedia(sourceId, novelId);
+
+      if (!result) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      const payload: LibraryMediaBatchPayload = {
+        result,
+      };
+
+      response.json(payload);
+    } catch (error) {
+      response.status(502).json({
+        message: error instanceof Error ? error.message : 'Media batch cache failed.',
       });
     }
   });

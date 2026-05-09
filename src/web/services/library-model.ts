@@ -32,6 +32,14 @@ export interface LibraryModel {
   errorMessage: string | null;
   syncBusy: boolean;
   mediaBusyId: string | null;
+  mediaBatchBusy: boolean;
+  mediaBatchProgress: {
+    total: number;
+    completed: number;
+    cached: number;
+    skipped: number;
+    currentChapterTitle: string | null;
+  } | null;
   currentTask: ApiTaskSnapshot | null;
   taskStreamState: 'idle' | 'connected' | 'reconnecting';
   openNovel: (sourceId: string, novelId: string) => void;
@@ -40,6 +48,7 @@ export interface LibraryModel {
   runIncrementalSync: () => Promise<void>;
   syncMissingChapters: () => Promise<void>;
   cacheMediaAsset: (mediaId: string) => Promise<void>;
+  cacheAllMediaAssets: () => Promise<void>;
 }
 
 interface UseLibraryModelOptions {
@@ -58,6 +67,8 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
   const [mediaBusyId, setMediaBusyId] = useState<string | null>(null);
+  const [mediaBatchBusy, setMediaBatchBusy] = useState(false);
+  const [mediaBatchProgress, setMediaBatchProgress] = useState<LibraryModel['mediaBatchProgress']>(null);
   const [currentTask, setCurrentTask] = useState<ApiTaskSnapshot | null>(null);
   const [taskStreamState, setTaskStreamState] = useState<'idle' | 'connected' | 'reconnecting'>('idle');
   const latestLocationRef = useRef(location);
@@ -157,6 +168,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   useEffect(() => {
     if (!location.sourceId || !location.novelId) {
       setCurrentTask(null);
+      setMediaBatchProgress(null);
       lastObservedTaskRef.current = null;
       return;
     }
@@ -168,6 +180,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         ? existing
         : null
     ));
+    setMediaBatchProgress(null);
     lastObservedTaskRef.current = null;
   }, [location.sourceId, location.novelId]);
 
@@ -353,6 +366,138 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     }
   }
 
+  async function cacheAllMediaAssets() {
+    const currentDetail = detail?.novel;
+
+    if (!location.sourceId || !location.novelId || !currentDetail) {
+      return;
+    }
+
+    const pendingChapters = currentDetail.chapters.filter((chapter) => chapter.hasContent && chapter.media.pending > 0);
+
+    if (currentDetail.media.pending === 0 || pendingChapters.length === 0) {
+      publishNotice({
+        tone: 'info',
+        title: '图片缓存已是最新',
+        message: '当前没有需要补缓存的图片。',
+      });
+      return;
+    }
+
+    setMediaBatchBusy(true);
+    const totalCount = currentDetail.media.pending;
+    let completedCount = 0;
+    let cachedCount = 0;
+    let skippedCount = 0;
+
+    setMediaBatchProgress({
+      total: totalCount,
+      completed: 0,
+      cached: 0,
+      skipped: 0,
+      currentChapterTitle: pendingChapters[0]?.title ?? null,
+    });
+
+    try {
+      publishNotice({
+        tone: 'info',
+        title: '开始统一缓存图片',
+        message: `准备补缓存 ${totalCount} 张图片，进度会直接显示在当前页面。`,
+      });
+
+      for (const chapter of pendingChapters) {
+        const chapterPayload = await fetchLibraryChapter(location.sourceId, location.novelId, chapter.id);
+        const pendingAssets = chapterPayload.chapter.mediaAssets.filter((asset) => !asset.cached);
+
+        if (pendingAssets.length === 0) {
+          const chapterSkipped = chapter.media.pending;
+          completedCount += chapterSkipped;
+          skippedCount += chapterSkipped;
+          setMediaBatchProgress((current) => current ? {
+            ...current,
+            completed: completedCount,
+            skipped: skippedCount,
+            currentChapterTitle: chapter.title,
+          } : current);
+          continue;
+        }
+
+        for (const asset of pendingAssets) {
+          await cacheLibraryMedia(location.sourceId, location.novelId, chapter.id, asset.id);
+          completedCount += 1;
+          cachedCount += 1;
+
+          setDetail((current) => {
+            if (!current) {
+              return current;
+            }
+
+            let didUpdateChapter = false;
+            const chapters = current.novel.chapters.map((entry) => {
+              if (entry.id !== chapter.id || entry.media.pending <= 0) {
+                return entry;
+              }
+
+              didUpdateChapter = true;
+              return {
+                ...entry,
+                media: {
+                  ...entry.media,
+                  cached: entry.media.cached + 1,
+                  pending: Math.max(0, entry.media.pending - 1),
+                },
+              };
+            });
+
+            if (!didUpdateChapter || current.novel.media.pending <= 0) {
+              return current;
+            }
+
+            return {
+              ...current,
+              novel: {
+                ...current.novel,
+                chapters,
+                media: {
+                  ...current.novel.media,
+                  cached: current.novel.media.cached + 1,
+                  pending: Math.max(0, current.novel.media.pending - 1),
+                },
+              },
+            };
+          });
+
+          setMediaBatchProgress((current) => current ? {
+            ...current,
+            completed: completedCount,
+            cached: cachedCount,
+            skipped: skippedCount,
+            currentChapterTitle: chapter.title,
+          } : current);
+        }
+      }
+
+      publishNotice({
+        tone: cachedCount > 0 ? 'success' : 'info',
+        title: cachedCount > 0 ? '图片已补齐到本地' : '图片缓存已是最新',
+        message: cachedCount > 0
+          ? `本次新缓存 ${cachedCount} 张图片，已跳过 ${skippedCount} 张已有图片。`
+          : `没有新的图片需要缓存，已跳过 ${skippedCount} 张已有图片。`,
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Media batch cache failed.';
+      publishNotice({
+        tone: 'error',
+        title: '统一缓存失败',
+        message: `${message} 已完成 ${completedCount}/${totalCount}。`,
+      });
+      await refresh();
+    } finally {
+      setMediaBatchBusy(false);
+    }
+  }
+
   return {
     location,
     novels,
@@ -362,6 +507,8 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     errorMessage,
     syncBusy,
     mediaBusyId,
+    mediaBatchBusy,
+    mediaBatchProgress,
     currentTask,
     taskStreamState,
     openNovel,
@@ -370,6 +517,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     runIncrementalSync,
     syncMissingChapters,
     cacheMediaAsset,
+    cacheAllMediaAssets,
   };
 }
 

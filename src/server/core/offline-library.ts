@@ -33,6 +33,12 @@ export interface LibraryMediaAsset {
   publicUrl: string | null;
 }
 
+export interface LibraryMediaCacheBatchResult {
+  total: number;
+  cached: number;
+  skipped: number;
+}
+
 export interface LibraryChapterSummary extends StoredChapterRecord {
   hasContent: boolean;
   media: LibraryMediaSummary;
@@ -175,25 +181,32 @@ export class OfflineLibraryAssetService {
       return null;
     }
 
-    const cachedFilePath = this.findCachedAssetFile(snapshot.sourceId, snapshot.metadata.novelId, chapter.id, sourceUrl);
-
-    if (!cachedFilePath) {
-      const response = await this.#fetchImpl(sourceUrl);
-
-      if (!response.ok) {
-        throw new Error(`Media download failed with status ${response.status}.`);
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const extension = inferFileExtension(sourceUrl, response.headers.get('content-type'));
-      const filePath = this.buildAssetFilePath(snapshot.sourceId, snapshot.metadata.novelId, chapter.id, sourceUrl, extension);
-
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, buffer);
-    }
+    await this.cacheAssetFile(snapshot.sourceId, snapshot.metadata.novelId, chapter.id, sourceUrl);
 
     return this.listMediaAssets(snapshot, chapter).find((asset) => asset.id === mediaId) ?? null;
+  }
+
+  async cacheNovelMediaAssets(snapshot: StoredNovelSnapshot): Promise<LibraryMediaCacheBatchResult> {
+    let cached = 0;
+    let skipped = 0;
+
+    for (const chapter of snapshot.chapters) {
+      for (const sourceUrl of extractMediaUrls(chapter.content)) {
+        const wasCached = await this.cacheAssetFile(snapshot.sourceId, snapshot.metadata.novelId, chapter.id, sourceUrl);
+
+        if (wasCached) {
+          skipped += 1;
+        } else {
+          cached += 1;
+        }
+      }
+    }
+
+    return {
+      total: cached + skipped,
+      cached,
+      skipped,
+    };
   }
 
   getCachedMediaFilePath(
@@ -249,6 +262,35 @@ export class OfflineLibraryAssetService {
       chapterId,
       `${hashMediaUrl(sourceUrl)}${extension}`,
     );
+  }
+
+  private async cacheAssetFile(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+    sourceUrl: string,
+  ): Promise<boolean> {
+    const cachedFilePath = this.findCachedAssetFile(sourceId, novelId, chapterId, sourceUrl);
+
+    if (cachedFilePath) {
+      return true;
+    }
+
+    const response = await this.#fetchImpl(sourceUrl);
+
+    if (!response.ok) {
+      throw new Error(`Media download failed with status ${response.status}.`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const extension = inferFileExtension(sourceUrl, response.headers.get('content-type'));
+    const filePath = this.buildAssetFilePath(sourceId, novelId, chapterId, sourceUrl, extension);
+
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, buffer);
+
+    return false;
   }
 }
 

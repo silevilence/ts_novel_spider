@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { ChapterDirectory } from './chapter-directory';
 import type { LibraryModel } from '../services/library-model';
@@ -51,6 +51,7 @@ const LIBRARY_EXPORT_OPTIONS: Array<{
 export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps) {
   const [isReaderDirectoryOpen, setIsReaderDirectoryOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setIsReaderDirectoryOpen(false);
@@ -131,7 +132,16 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
             <div className="library-grid">
               {model.novels.map((novel) => (
                 <article key={`${novel.sourceId}-${novel.metadata.novelId}`} className="card library-card">
-                  <p className="label">{novel.sourceId}</p>
+                  <div className="library-card-head">
+                    <p className="label">{novel.sourceId}</p>
+                    <button
+                      type="button"
+                      className="primary-button library-card-detail-button"
+                      onClick={() => model.openNovel(novel.sourceId, novel.metadata.novelId)}
+                    >
+                      查看详情
+                    </button>
+                  </div>
                   <h3>{novel.metadata.title}</h3>
                   <p className="muted">作者：{novel.metadata.author || '未知作者'}</p>
                   <p className="library-card-copy">{novel.metadata.description || '暂无简介。'}</p>
@@ -143,15 +153,6 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
                   <div className="badge-row">
                     <span className="status-badge ok">已下载 {novel.downloadedChapters}</span>
                     <span className="status-badge state-indexed">未下载 {novel.indexedChapters + novel.failedChapters}</span>
-                  </div>
-                  <div className="action-row wrap">
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={() => model.openNovel(novel.sourceId, novel.metadata.novelId)}
-                    >
-                      查看详情
-                    </button>
                   </div>
                 </article>
               ))}
@@ -371,9 +372,16 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
   }
 
   const preferredChapterId = findPreferredReaderChapter(detail);
+  const preferredMediaChapterId = detail.chapters.find((chapter) => chapter.hasContent && chapter.media.total > 0)?.id
+    ?? detail.chapters.find((chapter) => chapter.status === 'downloaded' && chapter.media.total > 0)?.id
+    ?? null;
   const task = model.currentTask;
   const latestTaskEvent = task?.events[task.events.length - 1] ?? null;
   const taskHeading = task?.status === 'completed' || task?.status === 'failed' ? '最近一次同步' : '当前同步任务';
+
+  function scrollToChapterDirectory() {
+    chapterDirectoryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   return (
     <div className="page-stack">
@@ -541,6 +549,78 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
         )}
       </section>
 
+      <section className="panel media-cache-guide">
+        <div className="panel-heading split align-start">
+          <div>
+            <p className="eyebrow">图片缓存</p>
+            <h2>图片要去章节里保存</h2>
+            <p className="panel-note media-cache-guide-copy">
+              {detail.media.total === 0
+                ? '这本书当前没有图片资源，不需要单独处理图片缓存。'
+                : '可以先在这里统一把未缓存图片补到本地；如果你只想处理某一章，也可以进入有图章节，在每张图片下方单独点“保存到本地”。下面的章节目录会直接标出哪些章节有图、已经缓存了多少。'}
+            </p>
+          </div>
+
+          <div className="badge-row">
+            <span className="status-badge ok">已缓存 {detail.media.cached}</span>
+            <span className="status-badge state-indexed">待缓存 {detail.media.total - detail.media.cached}</span>
+          </div>
+        </div>
+
+        <div className="action-row wrap">
+          {detail.media.total > 0 ? (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void model.cacheAllMediaAssets()}
+              disabled={model.mediaBatchBusy || detail.media.pending === 0}
+            >
+              {model.mediaBatchBusy ? '统一缓存中...' : detail.media.pending === 0 ? '图片已全部缓存' : '统一缓存未保存图片'}
+            </button>
+          ) : null}
+          {preferredMediaChapterId ? (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, preferredMediaChapterId)}
+            >
+              进入有图章节
+            </button>
+          ) : null}
+          <button type="button" className="ghost-button" onClick={scrollToChapterDirectory}>
+            跳到章节目录
+          </button>
+        </div>
+
+        {model.mediaBatchProgress ? (
+          <div className="card media-cache-progress">
+            <div className="split align-start">
+              <div>
+                <p className="label">{model.mediaBatchBusy ? '统一缓存进行中' : '最近一次统一缓存'}</p>
+                <strong>{model.mediaBatchProgress.completed}/{model.mediaBatchProgress.total}</strong>
+                <p className="panel-note">
+                  {model.mediaBatchBusy
+                    ? `当前正在处理：${model.mediaBatchProgress.currentChapterTitle ?? '图片资源'}。`
+                    : '当前页统计已经按最近一次缓存结果更新。'}
+                </p>
+              </div>
+
+              <div className="badge-row">
+                <span className="status-badge ok">新缓存 {model.mediaBatchProgress.cached}</span>
+                <span className="status-badge state-indexed">跳过 {model.mediaBatchProgress.skipped}</span>
+              </div>
+            </div>
+
+            <div className="progress-track media-cache-progress-track" aria-hidden="true">
+              <div
+                className="progress-fill"
+                style={{ width: `${model.mediaBatchProgress.total === 0 ? 0 : (model.mediaBatchProgress.completed / model.mediaBatchProgress.total) * 100}%` }}
+              />
+            </div>
+          </div>
+        ) : null}
+      </section>
+
       {isExportDialogOpen ? (
         <div className="reader-directory-overlay export-dialog-overlay" role="presentation" onClick={() => setIsExportDialogOpen(false)}>
           <section
@@ -615,15 +695,17 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
         </div>
       ) : null}
 
-      <ChapterDirectory
-        chapters={toLibraryDirectoryChapters(detail.chapters)}
-        mode="inspect"
-        loading={model.loading}
-        title="章节目录"
-        subtitle="已下载和未下载的章节都在这里；有图章节会直接标出图片数量和本地缓存情况。"
-        emptyMessage="当前作品还没有已知章节目录。"
-        onPickChapter={(chapterId) => model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId)}
-      />
+      <div ref={chapterDirectoryRef} className="library-directory-anchor">
+        <ChapterDirectory
+          chapters={toLibraryDirectoryChapters(detail.chapters)}
+          mode="inspect"
+          loading={model.loading}
+          title="章节目录"
+          subtitle="已下载和未下载的章节都在这里；有图章节会直接标出图片数量和本地缓存情况。"
+          emptyMessage="当前作品还没有已知章节目录。"
+          onPickChapter={(chapterId) => model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId)}
+        />
+      </div>
 
       <div className="action-row wrap">
         <button type="button" className="ghost-button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>

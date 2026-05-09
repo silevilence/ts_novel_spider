@@ -18,6 +18,12 @@ function createLibraryServer() {
     spiders: [],
     offlineAssetStoragePath: path.join(tempDir, 'assets'),
     exportStoragePath: path.join(tempDir, 'exports'),
+    assetFetchImpl: async () => new Response('image-binary', {
+      status: 200,
+      headers: {
+        'content-type': 'image/png',
+      },
+    }),
   });
 
   repository.saveMetadata('syosetu', {
@@ -148,6 +154,64 @@ test('library routes expose stored novels, detail stats and chapter reading data
       chapterPayload.chapter.mediaAssets[0]?.sourceUrl,
       'https://cdn.example.com/cover/chapter-1.png',
     );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
+test('library routes cache all pending media assets for a stored novel', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const cacheResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/media/cache`, {
+      method: 'POST',
+    });
+    const cachePayload = (await cacheResponse.json()) as {
+      result: { total: number; cached: number; skipped: number };
+    };
+
+    assert.equal(cacheResponse.status, 200);
+    assert.deepEqual(cachePayload.result, {
+      total: 1,
+      cached: 1,
+      skipped: 0,
+    });
+
+    const detailResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib`);
+    const detailPayload = (await detailResponse.json()) as {
+      novel: {
+        media: { total: number; cached: number; pending: number };
+      };
+    };
+
+    assert.equal(detailResponse.status, 200);
+    assert.deepEqual(detailPayload.novel.media, {
+      total: 1,
+      cached: 1,
+      pending: 0,
+    });
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
