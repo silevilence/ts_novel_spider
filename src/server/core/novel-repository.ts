@@ -30,6 +30,16 @@ export interface StoredNovelLibraryRow {
   latestDownloadedAt: string | null;
 }
 
+export interface StoredTaskHistoryRow {
+  taskId: string;
+  sourceId: string;
+  novelId: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  snapshotJson: string;
+}
+
 interface ChapterRow {
   source_id: string;
   novel_id: string;
@@ -43,6 +53,16 @@ interface ChapterRow {
   error_message: string | null;
   downloaded_at: string | null;
   updated_at: string;
+}
+
+interface TaskHistoryRow {
+  task_id: string;
+  source_id: string;
+  novel_id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  snapshot_json: string;
 }
 
 export class SqliteNovelRepository {
@@ -142,6 +162,29 @@ export class SqliteNovelRepository {
       failedChapters: row.failed_chapters,
       indexedChapters: row.indexed_chapters,
       latestDownloadedAt: row.latest_downloaded_at,
+    }));
+  }
+
+  listTaskSnapshots(limit = 20): StoredTaskHistoryRow[] {
+    const rows = this.#database
+      .prepare(
+        `
+          SELECT task_id, source_id, novel_id, status, created_at, updated_at, snapshot_json
+          FROM task_history
+          ORDER BY created_at DESC, updated_at DESC
+          LIMIT ?
+        `,
+      )
+      .all(limit) as TaskHistoryRow[];
+
+    return rows.map((row) => ({
+      taskId: row.task_id,
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      snapshotJson: row.snapshot_json,
     }));
   }
 
@@ -306,6 +349,58 @@ export class SqliteNovelRepository {
       });
   }
 
+  saveTaskSnapshot(
+    task: {
+      id: string;
+      sourceId: string;
+      novelId: string;
+      status: string;
+      createdAt: string;
+    },
+    snapshot: unknown,
+    limit = 100,
+  ): void {
+    const updatedAt = new Date().toISOString();
+
+    this.#database
+      .prepare(
+        `
+          INSERT INTO task_history (task_id, source_id, novel_id, status, created_at, updated_at, snapshot_json)
+          VALUES (@task_id, @source_id, @novel_id, @status, @created_at, @updated_at, @snapshot_json)
+          ON CONFLICT(task_id) DO UPDATE SET
+            source_id = excluded.source_id,
+            novel_id = excluded.novel_id,
+            status = excluded.status,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            snapshot_json = excluded.snapshot_json
+        `,
+      )
+      .run({
+        task_id: task.id,
+        source_id: task.sourceId,
+        novel_id: task.novelId,
+        status: task.status,
+        created_at: task.createdAt,
+        updated_at: updatedAt,
+        snapshot_json: JSON.stringify(snapshot),
+      });
+
+    this.#database
+      .prepare(
+        `
+          DELETE FROM task_history
+          WHERE task_id NOT IN (
+            SELECT task_id
+            FROM task_history
+            ORDER BY created_at DESC, updated_at DESC
+            LIMIT ?
+          )
+        `,
+      )
+      .run(limit);
+  }
+
   private migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS novels (
@@ -336,6 +431,16 @@ export class SqliteNovelRepository {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (source_id, novel_id, chapter_id),
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS task_history (
+        task_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
       );
     `);
   }

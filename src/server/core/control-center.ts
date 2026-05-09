@@ -22,7 +22,7 @@ import {
   type GeneratedLibraryExport,
   type LibraryExportFormat,
 } from './export-engine';
-import { SqliteNovelRepository } from './novel-repository';
+import { SqliteNovelRepository, type StoredNovelLibraryRow } from './novel-repository';
 import { SpiderRunner } from './spider-runner';
 import {
   type ChapterIndexEntry,
@@ -153,6 +153,7 @@ export interface ControlCenterServiceOptions {
 }
 
 const MAX_STORED_EVENTS = 200;
+const MAX_STORED_TASKS = 100;
 
 export class ControlCenterService {
   readonly #repository: SqliteNovelRepository;
@@ -182,6 +183,8 @@ export class ControlCenterService {
     this.#registry = new Map(
       (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
     );
+
+    this.restoreTaskHistory();
   }
 
   close(): void {
@@ -447,6 +450,8 @@ export class ControlCenterService {
   private emitTaskUpdate(task: CrawlTaskState): void {
     const snapshot = serializeTask(task);
 
+    this.#repository.saveTaskSnapshot(snapshot, snapshot, MAX_STORED_TASKS);
+
     for (const listener of task.listeners) {
       listener({
         type: 'task_updated',
@@ -463,6 +468,34 @@ export class ControlCenterService {
     }
 
     return source;
+  }
+
+  private restoreTaskHistory(): void {
+    const storedTasks = this.#repository.listTaskSnapshots(MAX_STORED_TASKS);
+
+    if (storedTasks.length === 0) {
+      this.bootstrapTaskHistoryFromLibrary();
+      return;
+    }
+
+    for (const storedTask of storedTasks) {
+      const snapshot = JSON.parse(storedTask.snapshotJson) as CrawlTaskSnapshot;
+      const task = restoreTaskState(snapshot);
+      this.#tasks.set(task.id, task);
+    }
+  }
+
+  private bootstrapTaskHistoryFromLibrary(): void {
+    const libraryNovels = this.#repository
+      .listNovels()
+      .filter((novel) => novel.downloadedChapters > 0 || novel.failedChapters > 0)
+      .slice(0, MAX_STORED_TASKS);
+
+    for (const novel of libraryNovels) {
+      const task = createHistoricalTaskState(novel);
+      this.#tasks.set(task.id, task);
+      this.#repository.saveTaskSnapshot(serializeTask(task), serializeTask(task), MAX_STORED_TASKS);
+    }
   }
 }
 
@@ -524,6 +557,58 @@ function createTaskState(sourceId: string, input: TaskExecutionInput): CrawlTask
     events: [],
     listeners: new Set(),
   };
+}
+
+function createHistoricalTaskState(novel: StoredNovelLibraryRow): CrawlTaskState {
+  const attemptedChapters = novel.downloadedChapters + novel.failedChapters;
+  const timestamp = novel.latestDownloadedAt ?? novel.updatedAt;
+  const snapshot: CrawlTaskSnapshot = {
+    id: createHistoricalTaskId(novel),
+    sourceId: novel.sourceId,
+    novelId: novel.metadata.novelId,
+    status: novel.failedChapters > 0 ? 'failed' : 'completed',
+    runId: null,
+    createdAt: timestamp,
+    startedAt: timestamp,
+    completedAt: timestamp,
+    errorMessage: novel.failedChapters > 0 ? `历史记录包含 ${novel.failedChapters} 个失败章节。` : null,
+    options: {
+      chapterIds: [],
+      chapterConcurrency: 4,
+      chapterRetryCount: 1,
+      forceRefetch: false,
+    },
+    progress: {
+      catalogChapters: novel.metadata.chapterCount,
+      queuedChapters: attemptedChapters,
+      completedChapters: novel.downloadedChapters,
+      failedChapters: novel.failedChapters,
+      percent: attemptedChapters > 0 ? 100 : 0,
+    },
+    metadata: novel.metadata,
+    chapters: [],
+    failures: [],
+    snapshotSummary: {
+      downloadedChapters: novel.downloadedChapters,
+      failedChapters: novel.failedChapters,
+      indexedChapters: novel.indexedChapters,
+      newChapters: 0,
+      updatedAt: novel.updatedAt,
+    },
+    events: [],
+  };
+
+  return restoreTaskState(snapshot);
+}
+
+function createHistoricalTaskId(novel: StoredNovelLibraryRow): string {
+  const digest = crypto
+    .createHash('sha256')
+    .update(`${novel.sourceId}:${novel.metadata.novelId}:${novel.updatedAt}`)
+    .digest('hex')
+    .slice(0, 16);
+
+  return `historic-${digest}`;
 }
 
 function resolveChapterStates(
@@ -623,6 +708,40 @@ function serializeTask(task: CrawlTaskState): CrawlTaskSnapshot {
     failures: [...task.failures],
     snapshotSummary: task.snapshotSummary,
     events: [...task.events],
+  };
+}
+
+function restoreTaskState(snapshot: CrawlTaskSnapshot): CrawlTaskState {
+  const wasInterrupted = snapshot.status === 'queued' || snapshot.status === 'running';
+  const completedAt = wasInterrupted ? snapshot.completedAt ?? new Date().toISOString() : snapshot.completedAt;
+
+  return {
+    id: snapshot.id,
+    sourceId: snapshot.sourceId,
+    novelId: snapshot.novelId,
+    status: wasInterrupted ? 'failed' : snapshot.status,
+    runId: snapshot.runId,
+    createdAt: snapshot.createdAt,
+    startedAt: snapshot.startedAt,
+    completedAt,
+    errorMessage: wasInterrupted
+      ? snapshot.errorMessage ?? '任务在服务重启后无法继续，已标记为中断。'
+      : snapshot.errorMessage,
+    options: {
+      chapterIds: [...snapshot.options.chapterIds],
+      chapterConcurrency: snapshot.options.chapterConcurrency,
+      chapterRetryCount: snapshot.options.chapterRetryCount,
+      forceRefetch: snapshot.options.forceRefetch,
+    },
+    progress: {
+      ...snapshot.progress,
+    },
+    metadata: snapshot.metadata,
+    chapters: [...snapshot.chapters],
+    failures: [...snapshot.failures],
+    snapshotSummary: snapshot.snapshotSummary,
+    events: [...snapshot.events],
+    listeners: new Set(),
   };
 }
 
