@@ -1,68 +1,145 @@
 # TS Novel Spider - Copilot 辅助开发指南
 
 ## 1. 项目概述 (Project Overview)
-- **项目名称**：TS Novel Spider
-- **核心定位**：基于 TypeScript 的自动化小说爬虫与导出工具。
-- **主要功能**：抓取指定来源的小说内容并持久化至本地，支持将抓取的数据导出为多种标准格式（Markdown、JSON、TXT 等）。
-- **架构模式**：前后端分离（B/S 架构）但合并部署。
-  - **前端 (Web)**：仅作为纯视图层与管控中心，负责参数配置、进度展示与任务调度。
-  - **后端 (Server)**：作为核心执行层，负责真正的爬虫调度、网页解析、数据持久化与文件导出等高密集任务。且必须支持后台守护态运行（前端界面关闭不影响后端任务执行）。
 
-## 2. 技术栈约束 (Tech Stack)
-- **通用**：全栈 TypeScript (开启 strict 模式)。
-- **后端 (src/server)**：Node.js, Express, SQLite (建议使用 `better-sqlite3` 或 `sqlite3`), 高性能 HTML 解析库 (建议使用 `cheerio`)。
-- **前端 (src/web)**：React, Vite。
-- **工程化**：本地脚本开发使用 `concurrently` 管理全栈开发环境的并行启动；容器化开发与部署遵循仓库中的 Docker / Compose 配置。
+- **核心定位**：基于 TypeScript 的自动化小说爬虫与多格式导出工具。
+- **主要功能**：通过 Web 管控界面调度爬虫，抓取小说内容并持久化至本地 SQLite，支持离线阅读与多格式导出（Markdown、EPUB、TXT）。
+- **架构模式**：前后端分离但合并部署的 B/S 架构。
+  - **前端 (src/web)**：纯视图层，负责参数配置、目录浏览、实时监控与任务调度。
+  - **后端 (src/server)**：核心执行层，负责爬虫调度、网页解析、SQLite 持久化、文件导出与 SSE 事件推送。后端任务完全独立于前端会话，前端关闭不影响任务执行。
+
+## 2. 技术栈 (Tech Stack)
+
+| 层 | 技术 |
+|---|---|
+| 后端 | Node.js ≥ 20, Express 5, `better-sqlite3`, `cheerio` |
+| 前端 | React 19, Vite 6, TypeScript strict 模式 |
+| 导出 | `jszip`（EPUB 打包） |
+| 工程化 | `tsx` (watch + test runner), `concurrently`, Docker multi-stage build |
+
+**禁止降级**：不得将 Express 5 降回 v4；不得关闭 TypeScript strict 模式。
 
 ## 3. 目录结构规范 (Directory Structure)
-在生成或修改文件时，请严格遵守以下目录划分：
+
 ```text
 .
 ├── src/
-│   ├── server/           # 后端与核心爬虫逻辑
-│   │   ├── adapters/     # 策略模式适配器（Spider, Log）
-│   │   ├── core/         # 核心调度器、数据库 ORM/交互、文件导出服务
-│   │   ├── routes/       # Express 接口路由
-│   │   └── index.ts      # Express 入口，挂载 API 与静态资源
-│   └── web/              # 前端 React 工程 (由 Vite 构建)
-│       ├── components/   # UI 组件
-│       ├── services/     # API 请求封装
-│       └── App.tsx       # 前端入口
-├── Dockerfile            # 生产环境镜像构建脚本
-├── Dockerfile.dev        # 开发环境镜像构建脚本
-├── docker-compose.yml    # 生产环境容器编排配置
-├── docker-compose.dev.yml # 开发环境容器编排配置
-├── package.json          # 根配置，包含 concurrently 启动脚本
-└── tsconfig.json         # 全局 TS 配置
+│   ├── server/
+│   │   ├── adapters/
+│   │   │   ├── log/               # 日志适配器（InMemoryLogAdapter 等）
+│   │   │   └── spider/            # 站点爬虫适配器
+│   │   │       ├── syosetu-18-spider-adapter.ts   # Syosetu18 具体实现
+│   │   │       ├── syosetu-spider-adapter.ts      # Syosetu（继承 Syosetu18）
+│   │   │       └── mock-html-spider-adapter.ts    # 测试用 Mock
+│   │   ├── core/
+│   │   │   ├── spider.ts          # SpiderAdapter 接口 + BaseHtmlSpiderAdapter 抽象类
+│   │   │   ├── spider-runner.ts   # 批量抓取调度器（含并发、重试、异常隔离）
+│   │   │   ├── control-center.ts  # ControlCenterService（任务生命周期、Spider 注册表）
+│   │   │   ├── novel-repository.ts # SQLite ORM（SqliteNovelRepository）
+│   │   │   ├── offline-library.ts # 离线书库服务（章节详情、媒体资产）
+│   │   │   ├── export-engine.ts   # 本地导出引擎（Markdown / EPUB / TXT）
+│   │   │   ├── network-proxy.ts   # 网络代理服务（持久化至 .data/network-proxy.json）
+│   │   │   └── logging.ts         # SpiderLogDispatcher + SpiderLogAdapter 接口
+│   │   ├── routes/
+│   │   │   ├── control-center.ts  # /api/control 路由
+│   │   │   ├── library.ts         # /api/library 路由
+│   │   │   └── health.ts          # /api/health 路由
+│   │   ├── app.ts                 # createServerApp()，挂载路由与静态资源
+│   │   └── index.ts               # HTTP 监听入口
+│   └── web/
+│       ├── components/            # UI 组件
+│       ├── services/              # API 封装（api.ts）+ 视图模型
+│       ├── App.tsx                # 路由配置入口
+│       └── vite.config.ts
+├── scripts/ci/                    # CI 发布准备脚本
+├── data/
+│   ├── exports/                   # 导出文件输出目录
+│   └── offline-assets/            # 离线图片缓存
+├── .data/                         # 运行时数据（SQLite、代理配置）— 不提交 Git
+├── Dockerfile                     # 生产镜像（multi-stage）
+├── Dockerfile.dev                 # 开发镜像（国内加速源）
+├── docker-compose.yml             # 生产编排（消费 ghcr.io 镜像）
+├── docker-compose.dev.yml         # 本地开发编排
+├── tsconfig.json                  # 根 TS 配置（前端路径映射）
+└── tsconfig.server.json           # 后端 TS 配置（输出至 dist/server）
 ```
 
-## 4. 核心架构与设计模式要求 (Core Architecture & Patterns)
+## 4. 核心架构与关键约束 (Architecture & Constraints)
 
-### 4.1 策略模式 (Strategy Pattern) 绝对优先
-- **爬虫适配器 (Spider Adapter)**：必须定义统一的接口/抽象类（包含：生成URL、解析基本信息、解析章节列表、单章抓取、批量抓取等方法）。具体的站点（如 Syosetu, Syosetu18）必须实现该接口。
-- **日志适配器 (Log Adapter)**：解耦爬虫逻辑与日志输出，提供统一的事件上报接口，便于后续桥接控制台输出、数据库落盘或通过 SSE (Server-Sent Events) 推送给前端。
-- *注：当要求参考原 Python 项目 (`PyNovelSpider`) 时，需将 Python 的面向对象逻辑转换为符合 TypeScript 特性的策略模式实现。*
-- *原 Python 项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
+### 4.1 策略模式：SpiderAdapter
 
-### 4.2 后台运行与异常隔离原则 (Resilience & Background Execution)
-- **状态分离**：前端关闭或断开连接时，后端的抓取任务（Promise 链或任务队列）必须能够继续独立执行。
-- **异常隔离**：在进行批量章节抓取时，**必须**捕获单章抓取的异常 (`try/catch`)。单个章节的请求超时或解析失败，绝对不能阻塞或中断其他章节的抓取流程。
-- **重试机制**：为网络请求和解析失败保留重试逻辑的插槽。
+- 所有站点适配器必须继承 `BaseHtmlSpiderAdapter`（定义于 `src/server/core/spider.ts`）。
+- 必须实现：`sourceId`、`getInfoPageUrl()`、`fetchMetadata()`、`fetchChapterIndex()`、`fetchChapter()`。
+- 注入 `fetchHtml` 函数（`SpiderHtmlFetcher` 类型）实现请求与解析解耦，测试时传入本地 fixture HTML，线上使用 `createProxyAwareHtmlFetcher`。
+- 新增站点爬虫时，在 `src/server/adapters/spider/` 下创建文件，并在 `ControlCenterService` 构造函数的 spider 注册表中追加条目。
 
-### 4.3 增量更新与状态校验 (Incremental Updates)
-- 在获取小说基本信息及目录时，需优先查询本地 SQLite 数据快照。
-- 前端与后端交互时，应能比对出“已下载章节”与“新增章节”，并在 API 响应中予以标识。
+### 4.2 日志适配器：SpiderLogAdapter
 
-## 5. 编码规范 (Coding Standards)
-1. **类型安全**：禁止使用 `any`，必须为 API 响应、数据库模型、爬虫中间态数据定义清晰的 `interface` 或 `type`。
-2. **异步处理**：统一使用 `async/await`，避免回调地狱。
-3. **注释规范**：对于核心的适配器接口、复杂 DOM 解析逻辑（如 CSS 选择器定位），必须添加 JSDoc 注释。
-4. **命名规范**：文件和目录使用 `kebab-case` 或 `snake_case`；类名使用 `PascalCase`；变量和函数使用 `camelCase`。
-5. **测试覆盖**：所有可测试的功能实现与问题修复必须补充或更新自动化测试；基础设施配置类变更（如 Docker / Compose）至少需要完成对应的构建、启动或配置解析验证。
-6. **手动更新文档**：禁止自动修改 `ROADMAP.md`，并且在用户没有明确要求时，禁止修改 `README.md`和`copilot-instructions.md`。
-7. **任务与问题修改完成验收**：代码类变更必须在相关测试通过后才能算完成，并且必须通过 `typecheck` 和 `build` 验证没有编译错误；纯配置或文档变更至少需要完成与改动直接相关的可执行验证。
+- 接口定义在 `src/server/core/logging.ts`，通过 `SpiderLogDispatcher` 分发到多个适配器。
+- `InMemoryLogAdapter`（`src/server/adapters/log/`）用于测试和任务快照存储。
+- SSE 推送通过订阅 `ControlCenterService` 的任务事件实现，**SSE 流必须在 `subscribeToTask` 之前设置好响应头**，因为订阅会同步触发当前快照推送。
 
-## 6. 上下文记忆与默认行为 (Default AI Behaviors)
-- 如果我要求“新增一个爬虫”，请自动继承已有的爬虫核心接口，并在指定的目录下创建适配器文件。
-- 如果我要求“编写前端组件”，请默认其为无状态组件或使用 React Hooks 进行状态管理，并默认请求 `src/server` 提供的 API。
-- 在涉及网络请求抓取（爬虫部分）时，请默认带上基础的 Headers（User-Agent 等）以防基础反爬。
+### 4.3 后台运行与异常隔离
+
+- 批量抓取逻辑在 `SpiderRunner` 中，每章独立 `try/catch`，单章失败不中断整体任务。
+- 任务 Promise 链不依赖 HTTP 请求保活，前端断连后任务继续运行。
+
+### 4.4 增量更新
+
+- `PreviewNovelResult` 中的 `chapters` 字段使用 `ResolvedChapterState`，包含 `persistStatus`（`'indexed' | 'downloaded' | 'failed'`）字段，标识本地缓存状态。
+- 前端在选章时依据此状态高亮区分"新增"与"已下载"章节。
+
+### 4.5 网络代理
+
+- 全局代理状态由 `NetworkProxyService` 管理，代理配置持久化至 `.data/network-proxy.json`，服务器启动时自动恢复。
+- Spider 适配器通过 `createProxyAwareHtmlFetcher` 获得代理感知的 fetch 函数，不得直接硬编码 `fetch`。
+
+### 4.6 Express 5 注意事项
+
+- SPA 回退路由使用 `app.use(fallback)` 中间件，**不得使用** `app.get('*', ...)` （Express 5 已弃用）。
+
+## 5. API 路由速查 (API Routes)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 健康探针 |
+| GET | `/api/control/sources` | 获取注册的爬虫来源列表 |
+| POST | `/api/control/preview` | 预览小说元数据与目录（含增量状态） |
+| POST | `/api/control/tasks` | 创建并启动抓取任务 |
+| GET | `/api/control/tasks/:id` | 获取任务快照 |
+| GET | `/api/control/tasks/:id/stream` | SSE：实时任务日志流 |
+| GET/PUT | `/api/control/network-proxy` | 读取/更新代理配置 |
+| POST | `/api/control/network-proxy/validate` | 验证代理连通性 |
+| GET | `/api/library/novels` | 书库列表 |
+| GET | `/api/library/novels/:sourceId/:novelId` | 书库单本详情 |
+| GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId` | 章节内容 |
+| GET | `/api/library/novels/:sourceId/:novelId/exports/:format/download` | 下载导出文件（markdown/txt/epub） |
+
+## 6. 编码规范 (Coding Standards)
+
+1. **类型安全**：禁止使用 `any`。API 响应、数据库模型、爬虫中间态数据必须定义 `interface` 或 `type`。
+2. **异步处理**：统一使用 `async/await`。
+3. **注释**：核心接口方法、复杂 CSS 选择器必须添加 JSDoc 注释。
+4. **命名**：文件/目录用 `kebab-case`；类用 `PascalCase`；变量/函数用 `camelCase`。
+5. **请求头**：爬虫发起的所有 HTTP 请求必须带 `User-Agent`、`Accept-Language`、`Accept` 等基础请求头。
+6. **私有字段**：类的内部状态优先使用 `#privateField` 语法（ES2022 私有字段），而非 `private` 关键字。
+
+## 7. 测试规范 (Testing)
+
+- 测试文件与被测文件同目录，后缀为 `.test.ts`。
+- 运行命令：`npm run test:server`（服务端）、`npm run test:web`（前端）、`npm run test:ci`（CI 脚本）。
+- Spider 适配器测试通过注入本地 HTML fixture 进行，**不得**发起真实网络请求。
+- **完成验收**：代码变更必须通过 `npm run typecheck` 和 `npm run build`，无类型错误和编译错误，并且相关测试通过。
+
+## 8. 文档更新规范 (Documentation)
+
+- **禁止自动修改** `ROADMAP.md`。
+- 未经用户明确要求，**禁止修改** `README.md` 和本文件（`copilot-instructions.md`）。
+- 纯配置或文档变更至少需完成与改动直接相关的可执行验证（如 Docker build、healthcheck 等）。
+
+## 9. 默认行为 (Default AI Behaviors)
+
+- **新增爬虫**：在 `src/server/adapters/spider/` 下创建适配器文件，继承 `BaseHtmlSpiderAdapter`，并在 `ControlCenterService` 注册表中追加，同时补充测试。
+- **前端组件**：默认使用 React Hooks，通过 `src/web/services/api.ts` 调用后端接口，与现有暗黑模式视觉风格保持一致。
+- **网络请求**：爬虫 HTTP 请求默认带完整 Headers，并经由 `createProxyAwareHtmlFetcher` 发出。
+- *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
