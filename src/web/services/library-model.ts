@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useRef, useState } from 'react';
+import { startTransition, useEffect, useEffectEvent, useRef, useState } from 'react';
 
 import type { AppLocation } from './app-routes';
 import {
@@ -12,7 +12,10 @@ import {
   fetchLibraryNovel,
   fetchLibraryNovels,
   fetchNovelPreview,
+  fetchTask,
 } from './api';
+import { SseTaskLogBridge } from './task-log-bridge';
+import type { ApiTaskSnapshot } from '../../server/routes/control-center';
 import type {
   LibraryChapterDetailPayload,
   LibraryNovelDetailPayload,
@@ -29,6 +32,8 @@ export interface LibraryModel {
   errorMessage: string | null;
   syncBusy: boolean;
   mediaBusyId: string | null;
+  currentTask: ApiTaskSnapshot | null;
+  taskStreamState: 'idle' | 'connected' | 'reconnecting';
   openNovel: (sourceId: string, novelId: string) => void;
   openChapter: (sourceId: string, novelId: string, chapterId: string) => void;
   refresh: () => Promise<void>;
@@ -43,6 +48,8 @@ interface UseLibraryModelOptions {
   onNotice: (notice: NoticeInput) => void;
 }
 
+type LibraryTaskSnapshot = NonNullable<LibraryNovelDetailPayload['activeTask']>;
+
 export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryModelOptions): LibraryModel {
   const [novels, setNovels] = useState<LibraryNovelSummaryPayload['novels']>([]);
   const [detail, setDetail] = useState<LibraryNovelDetailPayload | null>(null);
@@ -51,11 +58,17 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
   const [mediaBusyId, setMediaBusyId] = useState<string | null>(null);
+  const [currentTask, setCurrentTask] = useState<ApiTaskSnapshot | null>(null);
+  const [taskStreamState, setTaskStreamState] = useState<'idle' | 'connected' | 'reconnecting'>('idle');
   const latestLocationRef = useRef(location);
+  const currentTaskRef = useRef<ApiTaskSnapshot | null>(null);
+  const lastObservedTaskRef = useRef<{ id: string; status: ApiTaskSnapshot['status'] } | null>(null);
+  const publishNotice = useEffectEvent(onNotice);
 
   latestLocationRef.current = location;
+  currentTaskRef.current = currentTask;
 
-  async function loadLocation(targetLocation: AppLocation): Promise<void> {
+  const loadLocation = useEffectEvent(async (targetLocation: AppLocation): Promise<void> => {
     if (targetLocation.route.id !== 'library') {
       return;
     }
@@ -71,6 +84,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
           setNovels(payload.novels);
           setDetail(null);
           setChapter(null);
+          setCurrentTask(null);
         });
         return;
       }
@@ -88,18 +102,39 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
           fetchLibraryChapter(sourceId, novelId, targetLocation.chapterId),
         ]);
 
+        const retainedTask = currentTaskRef.current;
+        const nextTask = normalizeLibraryTask(novelPayload.activeTask)
+          ?? (
+            retainedTask
+            && retainedTask.sourceId === sourceId
+            && retainedTask.novelId === novelId
+            ? retainedTask
+            : null
+          );
+
         startTransition(() => {
           setDetail(novelPayload);
           setChapter(chapterPayload);
+          setCurrentTask(nextTask);
         });
         return;
       }
 
       const payload = await fetchLibraryNovel(sourceId, novelId);
+      const retainedTask = currentTaskRef.current;
+      const nextTask = normalizeLibraryTask(payload.activeTask)
+        ?? (
+          retainedTask
+          && retainedTask.sourceId === sourceId
+          && retainedTask.novelId === novelId
+          ? retainedTask
+          : null
+        );
 
       startTransition(() => {
         setDetail(payload);
         setChapter(null);
+        setCurrentTask(nextTask);
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Library request failed.';
@@ -107,7 +142,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     } finally {
       setLoading(false);
     }
-  }
+  });
 
   useEffect(() => {
     void loadLocation(location);
@@ -118,6 +153,87 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     location.novelId,
     location.chapterId,
   ]);
+
+  useEffect(() => {
+    if (!location.sourceId || !location.novelId) {
+      setCurrentTask(null);
+      lastObservedTaskRef.current = null;
+      return;
+    }
+
+    setCurrentTask((existing) => (
+      existing
+      && existing.sourceId === location.sourceId
+      && existing.novelId === location.novelId
+        ? existing
+        : null
+    ));
+    lastObservedTaskRef.current = null;
+  }, [location.sourceId, location.novelId]);
+
+  useEffect(() => {
+    if (!currentTask || (currentTask.status !== 'queued' && currentTask.status !== 'running')) {
+      setTaskStreamState('idle');
+      return;
+    }
+
+    const bridge = new SseTaskLogBridge();
+    setTaskStreamState('connected');
+
+    const unsubscribe = bridge.subscribe(currentTask.id, {
+      onTaskUpdate: (task) => {
+        startTransition(() => {
+          setCurrentTask(task);
+        });
+        setTaskStreamState('connected');
+      },
+      onError: () => {
+        setTaskStreamState('reconnecting');
+      },
+    });
+
+    const pollId = window.setInterval(() => {
+      void fetchTask(currentTask.id)
+        .then((payload) => {
+          startTransition(() => {
+            setCurrentTask(payload.task);
+          });
+          setTaskStreamState('connected');
+        })
+        .catch(() => {
+          setTaskStreamState('reconnecting');
+        });
+    }, 2500);
+
+    return () => {
+      unsubscribe();
+      window.clearInterval(pollId);
+    };
+  }, [currentTask?.id, currentTask?.status]);
+
+  useEffect(() => {
+    if (!currentTask) {
+      lastObservedTaskRef.current = null;
+      return;
+    }
+
+    const previous = lastObservedTaskRef.current;
+    if (
+      previous
+      && previous.id === currentTask.id
+      && previous.status !== currentTask.status
+      && (currentTask.status === 'completed' || currentTask.status === 'failed')
+    ) {
+      publishNotice({
+        tone: currentTask.status === 'completed' ? 'success' : 'error',
+        title: currentTask.status === 'completed' ? '同步任务已完成' : '同步任务已结束',
+        message: `${currentTask.novelId} 已处理完成，失败章节 ${currentTask.failures.length} 章。`,
+      });
+      void loadLocation(latestLocationRef.current);
+    }
+
+    lastObservedTaskRef.current = { id: currentTask.id, status: currentTask.status };
+  }, [currentTask]);
 
   function openNovel(sourceId: string, novelId: string) {
     onNavigate(buildLibraryNovelPath(sourceId, novelId));
@@ -144,7 +260,11 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         novelId: location.novelId,
       });
 
-      onNotice({
+      startTransition(() => {
+        setCurrentTask(payload.task);
+      });
+
+      publishNotice({
         tone: 'success',
         title: '增量同步已启动',
         message: `${payload.task.novelId} 已进入 ${payload.task.status === 'queued' ? '排队中' : '执行中'}。`,
@@ -152,7 +272,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       await refresh();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Incremental sync failed.';
-      onNotice({ tone: 'error', title: '增量同步失败', message });
+      publishNotice({ tone: 'error', title: '增量同步失败', message });
     } finally {
       setSyncBusy(false);
     }
@@ -172,7 +292,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         .map((entry) => entry.id);
 
       if (pendingIds.length === 0) {
-        onNotice({
+        publishNotice({
           tone: 'info',
           title: '没有缺失章节',
           message: '当前本地书库已经包含全部已知章节。',
@@ -186,7 +306,11 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         chapterIds: pendingIds,
       });
 
-      onNotice({
+      startTransition(() => {
+        setCurrentTask(payload.task);
+      });
+
+      publishNotice({
         tone: 'success',
         title: '补录任务已启动',
         message: `${payload.task.novelId} 将补抓 ${pendingIds.length} 个缺失章节。`,
@@ -194,7 +318,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       await refresh();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Missing chapter sync failed.';
-      onNotice({ tone: 'error', title: '补录任务失败', message });
+      publishNotice({ tone: 'error', title: '补录任务失败', message });
     } finally {
       setSyncBusy(false);
     }
@@ -215,7 +339,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         mediaId,
       );
 
-      onNotice({
+      publishNotice({
         tone: 'success',
         title: '媒体已缓存',
         message: payload.media.fileName ?? '已生成本地离线副本。',
@@ -223,7 +347,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       await refresh();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Media cache failed.';
-      onNotice({ tone: 'error', title: '媒体缓存失败', message });
+      publishNotice({ tone: 'error', title: '媒体缓存失败', message });
     } finally {
       setMediaBusyId(null);
     }
@@ -238,11 +362,32 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     errorMessage,
     syncBusy,
     mediaBusyId,
+    currentTask,
+    taskStreamState,
     openNovel,
     openChapter,
     refresh,
     runIncrementalSync,
     syncMissingChapters,
     cacheMediaAsset,
+  };
+}
+
+function normalizeLibraryTask(task: LibraryTaskSnapshot | null): ApiTaskSnapshot | null {
+  if (!task) {
+    return null;
+  }
+
+  return {
+    ...task,
+    events: task.events.map((event) => ({
+      type: event.type,
+      level: event.level,
+      message: event.message,
+      context: event.context,
+      ...(event.payload !== undefined ? { payload: event.payload } : {}),
+      errorMessage: event.error?.message ?? null,
+      timestamp: event.timestamp,
+    })),
   };
 }

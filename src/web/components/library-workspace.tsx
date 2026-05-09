@@ -7,6 +7,7 @@ import {
   type LibraryExportFormat,
 } from '../services/api';
 import {
+  formatLibraryTaskStatus,
   findPreferredReaderChapter,
   splitChapterContent,
   toLibraryDirectoryChapters,
@@ -370,6 +371,9 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
   }
 
   const preferredChapterId = findPreferredReaderChapter(detail);
+  const task = model.currentTask;
+  const latestTaskEvent = task?.events[task.events.length - 1] ?? null;
+  const taskHeading = task?.status === 'completed' || task?.status === 'failed' ? '最近一次同步' : '当前同步任务';
 
   return (
     <div className="page-stack">
@@ -417,6 +421,49 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
           <a className="secondary-link" href={detail.metadata.infoPageUrl} target="_blank" rel="noreferrer">去原站查看</a>
         </div>
       </section>
+
+      {task ? (
+        <section className="panel task-summary-panel">
+          <div className="panel-heading split align-start">
+            <div>
+              <p className="eyebrow">任务状态</p>
+              <h2>{taskHeading}</h2>
+            </div>
+            <div className="badge-row">
+              <span className={`status-badge state-${task.status}`}>{formatLibraryTaskStatus(task.status)}</span>
+              <span className={`stream-indicator stream-${model.taskStreamState}`}>
+                {model.taskStreamState === 'connected' ? '实时更新中' : model.taskStreamState === 'reconnecting' ? '正在重连' : '已结束'}
+              </span>
+            </div>
+          </div>
+
+          <div className="progress-track" aria-hidden="true">
+            <div className="progress-fill" style={{ width: `${Math.max(task.progress.percent, task.status === 'completed' ? 100 : 0)}%` }} />
+          </div>
+
+          <div className="badge-row">
+            <span className="status-badge state-indexed">目录 {task.progress.catalogChapters}</span>
+            <span className="status-badge ok">已完成 {task.progress.completedChapters}</span>
+            <span className="status-badge state-indexed">排队 {task.progress.queuedChapters}</span>
+            <span className="status-badge state-failed">失败 {task.progress.failedChapters}</span>
+          </div>
+
+          <p className="panel-note task-summary-note">
+            {task.status === 'completed'
+              ? '同步已结束，页面会自动带入最新目录和章节状态。'
+              : task.status === 'failed'
+                ? '任务已结束，但仍有失败章节；可以直接用“补录缺失章节”继续补抓。'
+                : '这里会跟着后台任务更新，不需要手动刷新页面看进度。'}
+          </p>
+
+          {latestTaskEvent ? (
+            <div className="card task-summary-event">
+              <p className="label">最新进度</p>
+              <strong>{latestTaskEvent.message}</strong>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="panel panel-grid metadata-board">
         <div className="card span-2">
@@ -573,26 +620,10 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
         mode="inspect"
         loading={model.loading}
         title="章节目录"
-        subtitle="已下载和未下载的章节都在这里；点已下载章节可以直接阅读。"
+        subtitle="已下载和未下载的章节都在这里；有图章节会直接标出图片数量和本地缓存情况。"
         emptyMessage="当前作品还没有已知章节目录。"
         onPickChapter={(chapterId) => model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId)}
       />
-
-      {model.detail?.activeTask ? (
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">任务状态</p>
-              <h2>当前同步任务</h2>
-            </div>
-          </div>
-          <div className="badge-row">
-            <span className={`status-badge state-${model.detail.activeTask.status}`}>{model.detail.activeTask.status}</span>
-            <span className="status-badge ok">已完成 {model.detail.activeTask.progress.completedChapters}</span>
-            <span className="status-badge state-indexed">失败 {model.detail.activeTask.progress.failedChapters}</span>
-          </div>
-        </section>
-      ) : null}
 
       <div className="action-row wrap">
         <button type="button" className="ghost-button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>

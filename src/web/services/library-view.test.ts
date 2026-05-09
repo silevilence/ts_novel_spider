@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   findPreferredReaderChapter,
+  formatLibraryTaskStatus,
   splitChapterContent,
+  summarizeChapterMedia,
   toLibraryDirectoryChapters,
 } from './library-view';
 
@@ -80,4 +82,34 @@ test('findPreferredReaderChapter chooses the first chapter with local content', 
 
 test('splitChapterContent removes blank paragraphs', () => {
   assert.deepEqual(splitChapterContent('第一段\n\n\n第二段\n\n第三段'), ['第一段', '第二段', '第三段']);
+});
+
+test('summarizeChapterMedia distinguishes no-image, partial-cache and full-cache states', () => {
+  assert.deepEqual(summarizeChapterMedia(undefined), {
+    hasMedia: false,
+    presenceLabel: '无图',
+    cacheLabel: null,
+    cacheComplete: true,
+  });
+
+  assert.deepEqual(summarizeChapterMedia({ total: 2, cached: 1, pending: 1 }), {
+    hasMedia: true,
+    presenceLabel: '有图 2 张',
+    cacheLabel: '已缓存 1/2',
+    cacheComplete: false,
+  });
+
+  assert.deepEqual(summarizeChapterMedia({ total: 3, cached: 3, pending: 0 }), {
+    hasMedia: true,
+    presenceLabel: '有图 3 张',
+    cacheLabel: '已缓存 3/3',
+    cacheComplete: true,
+  });
+});
+
+test('formatLibraryTaskStatus returns user-facing task labels', () => {
+  assert.equal(formatLibraryTaskStatus('queued'), '排队中');
+  assert.equal(formatLibraryTaskStatus('running'), '执行中');
+  assert.equal(formatLibraryTaskStatus('completed'), '已完成');
+  assert.equal(formatLibraryTaskStatus('failed'), '已失败');
 });

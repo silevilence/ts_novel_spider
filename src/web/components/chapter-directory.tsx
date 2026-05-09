@@ -5,6 +5,7 @@ import {
   filterChapterGroups,
   groupResolvedChapters,
 } from '../services/chapter-groups';
+import { summarizeChapterMedia } from '../services/library-view';
 
 export interface ChapterDirectoryEntry {
   id: string;
@@ -187,6 +188,7 @@ export function ChapterDirectory({
                     {group.chapters.map((chapter) => {
                   const checked = selectedSet.has(chapter.id);
                   const isActive = activeChapterId === chapter.id;
+                  const mediaSummary = summarizeChapterMedia(chapter.media);
 
                   return (
                     <li key={chapter.id} className={`chapter-item status-${chapter.status} ${isActive ? 'active' : ''}`}>
@@ -214,15 +216,16 @@ export function ChapterDirectory({
                             <span className="chapter-index">#{chapter.index}</span>
                             <strong>{chapter.title}</strong>
                           </span>
-                          {isActive ? <span className="status-badge ok">阅读中</span> : null}
                         </button>
                       )}
-                      <div className="badge-row">
+                      <div className="badge-row chapter-status-row">
+                        {isActive ? <span className="status-badge ok">阅读中</span> : null}
                         {chapter.isNew ? <span className="status-badge new">新增</span> : null}
                         {chapter.wasDownloaded ? <span className="status-badge ok">{selectionMode ? '已下载' : '可阅读'}</span> : null}
-                        {chapter.media && chapter.media.total > 0 ? (
-                          <span className="status-badge state-indexed">
-                            媒体 {chapter.media.cached}/{chapter.media.total}
+                        {mediaSummary.hasMedia ? <span className="status-badge state-indexed">{mediaSummary.presenceLabel}</span> : <span className="count-chip subtle">无图</span>}
+                        {mediaSummary.cacheLabel ? (
+                          <span className={`status-badge ${mediaSummary.cacheComplete ? 'ok' : 'state-indexed'}`}>
+                            {mediaSummary.cacheLabel}
                           </span>
                         ) : null}
                         {chapter.status !== 'downloaded' ? <span className={`status-badge state-${chapter.status}`}>{formatChapterStatus(chapter.status)}</span> : null}
