@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="favicon-title favicon-desc">
+  <title id="favicon-title">TS Novel Spider favicon</title>
+  <desc id="favicon-desc">An open book marked with a crawler signal inside a rounded square.</desc>
+  <defs>
+    <linearGradient id="bg-gradient" x1="12" y1="8" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f2c43" />
+      <stop offset="1" stop-color="#06121f" />
+    </linearGradient>
+    <linearGradient id="signal-gradient" x1="19" y1="19" x2="45" y2="45" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd166" />
+      <stop offset="1" stop-color="#ff8c42" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg-gradient)" />
+  <circle cx="32" cy="20" r="13" fill="rgba(255, 209, 102, 0.12)" />
+  <path
+    d="M18 21.5L32 31.5L46 21.5"
+    fill="none"
+    stroke="url(#signal-gradient)"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="3"
+  />
+  <path
+    d="M32 15V31.5"
+    fill="none"
+    stroke="url(#signal-gradient)"
+    stroke-linecap="round"
+    stroke-width="3"
+  />
+  <circle cx="18" cy="21.5" r="3" fill="#ffd166" />
+  <circle cx="32" cy="15" r="3.5" fill="#ff8c42" />
+  <circle cx="46" cy="21.5" r="3" fill="#ffd166" />
+  <path
+    d="M14 24.5C14 20.9101 16.9101 18 20.5 18H27C29.7614 18 32 20.2386 32 23V47C29.9058 44.8609 27.0381 43.6562 24.0446 43.6562H20.25C16.7982 43.6562 14 40.858 14 37.4062V24.5Z"
+    fill="#f4f7fb"
+    opacity="0.96"
+  />
+  <path
+    d="M50 24.5C50 20.9101 47.0899 18 43.5 18H37C34.2386 18 32 20.2386 32 23V47C34.0942 44.8609 36.9619 43.6562 39.9554 43.6562H43.75C47.2018 43.6562 50 40.858 50 37.4062V24.5Z"
+    fill="#d7e3f2"
+    opacity="0.92"
+  />
+  <path
+    d="M22 25.5H27"
+    fill="none"
+    stroke="#7fd0ff"
+    stroke-linecap="round"
+    stroke-width="2.4"
+  />
+  <path
+    d="M37 25.5H42"
+    fill="none"
+    stroke="#7fd0ff"
+    stroke-linecap="round"
+    stroke-width="2.4"
+  />
+  <path
+    d="M32 32.5V47"
+    fill="none"
+    stroke="#7fd0ff"
+    stroke-linecap="round"
+    stroke-width="2.4"
+  />
+</svg>
