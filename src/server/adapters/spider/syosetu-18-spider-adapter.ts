@@ -21,6 +21,14 @@ const APPEND_PATTERN = /^La\d+$/;
 const AUTHOR_LABEL = '作者名';
 const DESCRIPTION_LABEL = 'あらすじ';
 const KEYWORDS_LABEL = 'キーワード';
+const CHAPTER_SECTION_DIVIDER = '---';
+
+type ChapterParagraphKind = 'preface' | 'body' | 'afterword';
+
+interface ChapterParagraphSegment {
+  kind: ChapterParagraphKind;
+  content: string;
+}
 
 export interface SpiderHtmlRequest {
   url: string;
@@ -132,8 +140,11 @@ export class Syosetu18SpiderAdapter extends BaseHtmlSpiderAdapter {
   ): Promise<ChapterContent> {
     const document = this.parseHtml(await this.loadHtml(chapter.url));
     const contentSegments = readChapterParagraphs(document)
-      .map((segment) => segment.trim())
-      .filter((segment) => segment.length > 0);
+      .map((segment) => ({
+        ...segment,
+        content: segment.content.trim(),
+      }))
+      .filter((segment) => segment.content.length > 0);
 
     if (contentSegments.length === 0) {
       throw new Error(`No chapter content found for ${chapter.url}`);
@@ -150,7 +161,7 @@ export class Syosetu18SpiderAdapter extends BaseHtmlSpiderAdapter {
         readText(document('.p-novel__title').first()) ??
         chapter.title,
       url: chapter.url,
-      content: contentSegments.join('\n\n'),
+      content: joinChapterParagraphs(contentSegments),
       ...(volumeTitle ? { volumeTitle } : {}),
     };
   }
@@ -318,30 +329,43 @@ function readNextCatalogPageUrl(
   return toAbsoluteUrl(href);
 }
 
-/**
- * 章节正文由前言、本体、后记三类段落组成，需按页面自然顺序合并为单一正文串。
- */
-function readChapterParagraphs(document: CheerioAPI): string[] {
+function readChapterParagraphs(document: CheerioAPI): ChapterParagraphSegment[] {
   const paragraphs = document('p[id]').toArray();
 
   return paragraphs
-    .filter((element) => {
+    .flatMap((element) => {
       const id = document(element).attr('id');
-      return isContentParagraphId(id);
-    })
-    .map((element) => readParagraphContent(document, element));
+      const kind = getParagraphKind(id);
+
+      if (!kind) {
+        return [];
+      }
+
+      return [{
+        kind,
+        content: readParagraphContent(document, element),
+      } satisfies ChapterParagraphSegment];
+    });
 }
 
-function isContentParagraphId(paragraphId: string | undefined): boolean {
+function getParagraphKind(paragraphId: string | undefined): ChapterParagraphKind | null {
   if (!paragraphId) {
-    return false;
+    return null;
   }
 
-  return (
-    PREPEND_PATTERN.test(paragraphId) ||
-    BODY_PATTERN.test(paragraphId) ||
-    APPEND_PATTERN.test(paragraphId)
-  );
+  if (PREPEND_PATTERN.test(paragraphId)) {
+    return 'preface';
+  }
+
+  if (BODY_PATTERN.test(paragraphId)) {
+    return 'body';
+  }
+
+  if (APPEND_PATTERN.test(paragraphId)) {
+    return 'afterword';
+  }
+
+  return null;
 }
 
 function readParagraphContent(document: CheerioAPI, element: Parameters<CheerioAPI>[0]): string {
@@ -386,6 +410,22 @@ function normalizeMultilineText(text: string): string {
     .map((line) => line.trim())
     .join('\n')
     .trim();
+}
+
+function joinChapterParagraphs(segments: ChapterParagraphSegment[]): string {
+  const merged: string[] = [];
+  let lastKind: ChapterParagraphKind | null = null;
+
+  for (const segment of segments) {
+    if (merged.length > 0 && lastKind && lastKind !== segment.kind) {
+      merged.push(CHAPTER_SECTION_DIVIDER);
+    }
+
+    merged.push(segment.content);
+    lastKind = segment.kind;
+  }
+
+  return merged.join('\n\n');
 }
 
 function parseFirstInteger(text: string | undefined): number | undefined {

@@ -132,7 +132,7 @@ test('Syosetu18SpiderAdapter parses metadata, catalog and chapter content', asyn
     title: '迷宮へ',
     volumeTitle: '第一幕',
     url: chapter1Url,
-    content: '前書きです。\n\n一段落目です。\n\n二段落目です。\n\n後書きです。',
+    content: '前書きです。\n\n---\n\n一段落目です。\n\n二段落目です。\n\n---\n\n後書きです。',
   });
   assert.deepEqual(chapter2, {
     chapterId: '2',

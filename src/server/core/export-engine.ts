@@ -59,6 +59,7 @@ interface LibraryExportStrategy {
 
 const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?)/gi;
 const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
+const CHAPTER_SECTION_DIVIDER = '---';
 
 export class LocalExportEngine {
   readonly #outputRoot: string;
@@ -223,7 +224,7 @@ class EpubExportStrategy implements LibraryExportStrategy {
 
     content.folder('styles')?.file(
       'book.css',
-      'body { font-family: serif; line-height: 1.75; } h1, h2, h3 { line-height: 1.3; } img { max-width: 100%; display: block; margin: 1rem auto; } p { text-indent: 2em; } .meta { text-indent: 0; color: #555; }',
+      'body { font-family: serif; line-height: 1.75; } h1, h2, h3 { line-height: 1.3; } img { max-width: 100%; display: block; margin: 1rem auto; } p { text-indent: 2em; } .meta { text-indent: 0; color: #555; } .section-divider { border: 0; border-top: 1px solid #999; margin: 1.5rem 0; }',
     );
     content.file('intro.xhtml', renderEpubIntro(context));
 
@@ -462,6 +463,12 @@ function renderEpubVolume(
 }
 
 function renderEpubParagraph(paragraph: string, assets: PreparedMediaAsset[]): string {
+  const trimmed = paragraph.trim();
+
+  if (trimmed === CHAPTER_SECTION_DIVIDER) {
+    return '<hr class="section-divider"/>';
+  }
+
   const markdownImageMatch = paragraph.trim().match(/^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/i);
 
   if (markdownImageMatch) {
@@ -478,7 +485,6 @@ function renderEpubParagraph(paragraph: string, assets: PreparedMediaAsset[]): s
     }
   }
 
-  const trimmed = paragraph.trim();
   const bareImageMatch = trimmed.match(/^https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?$/i);
 
   if (bareImageMatch) {

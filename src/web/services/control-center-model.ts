@@ -24,6 +24,18 @@ export interface NoticeInput {
   message: string;
 }
 
+interface TaskSubmissionTarget {
+  sourceId: string;
+  novelId: string;
+}
+
+interface TaskSubmissionOptions {
+  chapterIds?: string[];
+  forceRefetch: boolean;
+  chapterConcurrency: number;
+  chapterRetryCount: number;
+}
+
 export interface ControlCenterModel {
   health: HealthPayload | null;
   errorMessage: string | null;
@@ -245,23 +257,18 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     await refreshPreview(selectedSourceId, trimmedNovelId);
   }
 
-  async function handleCreateTask(chapterIds?: string[]) {
-    const trimmedNovelId = novelId.trim();
-    if (selectedSourceId.length === 0 || trimmedNovelId.length === 0) {
-      return;
-    }
-
+  async function submitTask(target: TaskSubmissionTarget, chapterIds?: string[]) {
     setTaskBusy(true);
 
     try {
-      const payload = await createControlTask({
-        sourceId: selectedSourceId,
-        novelId: trimmedNovelId,
-        ...(chapterIds && chapterIds.length > 0 ? { chapterIds } : {}),
-        forceRefetch,
-        chapterConcurrency,
-        chapterRetryCount,
-      });
+      const payload = await createControlTask(
+        buildTaskSubmissionInput(target, {
+          ...(chapterIds && chapterIds.length > 0 ? { chapterIds } : {}),
+          forceRefetch,
+          chapterConcurrency,
+          chapterRetryCount,
+        }),
+      );
 
       hydrateTask(payload.task);
       await refreshRecentTasks();
@@ -279,6 +286,18 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     }
   }
 
+  async function handleCreateTask(chapterIds?: string[]) {
+    const trimmedNovelId = novelId.trim();
+    if (selectedSourceId.length === 0 || trimmedNovelId.length === 0) {
+      return;
+    }
+
+    await submitTask({
+      sourceId: selectedSourceId,
+      novelId: trimmedNovelId,
+    }, chapterIds);
+  }
+
   async function handlePickTask(taskId: string) {
     try {
       const payload = await fetchTask(taskId);
@@ -291,13 +310,13 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
   }
 
   async function handleRetryFailed() {
-    const failedIds = currentTask?.failures.map((failure) => failure.chapterId) ?? [];
+    const retryTarget = resolveRetryTaskTarget(currentTask);
 
-    if (failedIds.length === 0) {
+    if (!retryTarget) {
       return;
     }
 
-    await handleCreateTask(failedIds);
+    await submitTask(retryTarget, retryTarget.chapterIds);
   }
 
   function handleSourceChange(nextSourceId: string) {
@@ -389,6 +408,39 @@ function defaultSelectedChapterIds(chapters: Array<{ id: string; status: string 
   return chapters
     .filter((chapter) => chapter.status !== 'downloaded')
     .map((chapter) => chapter.id);
+}
+
+export function buildTaskSubmissionInput(
+  target: TaskSubmissionTarget,
+  options: TaskSubmissionOptions,
+): Parameters<typeof createControlTask>[0] {
+  return {
+    sourceId: target.sourceId,
+    novelId: target.novelId,
+    ...(options.chapterIds && options.chapterIds.length > 0 ? { chapterIds: options.chapterIds } : {}),
+    forceRefetch: options.forceRefetch,
+    chapterConcurrency: options.chapterConcurrency,
+    chapterRetryCount: options.chapterRetryCount,
+  };
+}
+
+export function resolveRetryTaskTarget(
+  currentTask: ApiTaskSnapshot | null,
+): (TaskSubmissionTarget & { chapterIds: string[] }) | null {
+  if (!currentTask) {
+    return null;
+  }
+
+  const chapterIds = currentTask.failures.map((failure) => failure.chapterId);
+  if (chapterIds.length === 0) {
+    return null;
+  }
+
+  return {
+    sourceId: currentTask.sourceId,
+    novelId: currentTask.novelId,
+    chapterIds,
+  };
 }
 
 function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
