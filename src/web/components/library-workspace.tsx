@@ -7,9 +7,11 @@ import {
   type LibraryExportFormat,
 } from '../services/api';
 import {
+  buildTextPreview,
+  calculateRemainingTaskChapters,
   formatLibraryTaskStatus,
   findPreferredReaderChapter,
-  splitChapterContent,
+  parseReaderContent,
   toLibraryDirectoryChapters,
 } from '../services/library-view';
 
@@ -48,24 +50,40 @@ const LIBRARY_EXPORT_OPTIONS: Array<{
   },
 ];
 
+const LIBRARY_CARD_DESCRIPTION_LIMIT = 180;
+const LIBRARY_DETAIL_DESCRIPTION_LIMIT = 420;
+
+interface DescriptionDialogState {
+  title: string;
+  text: string;
+}
+
 export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps) {
   const [isReaderDirectoryOpen, setIsReaderDirectoryOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [isRedownloadPickerOpen, setIsRedownloadPickerOpen] = useState(false);
+  const [descriptionDialog, setDescriptionDialog] = useState<DescriptionDialogState | null>(null);
+  const [selectedRedownloadChapterIds, setSelectedRedownloadChapterIds] = useState<string[]>([]);
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setIsReaderDirectoryOpen(false);
     setIsExportDialogOpen(false);
+    setIsRedownloadPickerOpen(false);
+    setDescriptionDialog(null);
+    setSelectedRedownloadChapterIds([]);
   }, [model.location.path]);
 
   useEffect(() => {
-    if (!isExportDialogOpen) {
+    if (!isExportDialogOpen && !descriptionDialog && !isRedownloadPickerOpen) {
       return;
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setIsExportDialogOpen(false);
+        setIsRedownloadPickerOpen(false);
+        setDescriptionDialog(null);
       }
     };
 
@@ -74,7 +92,53 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [isExportDialogOpen]);
+  }, [descriptionDialog, isExportDialogOpen, isRedownloadPickerOpen]);
+
+  useEffect(() => {
+    if (model.location.view !== 'reader' || !model.chapter?.chapter.chapter.id) {
+      return;
+    }
+
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [model.location.view, model.chapter?.chapter.chapter.id]);
+
+  function renderDescriptionDialog() {
+    if (!descriptionDialog) {
+      return null;
+    }
+
+    return (
+      <div className="reader-directory-overlay export-dialog-overlay" role="presentation" onClick={() => setDescriptionDialog(null)}>
+        <section
+          className="export-dialog description-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="library-description-dialog-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="reader-directory-drawer-header export-dialog-header">
+            <div>
+              <p className="eyebrow">作品简介</p>
+              <h2 id="library-description-dialog-title">{descriptionDialog.title}</h2>
+              <p className="panel-note">这里显示完整简介，方便单独阅读。</p>
+            </div>
+
+            <button
+              type="button"
+              className="ghost-button reader-directory-close"
+              onClick={() => setDescriptionDialog(null)}
+            >
+              关闭
+            </button>
+          </div>
+
+          <div className="card description-dialog-body">
+            <p>{descriptionDialog.text}</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   if (model.location.view === 'page') {
     const totalNovels = model.novels.length;
@@ -130,35 +194,58 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
             </div>
           ) : (
             <div className="library-grid">
-              {model.novels.map((novel) => (
-                <article key={`${novel.sourceId}-${novel.metadata.novelId}`} className="card library-card">
-                  <div className="library-card-head">
-                    <p className="label">{novel.sourceId}</p>
-                    <button
-                      type="button"
-                      className="primary-button library-card-detail-button"
-                      onClick={() => model.openNovel(novel.sourceId, novel.metadata.novelId)}
-                    >
-                      查看详情
-                    </button>
-                  </div>
-                  <h3>{novel.metadata.title}</h3>
-                  <p className="muted">作者：{novel.metadata.author || '未知作者'}</p>
-                  <p className="library-card-copy">{novel.metadata.description || '暂无简介。'}</p>
-                  <div className="tag-row">
-                    {novel.metadata.tags.length > 0
-                      ? novel.metadata.tags.map((tag) => <span key={tag} className="tag">{tag}</span>)
-                      : <span className="muted">无标签</span>}
-                  </div>
-                  <div className="badge-row">
-                    <span className="status-badge ok">已下载 {novel.downloadedChapters}</span>
-                    <span className="status-badge state-indexed">未下载 {novel.indexedChapters + novel.failedChapters}</span>
-                  </div>
-                </article>
-              ))}
+              {model.novels.map((novel) => {
+                const descriptionPreview = buildTextPreview(
+                  novel.metadata.description,
+                  LIBRARY_CARD_DESCRIPTION_LIMIT,
+                );
+
+                return (
+                  <article key={`${novel.sourceId}-${novel.metadata.novelId}`} className="card library-card">
+                    <div className="library-card-head">
+                      <p className="label">{novel.sourceId}</p>
+                      <button
+                        type="button"
+                        className="primary-button library-card-detail-button"
+                        onClick={() => model.openNovel(novel.sourceId, novel.metadata.novelId)}
+                      >
+                        查看详情
+                      </button>
+                    </div>
+                    <h3>{novel.metadata.title}</h3>
+                    <p className="muted">作者：{novel.metadata.author || '未知作者'}</p>
+                    <div className="description-preview-block">
+                      <p className="library-card-copy description-preview-copy">{descriptionPreview.text}</p>
+                      {descriptionPreview.isTruncated ? (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => setDescriptionDialog({
+                            title: novel.metadata.title,
+                            text: descriptionPreview.fullText,
+                          })}
+                        >
+                          查看简介全文
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="tag-row">
+                      {novel.metadata.tags.length > 0
+                        ? novel.metadata.tags.map((tag) => <span key={tag} className="tag">{tag}</span>)
+                        : <span className="muted">无标签</span>}
+                    </div>
+                    <div className="badge-row">
+                      <span className="status-badge ok">已下载 {novel.downloadedChapters}</span>
+                      <span className="status-badge state-indexed">未下载 {novel.indexedChapters + novel.failedChapters}</span>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
+
+        {renderDescriptionDialog()}
       </div>
     );
   }
@@ -172,6 +259,8 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
       </section>
     );
   }
+
+  const detailDescriptionPreview = buildTextPreview(detail.metadata.description, LIBRARY_DETAIL_DESCRIPTION_LIMIT);
 
   if (model.location.view === 'reader') {
     const chapter = model.chapter?.chapter;
@@ -255,9 +344,21 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
             </div>
 
             <div className="reader-copy">
-              {splitChapterContent(readerChapter.content).map((paragraph, index) => (
-                <p key={`${readerChapter.id}-${index}`}>{paragraph}</p>
-              ))}
+              {parseReaderContent(readerChapter.content).map((block, index) => {
+                if (block.type === 'divider') {
+                  return <hr key={`${readerChapter.id}-${index}`} className="reader-section-divider" />;
+                }
+
+                if (block.type === 'image') {
+                  return (
+                    <figure key={`${readerChapter.id}-${index}`} className="reader-inline-image">
+                      <img src={block.sourceUrl} alt={block.alt || '章节插图'} loading="lazy" />
+                    </figure>
+                  );
+                }
+
+                return <p key={`${readerChapter.id}-${index}`}>{block.text}</p>;
+              })}
             </div>
 
             {chapter.mediaAssets.length > 0 ? (
@@ -376,8 +477,16 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
     ?? detail.chapters.find((chapter) => chapter.status === 'downloaded' && chapter.media.total > 0)?.id
     ?? null;
   const task = model.currentTask;
+  const redownloadCandidateChapters = toLibraryDirectoryChapters(detail.chapters)
+    .filter((chapter) => chapter.status === 'downloaded' || chapter.status === 'failed');
   const latestTaskEvent = task?.events[task.events.length - 1] ?? null;
   const taskHeading = task?.status === 'completed' || task?.status === 'failed' ? '最近一次同步' : '当前同步任务';
+  const remainingTaskChapters = calculateRemainingTaskChapters(task?.progress);
+
+  function openRedownloadPicker() {
+    setSelectedRedownloadChapterIds([]);
+    setIsRedownloadPickerOpen(true);
+  }
 
   function scrollToChapterDirectory() {
     chapterDirectoryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -417,6 +526,22 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
           <button type="button" className="secondary-button" onClick={() => void model.syncMissingChapters()} disabled={model.syncBusy}>
             {model.syncBusy ? '补录中...' : '补录缺失章节'}
           </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => void model.redownloadAllDownloadedChapters()}
+            disabled={model.syncBusy || detail.stats.downloaded === 0}
+          >
+            {model.syncBusy ? '重下中...' : detail.stats.downloaded === 0 ? '没有可重下章节' : '全部重下已下载章节'}
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={openRedownloadPicker}
+            disabled={model.syncBusy || redownloadCandidateChapters.length === 0}
+          >
+            {redownloadCandidateChapters.length === 0 ? '没有失败或可选章节' : '选择失败或指定章节'}
+          </button>
           {preferredChapterId ? (
             <button
               type="button"
@@ -452,7 +577,7 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
           <div className="badge-row">
             <span className="status-badge state-indexed">目录 {task.progress.catalogChapters}</span>
             <span className="status-badge ok">已完成 {task.progress.completedChapters}</span>
-            <span className="status-badge state-indexed">排队 {task.progress.queuedChapters}</span>
+            <span className="status-badge state-indexed">待处理 {remainingTaskChapters}</span>
             <span className="status-badge state-failed">失败 {task.progress.failedChapters}</span>
           </div>
 
@@ -477,7 +602,21 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
         <div className="card span-2">
           <p className="label">简介</p>
           <h3>{detail.metadata.title}</h3>
-          <p>{detail.metadata.description || '暂无简介。'}</p>
+          <div className="description-preview-block detail-description-preview">
+            <p className="description-preview-copy detail-description-copy">{detailDescriptionPreview.text}</p>
+            {detailDescriptionPreview.isTruncated ? (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setDescriptionDialog({
+                  title: detail.metadata.title,
+                  text: detailDescriptionPreview.fullText,
+                })}
+              >
+                查看简介全文
+              </button>
+            ) : null}
+          </div>
         </div>
         <div className="card">
           <p className="label">作者</p>
@@ -693,6 +832,78 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
             </div>
           </section>
         </div>
+      ) : null}
+
+      {isRedownloadPickerOpen ? (
+        <div className="reader-directory-overlay" role="presentation" onClick={() => setIsRedownloadPickerOpen(false)}>
+          <aside
+            className="reader-directory-drawer redownload-picker-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="library-redownload-picker-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="reader-directory-drawer-header">
+              <div>
+                <p className="eyebrow">重新下载</p>
+                <h2 id="library-redownload-picker-title">选择失败或指定章节</h2>
+                <p className="panel-note">这里会列出失败章节和已下载章节。你可以先点“选中失败项”，也可以手动勾选任意章节后重新下载。</p>
+              </div>
+              <button
+                type="button"
+                className="ghost-button reader-directory-close"
+                onClick={() => setIsRedownloadPickerOpen(false)}
+              >
+                关闭
+              </button>
+            </div>
+
+            <ChapterDirectory
+              chapters={redownloadCandidateChapters}
+              mode="select"
+              selectedChapterIds={selectedRedownloadChapterIds}
+              busy={model.syncBusy}
+              loading={model.loading}
+              title="选择要重新下载的章节"
+              subtitle="失败章节可以一键选中；你也可以勾选部分已下载章节单独重下。"
+              emptyMessage="当前没有失败章节或已下载章节可供重新下载。"
+              onToggleChapter={(chapterId) => setSelectedRedownloadChapterIds((current) => (
+                current.includes(chapterId)
+                  ? current.filter((item) => item !== chapterId)
+                  : [...current, chapterId]
+              ))}
+              onSelectAll={() => setSelectedRedownloadChapterIds(redownloadCandidateChapters.map((chapter) => chapter.id))}
+              onSelectPending={() => setSelectedRedownloadChapterIds(redownloadCandidateChapters.filter((chapter) => chapter.status !== 'downloaded').map((chapter) => chapter.id))}
+              onSelectFailed={() => setSelectedRedownloadChapterIds(redownloadCandidateChapters.filter((chapter) => chapter.status === 'failed').map((chapter) => chapter.id))}
+              onClearSelection={() => setSelectedRedownloadChapterIds([])}
+            />
+
+            <div className="action-row wrap redownload-picker-actions">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => {
+                  void model.redownloadSelectedChapters(selectedRedownloadChapterIds);
+                  setIsRedownloadPickerOpen(false);
+                }}
+                disabled={model.syncBusy || selectedRedownloadChapterIds.length === 0}
+              >
+                {model.syncBusy ? '重下中...' : `重新下载选中章节 (${selectedRedownloadChapterIds.length})`}
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setIsRedownloadPickerOpen(false)}
+              >
+                取消
+              </button>
+            </div>
+          </aside>
+        </div>
+      ) : null}
+
+      {descriptionDialog ? (
+        renderDescriptionDialog()
       ) : null}
 
       <div ref={chapterDirectoryRef} className="library-directory-anchor">

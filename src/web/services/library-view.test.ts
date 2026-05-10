@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildTextPreview,
+  calculateRemainingTaskChapters,
   findPreferredReaderChapter,
   formatLibraryTaskStatus,
+  parseReaderContent,
   splitChapterContent,
   summarizeChapterMedia,
   toLibraryDirectoryChapters,
@@ -82,6 +85,48 @@ test('findPreferredReaderChapter chooses the first chapter with local content', 
 
 test('splitChapterContent removes blank paragraphs', () => {
   assert.deepEqual(splitChapterContent('第一段\n\n\n第二段\n\n第三段'), ['第一段', '第二段', '第三段']);
+});
+
+test('buildTextPreview collapses line breaks and truncates long text', () => {
+  assert.deepEqual(buildTextPreview('第一行\n\n第二行', 20), {
+    text: '第一行 第二行',
+    fullText: '第一行\n\n第二行',
+    isTruncated: false,
+  });
+
+  assert.deepEqual(buildTextPreview('abcdefghijklmnopqrstuvwxyz', 10), {
+    text: 'abcdefghij...',
+    fullText: 'abcdefghijklmnopqrstuvwxyz',
+    isTruncated: true,
+  });
+});
+
+test('calculateRemainingTaskChapters excludes completed and failed chapters from pending count', () => {
+  assert.equal(calculateRemainingTaskChapters({
+    catalogChapters: 83,
+    queuedChapters: 83,
+    completedChapters: 60,
+    failedChapters: 0,
+  }), 23);
+
+  assert.equal(calculateRemainingTaskChapters({
+    catalogChapters: 0,
+    queuedChapters: 5,
+    completedChapters: 3,
+    failedChapters: 1,
+  }), 1);
+});
+
+test('parseReaderContent maps separators and markdown images to reader blocks', () => {
+  assert.deepEqual(
+    parseReaderContent('前言\n\n---\n\n![挿絵](https://cdn.example/illust.jpg)\n\n正文'),
+    [
+      { type: 'paragraph', text: '前言' },
+      { type: 'divider' },
+      { type: 'image', alt: '挿絵', sourceUrl: 'https://cdn.example/illust.jpg' },
+      { type: 'paragraph', text: '正文' },
+    ],
+  );
 });
 
 test('summarizeChapterMedia distinguishes no-image, partial-cache and full-cache states', () => {

@@ -572,18 +572,16 @@ button:focus-visible {
 }
 
 .compact-density .chapter-item {
-  padding: 0.52rem 0.68rem;
+  padding: 0;
 }
 
 .chapter-item {
-  display: flex;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 1rem;
-  align-items: flex-start;
+  display: grid;
+  gap: 0.65rem;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(12, 30, 47, 0.92);
+  overflow: hidden;
 }
 
 .chapter-item.active {
@@ -594,42 +592,44 @@ button:focus-visible {
 .chapter-row {
   display: flex;
   gap: 0.65rem;
-  align-items: center;
-  flex: 1;
+  align-items: flex-start;
+  width: 100%;
   min-width: 0;
+  padding: 0.68rem 0.8rem 0;
 }
 
 .chapter-link-button {
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
-  gap: 1rem;
-  flex: 1;
+  display: grid;
+  gap: 0.7rem;
+  justify-items: start;
   min-width: 0;
   width: 100%;
   min-height: 0;
-  padding: 0.52rem 0.68rem;
-  border-radius: 16px;
+  padding: 0.72rem 0.8rem;
+  border-radius: 0;
   border: 0;
   background: transparent;
   color: inherit;
+  text-align: left;
 }
 
 .chapter-row input {
   width: 16px;
   height: 16px;
+  margin-top: 0.15rem;
+  flex: 0 0 auto;
 }
 
 .chapter-copy {
-  display: inline-flex;
-  gap: 0.55rem;
-  align-items: baseline;
-  flex-wrap: wrap;
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
 }
 
 .chapter-copy strong {
   font-size: 0.95rem;
   line-height: 1.25;
+  word-break: break-word;
 }
 
 .chapter-index {
@@ -646,9 +646,10 @@ button:focus-visible {
 }
 
 .chapter-status-row {
-  margin-left: auto;
-  justify-content: flex-end;
+  width: 100%;
+  justify-content: flex-start;
   max-width: 100%;
+  padding: 0 0.8rem 0.72rem;
 }
 
 .chapter-directory .volume-summary {
@@ -786,6 +787,41 @@ button:focus-visible {
   color: var(--muted);
 }
 
+.description-preview-block {
+  display: grid;
+  gap: 0.5rem;
+  align-content: start;
+}
+
+.description-preview-copy {
+  margin: 0;
+  color: var(--muted);
+}
+
+.detail-description-preview {
+  gap: 0.7rem;
+}
+
+.detail-description-copy {
+  line-height: 1.85;
+}
+
+.text-button {
+  justify-self: start;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  color: #9bdcff;
+  font: inherit;
+  font-weight: 600;
+}
+
+.text-button:hover {
+  color: #cfeeff;
+  text-decoration: underline;
+}
+
 .route-summary-strip,
 .settings-summary-strip,
 .panel-grid {
@@ -862,6 +898,23 @@ button:focus-visible {
   display: grid;
   gap: 0.75rem;
   margin-bottom: 1rem;
+}
+
+.description-dialog {
+  width: min(860px, 100%);
+}
+
+.description-dialog-body {
+  max-height: calc(100vh - 13rem);
+  overflow: auto;
+}
+
+.description-dialog-body p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.9;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .task-summary-panel {
@@ -973,6 +1026,30 @@ button:focus-visible {
   line-height: 1.9;
 }
 
+.reader-section-divider {
+  width: 100%;
+  margin: 0.35rem 0;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.reader-inline-image {
+  margin: 0;
+  padding: 0.95rem;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(8, 24, 39, 0.72);
+}
+
+.reader-inline-image img {
+  width: 100%;
+  max-height: min(60vh, 720px);
+  display: block;
+  object-fit: contain;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .reader-media-gallery {
   margin-top: 1rem;
 }
@@ -1038,6 +1115,14 @@ button:focus-visible {
 
 .reader-directory-close {
   min-width: 88px;
+}
+
+.redownload-picker-drawer {
+  width: min(560px, calc(100vw - 1rem));
+}
+
+.redownload-picker-actions {
+  margin-top: 1rem;
 }
 
 .media-card {

@@ -15,6 +15,27 @@ export interface ChapterMediaSummaryView {
   cacheComplete: boolean;
 }
 
+export interface TextPreview {
+  text: string;
+  fullText: string;
+  isTruncated: boolean;
+}
+
+interface TaskProgressLike {
+  catalogChapters: number;
+  queuedChapters: number;
+  completedChapters: number;
+  failedChapters: number;
+}
+
+export type ReaderContentBlock =
+  | { type: 'paragraph'; text: string }
+  | { type: 'image'; alt: string; sourceUrl: string }
+  | { type: 'divider' };
+
+const CHAPTER_SECTION_DIVIDER = '---';
+const MARKDOWN_IMAGE_PATTERN = /^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/i;
+
 export function toLibraryDirectoryChapters(
   chapters: LibraryNovelDetailPayload['novel']['chapters'],
 ): ChapterDirectoryEntry[] {
@@ -80,9 +101,87 @@ export function formatLibraryTaskStatus(status: ApiTaskSnapshot['status']): stri
   }
 }
 
+export function buildTextPreview(content: string | null | undefined, maxLength: number): TextPreview {
+  const fullText = normalizeFullText(content);
+  const previewText = collapsePreviewText(fullText);
+
+  if (previewText.length <= maxLength) {
+    return {
+      text: previewText,
+      fullText,
+      isTruncated: false,
+    };
+  }
+
+  return {
+    text: `${previewText.slice(0, Math.max(1, maxLength)).trimEnd()}...`,
+    fullText,
+    isTruncated: true,
+  };
+}
+
+export function calculateRemainingTaskChapters(progress: TaskProgressLike | null | undefined): number {
+  if (!progress) {
+    return 0;
+  }
+
+  const settled = progress.completedChapters + progress.failedChapters;
+  const totalKnown = Math.max(progress.catalogChapters, progress.queuedChapters, settled);
+
+  return Math.max(0, totalKnown - settled);
+}
+
 export function splitChapterContent(content: string): string[] {
   return content
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph.length > 0);
+}
+
+export function parseReaderContent(content: string): ReaderContentBlock[] {
+  return splitChapterContent(content).map((paragraph) => {
+    if (paragraph === CHAPTER_SECTION_DIVIDER) {
+      return { type: 'divider' } satisfies ReaderContentBlock;
+    }
+
+    const markdownImageMatch = paragraph.match(MARKDOWN_IMAGE_PATTERN);
+    if (markdownImageMatch) {
+      return {
+        type: 'image',
+        alt: markdownImageMatch[1] ?? '章节插图',
+        sourceUrl: markdownImageMatch[2] ?? '',
+      } satisfies ReaderContentBlock;
+    }
+
+    return {
+      type: 'paragraph',
+      text: paragraph,
+    } satisfies ReaderContentBlock;
+  });
+}
+
+function normalizeFullText(content: string | null | undefined): string {
+  if (!content) {
+    return '暂无简介。';
+  }
+
+  const normalized = content
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .join('\n')
+    .trim();
+
+  return normalized || '暂无简介。';
+}
+
+function collapsePreviewText(content: string): string {
+  const collapsed = content
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(' ')
+    .trim();
+
+  return collapsed || '暂无简介。';
 }

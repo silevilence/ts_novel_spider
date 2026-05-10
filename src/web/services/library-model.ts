@@ -47,6 +47,8 @@ export interface LibraryModel {
   refresh: () => Promise<void>;
   runIncrementalSync: () => Promise<void>;
   syncMissingChapters: () => Promise<void>;
+  redownloadAllDownloadedChapters: () => Promise<void>;
+  redownloadSelectedChapters: (chapterIds: string[]) => Promise<void>;
   cacheMediaAsset: (mediaId: string) => Promise<void>;
   cacheAllMediaAssets: () => Promise<void>;
 }
@@ -337,6 +339,64 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     }
   }
 
+  async function submitRedownloadTask(chapterIds: string[], taskLabel: string) {
+    if (!location.sourceId || !location.novelId || !detail?.novel) {
+      return;
+    }
+
+    if (chapterIds.length === 0) {
+      publishNotice({
+        tone: 'info',
+        title: '没有可重下章节',
+        message: '当前没有符合条件的章节可重新下载。',
+      });
+      return;
+    }
+
+    setSyncBusy(true);
+
+    try {
+      const payload = await createControlTask({
+        sourceId: location.sourceId,
+        novelId: location.novelId,
+        chapterIds,
+        forceRefetch: true,
+      });
+
+      startTransition(() => {
+        setCurrentTask(payload.task);
+      });
+
+      publishNotice({
+        tone: 'success',
+        title: '重新下载任务已启动',
+        message: `${payload.task.novelId} 将重新抓取 ${chapterIds.length} 个${taskLabel}。`,
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Chapter redownload failed.';
+      publishNotice({ tone: 'error', title: '重新下载任务失败', message });
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function redownloadAllDownloadedChapters() {
+    if (!detail?.novel) {
+      return;
+    }
+
+    const downloadedChapterIds = detail.novel.chapters
+      .filter((chapter) => chapter.status === 'downloaded')
+      .map((chapter) => chapter.id);
+
+    await submitRedownloadTask(downloadedChapterIds, '已下载章节');
+  }
+
+  async function redownloadSelectedChapters(chapterIds: string[]) {
+    await submitRedownloadTask([...new Set(chapterIds)], '选中章节');
+  }
+
   async function cacheMediaAsset(mediaId: string) {
     if (!location.sourceId || !location.novelId || !location.chapterId) {
       return;
@@ -516,6 +576,8 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     refresh,
     runIncrementalSync,
     syncMissingChapters,
+    redownloadAllDownloadedChapters,
+    redownloadSelectedChapters,
     cacheMediaAsset,
     cacheAllMediaAssets,
   };

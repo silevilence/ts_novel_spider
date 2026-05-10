@@ -1,4 +1,5 @@
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
+import { calculateRemainingTaskChapters } from '../services/library-view';
 
 interface TaskMonitorProps {
   currentTask: ApiTaskSnapshot | null;
@@ -19,6 +20,7 @@ export function TaskMonitor({
 }: TaskMonitorProps) {
   const recentEvents = currentTask?.events.slice(-12).reverse() ?? [];
   const progress = currentTask?.progress;
+  const remainingChapters = calculateRemainingTaskChapters(progress);
 
   return (
     <section className="panel task-monitor">
@@ -48,7 +50,7 @@ export function TaskMonitor({
                 <span>目录：{progress?.catalogChapters ?? 0}</span>
                 <span>已完成：{progress?.completedChapters ?? 0}</span>
                 <span>失败：{progress?.failedChapters ?? 0}</span>
-                <span>已排队：{progress?.queuedChapters ?? 0}</span>
+                <span>待处理：{remainingChapters}</span>
               </div>
               <div className="action-row">
                 <button
