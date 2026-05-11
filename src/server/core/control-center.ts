@@ -32,6 +32,16 @@ import {
   type LibraryReadingProgress,
 } from './offline-library';
 import {
+  LibraryIntelligenceService,
+  type AskLibraryAssistantInput,
+  type LibraryAssistantResponse,
+  type LibraryKnowledgeGraphBuild,
+  type Neo4jGraphStore,
+  type LibraryKnowledgeGraphProfile,
+  type LibraryKnowledgeGraphProfileInput,
+  type LibraryKnowledgeGraphState,
+} from './library-intelligence';
+import {
   LocalExportEngine,
   type GeneratedLibraryExport,
   type LibraryExportFormat,
@@ -162,6 +172,7 @@ export interface ControlCenterServiceOptions {
   spiders?: SpiderRegistryEntry[];
   networkProxy?: NetworkProxyService;
   systemPreferences?: SystemPreferencesService;
+  neo4jGraphStore?: Neo4jGraphStore;
   offlineAssetStoragePath?: string;
   exportStoragePath?: string;
   assetFetchImpl?: typeof fetch;
@@ -181,6 +192,7 @@ export class ControlCenterService {
   readonly #tasks = new Map<string, CrawlTaskState>();
   readonly #offlineLibrary: OfflineLibraryAssetService;
   readonly #exportEngine: LocalExportEngine;
+  readonly #libraryIntelligence: LibraryIntelligenceService;
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
@@ -199,6 +211,11 @@ export class ControlCenterService {
     this.#exportEngine = new LocalExportEngine({
       ...(options.exportStoragePath ? { outputRoot: options.exportStoragePath } : { outputRoot: defaultExportStoragePath() }),
       assetService: this.#offlineLibrary,
+    });
+    this.#libraryIntelligence = new LibraryIntelligenceService({
+      repository: this.#repository,
+      preferences: this.#systemPreferences,
+      ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     });
     this.#registry = new Map(
       (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
@@ -419,6 +436,30 @@ export class ControlCenterService {
     }
 
     return this.#exportEngine.generate(snapshot, format);
+  }
+
+  getLibraryKnowledgeGraph(sourceId: string, novelId: string): LibraryKnowledgeGraphState | null {
+    return this.#libraryIntelligence.getNovelKnowledgeGraph(sourceId, novelId);
+  }
+
+  updateLibraryKnowledgeGraphProfile(
+    sourceId: string,
+    novelId: string,
+    input: LibraryKnowledgeGraphProfileInput,
+  ): LibraryKnowledgeGraphProfile | null {
+    return this.#libraryIntelligence.updateNovelKnowledgeGraphProfile(sourceId, novelId, input);
+  }
+
+  buildLibraryKnowledgeGraph(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {
+    return this.#libraryIntelligence.startNovelKnowledgeGraphBuild(sourceId, novelId);
+  }
+
+  clearLibraryKnowledgeGraph(sourceId: string, novelId: string): Promise<LibraryKnowledgeGraphState | null> {
+    return this.#libraryIntelligence.clearNovelKnowledgeGraph(sourceId, novelId);
+  }
+
+  askLibraryAssistant(input: AskLibraryAssistantInput): Promise<LibraryAssistantResponse> {
+    return this.#libraryIntelligence.askLibraryAssistant(input);
   }
 
   getNetworkProxyState(): NetworkProxyState {

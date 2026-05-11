@@ -87,7 +87,7 @@ export function App() {
           <ControlConsole model={model} onOpenSettings={() => navigate('/settings')} />
         ) : null}
         {activeRoute.id === 'library' ? (
-          <LibraryWorkspace model={libraryModel} onOpenControl={() => navigate('/')} />
+          <LibraryWorkspace model={libraryModel} onOpenControl={() => navigate('/')} onNotify={pushNotice} />
         ) : null}
         {activeRoute.id === 'monitor' ? <MonitorDashboard model={model} /> : null}
         {activeRoute.id === 'settings' ? (

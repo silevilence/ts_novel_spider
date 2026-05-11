@@ -71,6 +71,106 @@ export interface StoredTaskHistoryRow {
   snapshotJson: string;
 }
 
+export interface StoredKnowledgeGraphProfileInput {
+  sourceId: string;
+  novelId: string;
+  chatProviderId: string;
+  chatModelId: string;
+  embeddingProviderId: string;
+  embeddingModelId: string;
+  rerankProviderId: string;
+  rerankModelId: string;
+  neo4jEnabled: boolean;
+  neo4jUri: string;
+  neo4jUsername: string;
+  neo4jPassword: string;
+  neo4jDatabase: string;
+  configLocked: boolean;
+  lockedAt: string | null;
+}
+
+export interface StoredKnowledgeGraphProfileRow extends StoredKnowledgeGraphProfileInput {
+  updatedAt: string;
+}
+
+export interface StoredKnowledgeGraphBuildRow {
+  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+  stage: 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
+  progressPercent: number;
+  message: string;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastBuiltAt: string | null;
+  syncedToNeo4jAt: string | null;
+  entityCount: number;
+  relationCount: number;
+  updatedAt: string | null;
+}
+
+export type StoredKnowledgeGraphBuildLogLevel = 'info' | 'warn' | 'error';
+
+export interface StoredKnowledgeGraphBuildLogRow {
+  id: string;
+  stage: StoredKnowledgeGraphBuildRow['stage'];
+  level: StoredKnowledgeGraphBuildLogLevel;
+  message: string;
+  createdAt: string;
+}
+
+export interface StoredKnowledgeGraphBuildCheckpointRow {
+  chunkId: string;
+  chapterId: string;
+  chapterIndex: number;
+  chunkIndex: number;
+  chapterTitle: string;
+  extractionJson: string;
+  warningMessage: string | null;
+  updatedAt: string;
+}
+
+export interface StoredKnowledgeGraphEntityRow {
+  id: string;
+  name: string;
+  entityType: 'character' | 'location' | 'organization' | 'concept' | 'author';
+  summary: string;
+  prominence: number;
+  mentionCount: number;
+  mentionChapterIds: string[];
+  firstChapterId: string | null;
+  lastChapterId: string | null;
+  aliases: string[];
+  embedding: number[] | null;
+  updatedAt: string;
+}
+
+export interface StoredKnowledgeGraphRelationRow {
+  id: string;
+  fromEntityId: string;
+  toEntityId: string;
+  relationType: 'co_occurs' | 'alliance' | 'conflict' | 'family';
+  summary: string;
+  weight: number;
+  chapterIds: string[];
+  evidence: string[];
+  updatedAt: string;
+}
+
+export interface StoredKnowledgeGraphChunkRow {
+  id: string;
+  chapterId: string;
+  chapterIndex: number;
+  chunkIndex: number;
+  chapterTitle: string;
+  summary: string;
+  eventSummary: string;
+  content: string;
+  entityNames: string[];
+  keywordHints: string[];
+  embedding: number[] | null;
+  updatedAt: string;
+}
+
 interface ChapterRow {
   source_id: string;
   novel_id: string;
@@ -127,6 +227,113 @@ interface BookmarkRow {
   volume_title: string | null;
   note: string;
   created_at: string;
+  updated_at: string;
+}
+
+interface KnowledgeGraphProfileRow {
+  source_id: string;
+  novel_id: string;
+  chat_provider_id: string;
+  chat_model_id: string;
+  embedding_provider_id: string;
+  embedding_model_id: string;
+  rerank_provider_id: string;
+  rerank_model_id: string;
+  neo4j_enabled: number;
+  neo4j_uri: string;
+  neo4j_username: string;
+  neo4j_password: string;
+  neo4j_database: string;
+  config_locked: number;
+  locked_at: string | null;
+  updated_at: string;
+}
+
+interface KnowledgeGraphBuildRow {
+  source_id: string;
+  novel_id: string;
+  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+  stage: 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
+  progress_percent: number;
+  message: string;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  last_built_at: string | null;
+  synced_to_neo4j_at: string | null;
+  entity_count: number;
+  relation_count: number;
+  updated_at: string;
+}
+
+interface KnowledgeGraphBuildLogRow {
+  log_id: string;
+  source_id: string;
+  novel_id: string;
+  stage: StoredKnowledgeGraphBuildRow['stage'];
+  level: StoredKnowledgeGraphBuildLogLevel;
+  message: string;
+  created_at: string;
+}
+
+interface KnowledgeGraphBuildCheckpointRow {
+  source_id: string;
+  novel_id: string;
+  chunk_id: string;
+  chapter_id: string;
+  chapter_index: number;
+  chunk_index: number;
+  chapter_title: string;
+  extraction_json: string;
+  warning_message: string | null;
+  updated_at: string;
+}
+
+interface KnowledgeGraphEntityRow {
+  entity_id: string;
+  source_id: string;
+  novel_id: string;
+  entity_name: string;
+  entity_type: 'character' | 'location' | 'organization' | 'concept' | 'author';
+  summary: string;
+  prominence: number;
+  mention_count: number;
+  mention_chapter_ids_json: string;
+  first_chapter_id: string | null;
+  last_chapter_id: string | null;
+  aliases_json: string;
+  embedding_json: string | null;
+  updated_at: string;
+}
+
+interface KnowledgeGraphRelationRow {
+  relation_id: string;
+  source_id: string;
+  novel_id: string;
+  from_entity_id: string;
+  to_entity_id: string;
+  relation_type: 'co_occurs' | 'alliance' | 'conflict' | 'family';
+  summary: string;
+  weight: number;
+  chapter_ids_json: string;
+  evidence_json: string;
+  updated_at: string;
+}
+
+interface KnowledgeGraphChunkRow {
+  chunk_id: string;
+  source_id: string;
+  novel_id: string;
+  chapter_id: string;
+  chapter_index: number;
+  chunk_index: number;
+  chapter_title: string;
+  summary: string;
+  event_summary: string;
+  content: string;
+  entity_names_json: string;
+  keyword_hints_json: string;
+  embedding_json: string | null;
   updated_at: string;
 }
 
@@ -506,6 +713,626 @@ export class SqliteNovelRepository {
     return result.changes > 0;
   }
 
+  getKnowledgeGraphProfile(sourceId: string, novelId: string): StoredKnowledgeGraphProfileRow | null {
+    const row = this.#database
+      .prepare(
+        `
+          SELECT
+            source_id,
+            novel_id,
+            chat_provider_id,
+            chat_model_id,
+            embedding_provider_id,
+            embedding_model_id,
+            rerank_provider_id,
+            rerank_model_id,
+            neo4j_enabled,
+            neo4j_uri,
+            neo4j_username,
+            neo4j_password,
+            neo4j_database,
+            config_locked,
+            locked_at,
+            updated_at
+          FROM novel_graph_profiles
+          WHERE source_id = ? AND novel_id = ?
+        `,
+      )
+      .get(sourceId, novelId) as KnowledgeGraphProfileRow | undefined;
+
+    return row ? mapKnowledgeGraphProfileRow(row) : null;
+  }
+
+  saveKnowledgeGraphProfile(input: StoredKnowledgeGraphProfileInput): StoredKnowledgeGraphProfileRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const updatedAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_graph_profiles (
+            source_id,
+            novel_id,
+            chat_provider_id,
+            chat_model_id,
+            embedding_provider_id,
+            embedding_model_id,
+            rerank_provider_id,
+            rerank_model_id,
+            neo4j_enabled,
+            neo4j_uri,
+            neo4j_username,
+            neo4j_password,
+            neo4j_database,
+            config_locked,
+            locked_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, novel_id) DO UPDATE SET
+            chat_provider_id = excluded.chat_provider_id,
+            chat_model_id = excluded.chat_model_id,
+            embedding_provider_id = excluded.embedding_provider_id,
+            embedding_model_id = excluded.embedding_model_id,
+            rerank_provider_id = excluded.rerank_provider_id,
+            rerank_model_id = excluded.rerank_model_id,
+            neo4j_enabled = excluded.neo4j_enabled,
+            neo4j_uri = excluded.neo4j_uri,
+            neo4j_username = excluded.neo4j_username,
+            neo4j_password = excluded.neo4j_password,
+            neo4j_database = excluded.neo4j_database,
+            config_locked = excluded.config_locked,
+            locked_at = excluded.locked_at,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId,
+        input.novelId,
+        input.chatProviderId,
+        input.chatModelId,
+        input.embeddingProviderId,
+        input.embeddingModelId,
+        input.rerankProviderId,
+        input.rerankModelId,
+        input.neo4jEnabled ? 1 : 0,
+        input.neo4jUri,
+        input.neo4jUsername,
+        input.neo4jPassword,
+        input.neo4jDatabase,
+        input.configLocked ? 1 : 0,
+        input.lockedAt,
+        updatedAt,
+      );
+
+    const profile = this.getKnowledgeGraphProfile(input.sourceId, input.novelId);
+    if (!profile) {
+      throw new Error(`Failed to load knowledge graph profile for ${input.sourceId}/${input.novelId}.`);
+    }
+
+    return profile;
+  }
+
+  getKnowledgeGraphBuild(sourceId: string, novelId: string): StoredKnowledgeGraphBuildRow | null {
+    const row = this.#database
+      .prepare(
+        `
+          SELECT
+            source_id,
+            novel_id,
+            status,
+            stage,
+            progress_percent,
+            message,
+            error_message,
+            started_at,
+            completed_at,
+            last_built_at,
+            synced_to_neo4j_at,
+            entity_count,
+            relation_count,
+            updated_at
+          FROM novel_graph_builds
+          WHERE source_id = ? AND novel_id = ?
+        `,
+      )
+      .get(sourceId, novelId) as KnowledgeGraphBuildRow | undefined;
+
+    return row ? mapKnowledgeGraphBuildRow(row) : null;
+  }
+
+  saveKnowledgeGraphBuild(input: {
+    sourceId: string;
+    novelId: string;
+    status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+    stage: 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
+    progressPercent: number;
+    message: string;
+    errorMessage: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    lastBuiltAt: string | null;
+    syncedToNeo4jAt: string | null;
+    entityCount: number;
+    relationCount: number;
+  }): StoredKnowledgeGraphBuildRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const updatedAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_graph_builds (
+            source_id,
+            novel_id,
+            status,
+            stage,
+            progress_percent,
+            message,
+            error_message,
+            started_at,
+            completed_at,
+            last_built_at,
+            synced_to_neo4j_at,
+            entity_count,
+            relation_count,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, novel_id) DO UPDATE SET
+            status = excluded.status,
+            stage = excluded.stage,
+            progress_percent = excluded.progress_percent,
+            message = excluded.message,
+            error_message = excluded.error_message,
+            started_at = excluded.started_at,
+            completed_at = excluded.completed_at,
+            last_built_at = excluded.last_built_at,
+            synced_to_neo4j_at = excluded.synced_to_neo4j_at,
+            entity_count = excluded.entity_count,
+            relation_count = excluded.relation_count,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId,
+        input.novelId,
+        input.status,
+        input.stage,
+        input.progressPercent,
+        input.message,
+        input.errorMessage,
+        input.startedAt,
+        input.completedAt,
+        input.lastBuiltAt,
+        input.syncedToNeo4jAt,
+        input.entityCount,
+        input.relationCount,
+        updatedAt,
+      );
+
+    const build = this.getKnowledgeGraphBuild(input.sourceId, input.novelId);
+    if (!build) {
+      throw new Error(`Failed to load knowledge graph build state for ${input.sourceId}/${input.novelId}.`);
+    }
+
+    return build;
+  }
+
+  listKnowledgeGraphBuildLogs(sourceId: string, novelId: string, limit = 200): StoredKnowledgeGraphBuildLogRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            log_id,
+            source_id,
+            novel_id,
+            stage,
+            level,
+            message,
+            created_at
+          FROM novel_graph_build_logs
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY created_at DESC, log_id DESC
+          LIMIT ?
+        `,
+      )
+      .all(sourceId, novelId, limit)
+      .map((row) => mapKnowledgeGraphBuildLogRow(row as KnowledgeGraphBuildLogRow))
+      .reverse();
+  }
+
+  appendKnowledgeGraphBuildLog(input: {
+    sourceId: string;
+    novelId: string;
+    stage: StoredKnowledgeGraphBuildRow['stage'];
+    level: StoredKnowledgeGraphBuildLogLevel;
+    message: string;
+  }): StoredKnowledgeGraphBuildLogRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const logId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_graph_build_logs (
+            log_id,
+            source_id,
+            novel_id,
+            stage,
+            level,
+            message,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(logId, input.sourceId, input.novelId, input.stage, input.level, input.message, createdAt);
+
+    return {
+      id: logId,
+      stage: input.stage,
+      level: input.level,
+      message: input.message,
+      createdAt,
+    };
+  }
+
+  clearKnowledgeGraphBuildLogs(sourceId: string, novelId: string): void {
+    this.#database
+      .prepare('DELETE FROM novel_graph_build_logs WHERE source_id = ? AND novel_id = ?')
+      .run(sourceId, novelId);
+  }
+
+  listKnowledgeGraphBuildCheckpoints(sourceId: string, novelId: string): StoredKnowledgeGraphBuildCheckpointRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            source_id,
+            novel_id,
+            chunk_id,
+            chapter_id,
+            chapter_index,
+            chunk_index,
+            chapter_title,
+            extraction_json,
+            warning_message,
+            updated_at
+          FROM novel_graph_build_checkpoints
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY chapter_index ASC, chunk_index ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapKnowledgeGraphBuildCheckpointRow(row as KnowledgeGraphBuildCheckpointRow));
+  }
+
+  saveKnowledgeGraphBuildCheckpoint(input: {
+    sourceId: string;
+    novelId: string;
+    chunkId: string;
+    chapterId: string;
+    chapterIndex: number;
+    chunkIndex: number;
+    chapterTitle: string;
+    extractionJson: string;
+    warningMessage: string | null;
+  }): void {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const updatedAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_graph_build_checkpoints (
+            source_id,
+            novel_id,
+            chunk_id,
+            chapter_id,
+            chapter_index,
+            chunk_index,
+            chapter_title,
+            extraction_json,
+            warning_message,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, novel_id, chunk_id) DO UPDATE SET
+            chapter_id = excluded.chapter_id,
+            chapter_index = excluded.chapter_index,
+            chunk_index = excluded.chunk_index,
+            chapter_title = excluded.chapter_title,
+            extraction_json = excluded.extraction_json,
+            warning_message = excluded.warning_message,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId,
+        input.novelId,
+        input.chunkId,
+        input.chapterId,
+        input.chapterIndex,
+        input.chunkIndex,
+        input.chapterTitle,
+        input.extractionJson,
+        input.warningMessage,
+        updatedAt,
+      );
+  }
+
+  clearKnowledgeGraphBuildCheckpoints(sourceId: string, novelId: string): void {
+    this.#database
+      .prepare('DELETE FROM novel_graph_build_checkpoints WHERE source_id = ? AND novel_id = ?')
+      .run(sourceId, novelId);
+  }
+
+  listResumableKnowledgeGraphBuilds(): Array<{ sourceId: string; novelId: string; build: StoredKnowledgeGraphBuildRow }> {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            source_id,
+            novel_id,
+            status,
+            stage,
+            progress_percent,
+            message,
+            error_message,
+            started_at,
+            completed_at,
+            last_built_at,
+            synced_to_neo4j_at,
+            entity_count,
+            relation_count,
+            updated_at
+          FROM novel_graph_builds
+          WHERE status IN ('queued', 'running')
+          ORDER BY updated_at ASC
+        `,
+      )
+      .all()
+      .map((row) => {
+        const build = row as KnowledgeGraphBuildRow;
+        return {
+          sourceId: build.source_id,
+          novelId: build.novel_id,
+          build: mapKnowledgeGraphBuildRow(build),
+        };
+      });
+  }
+
+  listKnowledgeGraphEntities(sourceId: string, novelId: string): StoredKnowledgeGraphEntityRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            entity_id,
+            source_id,
+            novel_id,
+            entity_name,
+            entity_type,
+            summary,
+            prominence,
+            mention_count,
+            mention_chapter_ids_json,
+            first_chapter_id,
+            last_chapter_id,
+            aliases_json,
+            embedding_json,
+            updated_at
+          FROM knowledge_graph_entities
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY prominence DESC, mention_count DESC, entity_name COLLATE NOCASE ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapKnowledgeGraphEntityRow(row as KnowledgeGraphEntityRow));
+  }
+
+  listKnowledgeGraphRelations(sourceId: string, novelId: string): StoredKnowledgeGraphRelationRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            relation_id,
+            source_id,
+            novel_id,
+            from_entity_id,
+            to_entity_id,
+            relation_type,
+            summary,
+            weight,
+            chapter_ids_json,
+            evidence_json,
+            updated_at
+          FROM knowledge_graph_relations
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY weight DESC, relation_id ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapKnowledgeGraphRelationRow(row as KnowledgeGraphRelationRow));
+  }
+
+  listKnowledgeGraphChunks(sourceId: string, novelId: string): StoredKnowledgeGraphChunkRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            chunk_id,
+            source_id,
+            novel_id,
+            chapter_id,
+            chapter_index,
+            chunk_index,
+            chapter_title,
+            summary,
+            event_summary,
+            content,
+            entity_names_json,
+            keyword_hints_json,
+            embedding_json,
+            updated_at
+          FROM knowledge_graph_chunks
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY chapter_index ASC, chunk_index ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapKnowledgeGraphChunkRow(row as KnowledgeGraphChunkRow));
+  }
+
+  replaceKnowledgeGraph(
+    sourceId: string,
+    novelId: string,
+    entities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>>,
+    relations: Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>>,
+    chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>,
+  ): void {
+    this.assertNovelExists(sourceId, novelId);
+
+    const timestamp = new Date().toISOString();
+    const insertEntity = this.#database.prepare(
+      `
+        INSERT INTO knowledge_graph_entities (
+          entity_id,
+          source_id,
+          novel_id,
+          entity_name,
+          entity_type,
+          summary,
+          prominence,
+          mention_count,
+          mention_chapter_ids_json,
+          first_chapter_id,
+          last_chapter_id,
+          aliases_json,
+          embedding_json,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    );
+    const insertRelation = this.#database.prepare(
+      `
+        INSERT INTO knowledge_graph_relations (
+          relation_id,
+          source_id,
+          novel_id,
+          from_entity_id,
+          to_entity_id,
+          relation_type,
+          summary,
+          weight,
+          chapter_ids_json,
+          evidence_json,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    );
+    const insertChunk = this.#database.prepare(
+      `
+        INSERT INTO knowledge_graph_chunks (
+          chunk_id,
+          source_id,
+          novel_id,
+          chapter_id,
+          chapter_index,
+          chunk_index,
+          chapter_title,
+          summary,
+          event_summary,
+          content,
+          entity_names_json,
+          keyword_hints_json,
+          embedding_json,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    );
+
+    const transaction = this.#database.transaction(() => {
+      this.#database.prepare('DELETE FROM knowledge_graph_chunks WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM knowledge_graph_relations WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM knowledge_graph_entities WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+
+      for (const entity of entities) {
+        insertEntity.run(
+          entity.id,
+          sourceId,
+          novelId,
+          entity.name,
+          entity.entityType,
+          entity.summary,
+          entity.prominence,
+          entity.mentionCount,
+          JSON.stringify(entity.mentionChapterIds),
+          entity.firstChapterId,
+          entity.lastChapterId,
+          JSON.stringify(entity.aliases),
+          entity.embedding ? JSON.stringify(entity.embedding) : null,
+          timestamp,
+        );
+      }
+
+      for (const relation of relations) {
+        insertRelation.run(
+          relation.id,
+          sourceId,
+          novelId,
+          relation.fromEntityId,
+          relation.toEntityId,
+          relation.relationType,
+          relation.summary,
+          relation.weight,
+          JSON.stringify(relation.chapterIds),
+          JSON.stringify(relation.evidence),
+          timestamp,
+        );
+      }
+
+      for (const chunk of chunks) {
+        insertChunk.run(
+          chunk.id,
+          sourceId,
+          novelId,
+          chunk.chapterId,
+          chunk.chapterIndex,
+          chunk.chunkIndex,
+          chunk.chapterTitle,
+          chunk.summary,
+          chunk.eventSummary,
+          chunk.content,
+          JSON.stringify(chunk.entityNames),
+          JSON.stringify(chunk.keywordHints),
+          chunk.embedding ? JSON.stringify(chunk.embedding) : null,
+          timestamp,
+        );
+      }
+    });
+
+    transaction();
+  }
+
+  clearKnowledgeGraph(sourceId: string, novelId: string): void {
+    this.assertNovelExists(sourceId, novelId);
+
+    const transaction = this.#database.transaction(() => {
+      this.#database.prepare('DELETE FROM novel_graph_build_checkpoints WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM knowledge_graph_chunks WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM knowledge_graph_relations WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM knowledge_graph_entities WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM novel_graph_build_logs WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+    });
+
+    transaction();
+  }
+
   listTaskSnapshots(limit = 20): StoredTaskHistoryRow[] {
     const rows = this.#database
       .prepare(
@@ -828,7 +1655,151 @@ export class SqliteNovelRepository {
 
       CREATE INDEX IF NOT EXISTS idx_bookmarks_lookup
         ON bookmarks(source_id, novel_id, chapter_index, created_at);
+
+      CREATE TABLE IF NOT EXISTS novel_graph_profiles (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        chat_provider_id TEXT NOT NULL,
+        chat_model_id TEXT NOT NULL,
+        embedding_provider_id TEXT NOT NULL,
+        embedding_model_id TEXT NOT NULL,
+        rerank_provider_id TEXT NOT NULL,
+        rerank_model_id TEXT NOT NULL,
+        neo4j_enabled INTEGER NOT NULL DEFAULT 0,
+        neo4j_uri TEXT NOT NULL DEFAULT '',
+        neo4j_username TEXT NOT NULL DEFAULT '',
+        neo4j_password TEXT NOT NULL DEFAULT '',
+        neo4j_database TEXT NOT NULL DEFAULT '',
+        config_locked INTEGER NOT NULL DEFAULT 0,
+        locked_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_graph_builds (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        progress_percent INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        error_message TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        last_built_at TEXT,
+        synced_to_neo4j_at TEXT,
+        entity_count INTEGER NOT NULL DEFAULT 0,
+        relation_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_graph_build_logs (
+        log_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        level TEXT NOT NULL,
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_graph_build_checkpoints (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        chunk_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        chapter_index INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        chapter_title TEXT NOT NULL,
+        extraction_json TEXT NOT NULL,
+        warning_message TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id, chunk_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge_graph_entities (
+        entity_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        entity_name TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        prominence REAL NOT NULL,
+        mention_count INTEGER NOT NULL,
+        mention_chapter_ids_json TEXT NOT NULL,
+        first_chapter_id TEXT,
+        last_chapter_id TEXT,
+        aliases_json TEXT NOT NULL,
+        embedding_json TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge_graph_relations (
+        relation_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        from_entity_id TEXT NOT NULL,
+        to_entity_id TEXT NOT NULL,
+        relation_type TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        weight REAL NOT NULL,
+        chapter_ids_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge_graph_chunks (
+        chunk_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        chapter_index INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        chapter_title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        event_summary TEXT NOT NULL,
+        content TEXT NOT NULL,
+        entity_names_json TEXT NOT NULL,
+        keyword_hints_json TEXT NOT NULL,
+        embedding_json TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_knowledge_graph_entities_lookup
+        ON knowledge_graph_entities(source_id, novel_id, prominence DESC, mention_count DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_knowledge_graph_relations_lookup
+        ON knowledge_graph_relations(source_id, novel_id, weight DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_knowledge_graph_chunks_lookup
+        ON knowledge_graph_chunks(source_id, novel_id, chapter_index ASC, chunk_index ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_novel_graph_build_logs_lookup
+        ON novel_graph_build_logs(source_id, novel_id, created_at ASC);
     `);
+
+    this.ensureColumnExists('knowledge_graph_entities', 'embedding_json', 'TEXT');
+    this.ensureColumnExists('knowledge_graph_chunks', 'embedding_json', 'TEXT');
+  }
+
+  private ensureColumnExists(tableName: string, columnName: string, columnDefinition: string): void {
+    const columns = this.#database
+      .prepare(`PRAGMA table_info(${tableName})`)
+      .all() as Array<{ name: string }>;
+
+    if (columns.some((column) => column.name === columnName)) {
+      return;
+    }
+
+    this.#database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
   }
 
   private assertNovelExists(sourceId: string, novelId: string): void {
@@ -962,6 +1933,115 @@ function mapBookmarkRow(row: BookmarkRow): StoredBookmarkRow {
     volumeTitle: row.volume_title,
     note: row.note,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapKnowledgeGraphProfileRow(row: KnowledgeGraphProfileRow): StoredKnowledgeGraphProfileRow {
+  return {
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    chatProviderId: row.chat_provider_id,
+    chatModelId: row.chat_model_id,
+    embeddingProviderId: row.embedding_provider_id,
+    embeddingModelId: row.embedding_model_id,
+    rerankProviderId: row.rerank_provider_id,
+    rerankModelId: row.rerank_model_id,
+    neo4jEnabled: Boolean(row.neo4j_enabled),
+    neo4jUri: row.neo4j_uri,
+    neo4jUsername: row.neo4j_username,
+    neo4jPassword: row.neo4j_password,
+    neo4jDatabase: row.neo4j_database,
+    configLocked: Boolean(row.config_locked),
+    lockedAt: row.locked_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapKnowledgeGraphBuildRow(row: KnowledgeGraphBuildRow): StoredKnowledgeGraphBuildRow {
+  return {
+    status: row.status,
+    stage: row.stage,
+    progressPercent: row.progress_percent,
+    message: row.message,
+    errorMessage: row.error_message,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    lastBuiltAt: row.last_built_at,
+    syncedToNeo4jAt: row.synced_to_neo4j_at,
+    entityCount: row.entity_count,
+    relationCount: row.relation_count,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapKnowledgeGraphBuildLogRow(row: KnowledgeGraphBuildLogRow): StoredKnowledgeGraphBuildLogRow {
+  return {
+    id: row.log_id,
+    stage: row.stage,
+    level: row.level,
+    message: row.message,
+    createdAt: row.created_at,
+  };
+}
+
+function mapKnowledgeGraphBuildCheckpointRow(row: KnowledgeGraphBuildCheckpointRow): StoredKnowledgeGraphBuildCheckpointRow {
+  return {
+    chunkId: row.chunk_id,
+    chapterId: row.chapter_id,
+    chapterIndex: row.chapter_index,
+    chunkIndex: row.chunk_index,
+    chapterTitle: row.chapter_title,
+    extractionJson: row.extraction_json,
+    warningMessage: row.warning_message,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapKnowledgeGraphEntityRow(row: KnowledgeGraphEntityRow): StoredKnowledgeGraphEntityRow {
+  return {
+    id: row.entity_id,
+    name: row.entity_name,
+    entityType: row.entity_type,
+    summary: row.summary,
+    prominence: row.prominence,
+    mentionCount: row.mention_count,
+    mentionChapterIds: JSON.parse(row.mention_chapter_ids_json) as string[],
+    firstChapterId: row.first_chapter_id,
+    lastChapterId: row.last_chapter_id,
+    aliases: JSON.parse(row.aliases_json) as string[],
+    embedding: row.embedding_json ? JSON.parse(row.embedding_json) as number[] : null,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapKnowledgeGraphRelationRow(row: KnowledgeGraphRelationRow): StoredKnowledgeGraphRelationRow {
+  return {
+    id: row.relation_id,
+    fromEntityId: row.from_entity_id,
+    toEntityId: row.to_entity_id,
+    relationType: row.relation_type,
+    summary: row.summary,
+    weight: row.weight,
+    chapterIds: JSON.parse(row.chapter_ids_json) as string[],
+    evidence: JSON.parse(row.evidence_json) as string[],
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapKnowledgeGraphChunkRow(row: KnowledgeGraphChunkRow): StoredKnowledgeGraphChunkRow {
+  return {
+    id: row.chunk_id,
+    chapterId: row.chapter_id,
+    chapterIndex: row.chapter_index,
+    chunkIndex: row.chunk_index,
+    chapterTitle: row.chapter_title,
+    summary: row.summary,
+    eventSummary: row.event_summary,
+    content: row.content,
+    entityNames: JSON.parse(row.entity_names_json) as string[],
+    keywordHints: JSON.parse(row.keyword_hints_json) as string[],
+    embedding: row.embedding_json ? JSON.parse(row.embedding_json) as number[] : null,
     updatedAt: row.updated_at,
   };
 }

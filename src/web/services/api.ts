@@ -11,8 +11,12 @@ import type {
 } from '../../server/routes/control-center';
 import type {
   LibraryAliasPayload,
+  LibraryAssistantPayload,
   LibraryBookmarkPayload,
   LibraryChapterDetailPayload,
+  LibraryKnowledgeGraphBuildPayload,
+  LibraryKnowledgeGraphPayload,
+  LibraryKnowledgeGraphProfilePayload,
   LibraryMediaBatchPayload,
   LibraryMediaPayload,
   LibraryNovelDetailPayload,
@@ -72,6 +76,19 @@ export interface UpdateNeo4jInput {
   username: string;
   password: string;
   database: string;
+}
+
+export interface UpdateKnowledgeGraphProfileInput {
+  chatModel?: { providerId?: string; modelId?: string } | null;
+  embeddingModel?: { providerId?: string; modelId?: string } | null;
+  rerankModel?: { providerId?: string; modelId?: string } | null;
+  neo4j?: {
+    enabled?: boolean;
+    uri?: string;
+    username?: string;
+    password?: string;
+    database?: string;
+  } | null;
 }
 
 export async function fetchHealth(): Promise<HealthPayload> {
@@ -283,6 +300,76 @@ export async function fetchLibraryChapter(
 ): Promise<LibraryChapterDetailPayload> {
   return requestJson<LibraryChapterDetailPayload>(
     `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}`,
+  );
+}
+
+export async function fetchLibraryKnowledgeGraph(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryKnowledgeGraphPayload> {
+  return requestJson<LibraryKnowledgeGraphPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph`,
+  );
+}
+
+export async function updateLibraryKnowledgeGraphProfile(
+  sourceId: string,
+  novelId: string,
+  input: UpdateKnowledgeGraphProfileInput,
+): Promise<LibraryKnowledgeGraphProfilePayload> {
+  return requestJson<LibraryKnowledgeGraphProfilePayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph/profile`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function buildLibraryKnowledgeGraph(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryKnowledgeGraphBuildPayload> {
+  return requestJson<LibraryKnowledgeGraphBuildPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph/build`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+    export async function deleteLibraryKnowledgeGraph(
+      sourceId: string,
+      novelId: string,
+    ): Promise<LibraryKnowledgeGraphPayload> {
+      const response = await fetch(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw await buildRequestError(response, 'Knowledge graph clear failed');
+      }
+
+      return (await response.json()) as LibraryKnowledgeGraphPayload;
+    }
+
+export async function askLibraryAssistant(
+  sourceId: string,
+  novelId: string,
+  message: string,
+  chapterId?: string,
+): Promise<LibraryAssistantPayload> {
+  return requestJson<LibraryAssistantPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/assistant/chat`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        ...(chapterId ? { chapterId } : {}),
+      }),
+    },
   );
 }
 

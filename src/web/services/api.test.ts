@@ -2,13 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  askLibraryAssistant,
+  buildLibraryKnowledgeGraph,
   buildLibraryExportDownloadUrl,
   cacheLibraryNovelMedia,
   createLibraryAlias,
   createLibraryBookmark,
+  deleteLibraryKnowledgeGraph,
   deleteLibraryBookmark,
   discoverLlmProviderModels,
+  fetchLibraryKnowledgeGraph,
   fetchLibraryNovels,
+  updateLibraryKnowledgeGraphProfile,
   updateLibraryReadingProgress,
   updateNeo4jPreferences,
   validateLlmProviderModel,
@@ -48,6 +53,202 @@ test('cacheLibraryNovelMedia targets the batch cache endpoint', async () => {
       total: 3,
       cached: 2,
       skipped: 1,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('knowledge graph APIs target the expected endpoints', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(init ? { input: String(input), init } : { input: String(input) });
+
+      if (String(input).endsWith('/assistant/chat')) {
+        return new Response(JSON.stringify({
+          reply: {
+            mode: 'local',
+            message: '回答',
+            model: null,
+            sources: [],
+            trace: {
+              usedEmbedding: false,
+              usedRerank: false,
+              graphHits: [],
+              chunkHits: [],
+            },
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (String(input).endsWith('/graph/build')) {
+        return new Response(JSON.stringify({
+          build: {
+            status: 'queued',
+            stage: 'idle',
+            progressPercent: 0,
+            message: 'queued',
+            errorMessage: null,
+            startedAt: null,
+            completedAt: null,
+            lastBuiltAt: null,
+            syncedToNeo4jAt: null,
+            entityCount: 0,
+            relationCount: 0,
+            updatedAt: null,
+          },
+        }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (init?.method === 'DELETE' && String(input).endsWith('/graph')) {
+        return new Response(JSON.stringify({
+          knowledgeGraph: {
+            profile: {
+              chatModel: null,
+              embeddingModel: null,
+              rerankModel: null,
+              neo4j: {
+                enabled: false,
+                source: 'none',
+                uri: '',
+                username: '',
+                database: '',
+                isConfigured: false,
+              },
+              configLocked: false,
+              lockedAt: null,
+              updatedAt: null,
+            },
+            build: {
+              status: 'idle',
+              stage: 'idle',
+              progressPercent: 0,
+              message: 'cleared',
+              errorMessage: null,
+              startedAt: null,
+              completedAt: null,
+              lastBuiltAt: null,
+              syncedToNeo4jAt: null,
+              entityCount: 0,
+              relationCount: 0,
+              updatedAt: null,
+            },
+            buildLogs: [],
+            namespace: 'syosetu:n1000',
+            entities: [],
+            relations: [],
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (init?.method === 'PUT') {
+        return new Response(JSON.stringify({
+          profile: {
+            chatModel: null,
+            embeddingModel: null,
+            rerankModel: null,
+            neo4j: {
+              enabled: false,
+              source: 'none',
+              uri: '',
+              username: '',
+              database: '',
+              isConfigured: false,
+            },
+            configLocked: false,
+            lockedAt: null,
+            updatedAt: null,
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      return new Response(JSON.stringify({
+        knowledgeGraph: {
+          profile: {
+            chatModel: null,
+            embeddingModel: null,
+            rerankModel: null,
+            neo4j: {
+              enabled: false,
+              source: 'none',
+              uri: '',
+              username: '',
+              database: '',
+              isConfigured: false,
+            },
+            configLocked: false,
+            lockedAt: null,
+            updatedAt: null,
+          },
+          build: {
+            status: 'idle',
+            stage: 'idle',
+            progressPercent: 0,
+            message: 'idle',
+            errorMessage: null,
+            startedAt: null,
+            completedAt: null,
+            lastBuiltAt: null,
+            syncedToNeo4jAt: null,
+            entityCount: 0,
+            relationCount: 0,
+            updatedAt: null,
+          },
+          buildLogs: [],
+          namespace: 'syosetu:n1000',
+          entities: [],
+          relations: [],
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    await fetchLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
+    await updateLibraryKnowledgeGraphProfile('syosetu 18', 'n1000/lib', {
+      chatModel: {
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      },
+    });
+    await buildLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
+    await deleteLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
+    await askLibraryAssistant('syosetu 18', 'n1000/lib', '现在发生了什么？', 'chapter/1');
+
+    assert.equal(calls[0]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph');
+    assert.equal(calls[1]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/profile');
+    assert.equal(calls[1]?.init?.method, 'PUT');
+    assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
+      chatModel: {
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      },
+    });
+    assert.equal(calls[2]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/build');
+    assert.equal(calls[2]?.init?.method, 'POST');
+    assert.equal(calls[3]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph');
+    assert.equal(calls[3]?.init?.method, 'DELETE');
+    assert.equal(calls[4]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/assistant/chat');
+    assert.equal(calls[4]?.init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(calls[4]?.init?.body)), {
+      message: '现在发生了什么？',
+      chapterId: 'chapter/1',
     });
   } finally {
     globalThis.fetch = originalFetch;

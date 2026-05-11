@@ -9,6 +9,13 @@ import {
   type LibraryExportFormat,
 } from '../core/export-engine';
 import type {
+  LibraryAssistantResponse,
+  LibraryKnowledgeGraphBuild,
+  LibraryKnowledgeGraphProfile,
+  LibraryKnowledgeGraphProfileInput,
+  LibraryKnowledgeGraphState,
+} from '../core/library-intelligence';
+import type {
   LibraryBookmark,
   LibraryChapterDetail,
   LibraryNovelAlias,
@@ -26,6 +33,7 @@ export interface LibraryNovelSummaryPayload {
 export interface LibraryNovelDetailPayload {
   novel: LibraryNovelDetail;
   activeTask: CrawlTaskSnapshot | null;
+  knowledgeGraph: LibraryKnowledgeGraphState;
 }
 
 export interface LibraryChapterDetailPayload {
@@ -61,8 +69,36 @@ export interface LibraryReadingProgressPayload {
   progress: LibraryReadingProgress;
 }
 
+export interface LibraryKnowledgeGraphPayload {
+  knowledgeGraph: LibraryKnowledgeGraphState;
+}
+
+export interface LibraryKnowledgeGraphBuildPayload {
+  build: LibraryKnowledgeGraphBuild;
+}
+
+export interface LibraryKnowledgeGraphProfilePayload {
+  profile: LibraryKnowledgeGraphProfile;
+}
+
+export interface LibraryAssistantPayload {
+  reply: LibraryAssistantResponse;
+}
+
 export interface LibraryRouterOptions {
   service: ControlCenterService;
+}
+
+interface UpdateKnowledgeGraphProfileRequestBody {
+  chatModel?: unknown;
+  embeddingModel?: unknown;
+  rerankModel?: unknown;
+  neo4j?: unknown;
+}
+
+interface AskLibraryAssistantRequestBody {
+  message?: unknown;
+  chapterId?: unknown;
 }
 
 export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
@@ -97,9 +133,123 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     const payload: LibraryNovelDetailPayload = {
       novel,
       activeTask: service.getLibraryActiveTask(sourceId, novelId),
+      knowledgeGraph: service.getLibraryKnowledgeGraph(sourceId, novelId)!,
     };
 
     response.json(payload);
+  });
+
+  router.get('/novels/:sourceId/:novelId/graph', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const knowledgeGraph = service.getLibraryKnowledgeGraph(sourceId, novelId);
+
+    if (!knowledgeGraph) {
+      response.status(404).json({
+        message: `Library novel ${sourceId}/${novelId} was not found.`,
+      });
+      return;
+    }
+
+    const payload: LibraryKnowledgeGraphPayload = {
+      knowledgeGraph,
+    };
+
+    response.json(payload);
+  });
+
+  router.put('/novels/:sourceId/:novelId/graph/profile', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const profile = service.updateLibraryKnowledgeGraphProfile(
+        sourceId,
+        novelId,
+        parseKnowledgeGraphProfileBody((request.body ?? {}) as UpdateKnowledgeGraphProfileRequestBody),
+      );
+
+      if (!profile) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      const payload: LibraryKnowledgeGraphProfilePayload = {
+        profile,
+      };
+
+      response.json(payload);
+    } catch (error) {
+      response.status(error instanceof Error && /锁定/.test(error.message) ? 409 : 422).json({
+        message: error instanceof Error ? error.message : 'Knowledge graph profile update failed.',
+      });
+    }
+  });
+
+  router.post('/novels/:sourceId/:novelId/graph/build', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const build = service.buildLibraryKnowledgeGraph(sourceId, novelId);
+
+    if (!build) {
+      response.status(404).json({
+        message: `Library novel ${sourceId}/${novelId} was not found.`,
+      });
+      return;
+    }
+
+    const payload: LibraryKnowledgeGraphBuildPayload = {
+      build,
+    };
+
+    response.status(202).json(payload);
+  });
+
+  router.delete('/novels/:sourceId/:novelId/graph', async (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const knowledgeGraph = await service.clearLibraryKnowledgeGraph(sourceId, novelId);
+
+      if (!knowledgeGraph) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      const payload: LibraryKnowledgeGraphPayload = {
+        knowledgeGraph,
+      };
+
+      response.json(payload);
+    } catch (error) {
+      response.status(error instanceof Error && /构建中/.test(error.message) ? 409 : 422).json({
+        message: error instanceof Error ? error.message : 'Knowledge graph clear failed.',
+      });
+    }
+  });
+
+  router.post('/novels/:sourceId/:novelId/assistant/chat', async (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const body = (request.body ?? {}) as AskLibraryAssistantRequestBody;
+      const reply = await service.askLibraryAssistant({
+        sourceId,
+        novelId,
+        message: readStringField(body, 'message'),
+        ...(typeof body.chapterId === 'string' && body.chapterId.trim().length > 0
+          ? { chapterId: body.chapterId.trim() }
+          : {}),
+      });
+
+      const payload: LibraryAssistantPayload = {
+        reply,
+      };
+
+      response.json(payload);
+    } catch (error) {
+      response.status(error instanceof Error && /not found/i.test(error.message) ? 404 : 422).json({
+        message: error instanceof Error ? error.message : 'Assistant chat failed.',
+      });
+    }
   });
 
   router.get('/novels/:sourceId/:novelId/chapters/:chapterId', (request, response) => {
@@ -370,4 +520,57 @@ function readOptionalStringField(body: unknown, field: string): string {
   }
 
   return value.trim();
+}
+
+function parseKnowledgeGraphProfileBody(body: UpdateKnowledgeGraphProfileRequestBody): LibraryKnowledgeGraphProfileInput {
+  return {
+    ...(body.chatModel !== undefined ? { chatModel: parseModelRoute(body.chatModel, 'chatModel') } : {}),
+    ...(body.embeddingModel !== undefined ? { embeddingModel: parseModelRoute(body.embeddingModel, 'embeddingModel') } : {}),
+    ...(body.rerankModel !== undefined ? { rerankModel: parseModelRoute(body.rerankModel, 'rerankModel') } : {}),
+    ...(body.neo4j !== undefined ? { neo4j: parseNeo4jRoute(body.neo4j) } : {}),
+  };
+}
+
+function parseModelRoute(
+  value: unknown,
+  field: string,
+): { providerId?: string; modelId?: string } | null {
+  if (value === null) {
+    return null;
+  }
+
+  if (!value || typeof value !== 'object') {
+    throw new Error(`${field} must be an object or null.`);
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.providerId === 'string' ? { providerId: record.providerId.trim() } : {}),
+    ...(typeof record.modelId === 'string' ? { modelId: record.modelId.trim() } : {}),
+  };
+}
+
+function parseNeo4jRoute(value: unknown): {
+  enabled?: boolean;
+  uri?: string;
+  username?: string;
+  password?: string;
+  database?: string;
+} | null {
+  if (value === null) {
+    return null;
+  }
+
+  if (!value || typeof value !== 'object') {
+    throw new Error('neo4j must be an object or null.');
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.enabled === 'boolean' ? { enabled: record.enabled } : {}),
+    ...(typeof record.uri === 'string' ? { uri: record.uri } : {}),
+    ...(typeof record.username === 'string' ? { username: record.username } : {}),
+    ...(typeof record.password === 'string' ? { password: record.password } : {}),
+    ...(typeof record.database === 'string' ? { database: record.database } : {}),
+  };
 }

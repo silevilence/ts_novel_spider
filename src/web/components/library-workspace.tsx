@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { ChapterDirectory } from './chapter-directory';
+import { LibraryIntelligencePanel } from './library-intelligence-panel';
 import type { LibraryModel } from '../services/library-model';
 import {
   buildLibraryExportDownloadUrl,
@@ -18,6 +19,7 @@ import {
 interface LibraryWorkspaceProps {
   model: LibraryModel;
   onOpenControl: () => void;
+  onNotify: (notice: { tone: 'info' | 'success' | 'error'; title: string; message: string }) => void;
 }
 
 const LIBRARY_EXPORT_OPTIONS: Array<{
@@ -64,7 +66,7 @@ interface DescriptionDialogState {
   text: string;
 }
 
-export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps) {
+export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWorkspaceProps) {
   const [isReaderDirectoryOpen, setIsReaderDirectoryOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isRedownloadPickerOpen, setIsRedownloadPickerOpen] = useState(false);
@@ -817,6 +819,13 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
             </aside>
           </div>
         ) : null}
+
+        <LibraryIntelligencePanel
+          detailPayload={model.detail!}
+          location={model.location}
+          onRefresh={model.refresh}
+          onNotify={onNotify}
+        />
       </div>
     );
   }
@@ -945,6 +954,13 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
           ) : null}
         </section>
       ) : null}
+
+      <LibraryIntelligencePanel
+        detailPayload={model.detail!}
+        location={model.location}
+        onRefresh={model.refresh}
+        onNotify={onNotify}
+      />
 
       <section className="panel panel-grid metadata-board">
         <div className="card span-2">
