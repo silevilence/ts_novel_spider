@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useEffectEvent, useRef, useState } from 'react';
+import { startTransition, useDeferredValue, useEffect, useEffectEvent, useRef, useState } from 'react';
 
 import type { AppLocation } from './app-routes';
 import {
@@ -7,12 +7,19 @@ import {
 } from './app-routes';
 import {
   cacheLibraryMedia,
+  createLibraryAlias,
+  createLibraryBookmark,
   createControlTask,
+  deleteLibraryAlias,
+  deleteLibraryBookmark,
   fetchLibraryChapter,
   fetchLibraryNovel,
   fetchLibraryNovels,
   fetchNovelPreview,
   fetchTask,
+  updateLibraryAlias,
+  updateLibraryBookmark,
+  updateLibraryReadingProgress,
 } from './api';
 import { SseTaskLogBridge } from './task-log-bridge';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
@@ -25,9 +32,16 @@ import type { NoticeInput } from './control-center-model';
 
 export interface LibraryModel {
   location: AppLocation;
+  libraryOverview: {
+    totalNovels: number;
+    downloadedChapters: number;
+    pendingChapters: number;
+  };
   novels: LibraryNovelSummaryPayload['novels'];
   detail: LibraryNovelDetailPayload | null;
   chapter: LibraryChapterDetailPayload | null;
+  searchQuery: string;
+  mutationBusyKey: string | null;
   loading: boolean;
   errorMessage: string | null;
   syncBusy: boolean;
@@ -42,9 +56,17 @@ export interface LibraryModel {
   } | null;
   currentTask: ApiTaskSnapshot | null;
   taskStreamState: 'idle' | 'connected' | 'reconnecting';
+  setSearchQuery: (value: string) => void;
+  clearSearch: () => void;
   openNovel: (sourceId: string, novelId: string) => void;
   openChapter: (sourceId: string, novelId: string, chapterId: string) => void;
   refresh: () => Promise<void>;
+  addAlias: (alias: string) => Promise<void>;
+  renameAlias: (aliasId: string, alias: string) => Promise<void>;
+  removeAlias: (aliasId: string) => Promise<void>;
+  addBookmark: (chapterId: string, note: string) => Promise<void>;
+  editBookmark: (bookmarkId: string, note: string) => Promise<void>;
+  removeBookmark: (bookmarkId: string) => Promise<void>;
   runIncrementalSync: () => Promise<void>;
   syncMissingChapters: () => Promise<void>;
   redownloadAllDownloadedChapters: () => Promise<void>;
@@ -62,9 +84,17 @@ interface UseLibraryModelOptions {
 type LibraryTaskSnapshot = NonNullable<LibraryNovelDetailPayload['activeTask']>;
 
 export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryModelOptions): LibraryModel {
+  const [libraryOverview, setLibraryOverview] = useState<LibraryModel['libraryOverview']>({
+    totalNovels: 0,
+    downloadedChapters: 0,
+    pendingChapters: 0,
+  });
   const [novels, setNovels] = useState<LibraryNovelSummaryPayload['novels']>([]);
   const [detail, setDetail] = useState<LibraryNovelDetailPayload | null>(null);
   const [chapter, setChapter] = useState<LibraryChapterDetailPayload | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [mutationBusyKey, setMutationBusyKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
@@ -74,11 +104,14 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [currentTask, setCurrentTask] = useState<ApiTaskSnapshot | null>(null);
   const [taskStreamState, setTaskStreamState] = useState<'idle' | 'connected' | 'reconnecting'>('idle');
   const latestLocationRef = useRef(location);
+  const latestSearchQueryRef = useRef(deferredSearchQuery);
   const currentTaskRef = useRef<ApiTaskSnapshot | null>(null);
   const lastObservedTaskRef = useRef<{ id: string; status: ApiTaskSnapshot['status'] } | null>(null);
+  const lastPersistedProgressChapterRef = useRef<string | null>(null);
   const publishNotice = useEffectEvent(onNotice);
 
   latestLocationRef.current = location;
+  latestSearchQueryRef.current = deferredSearchQuery;
   currentTaskRef.current = currentTask;
 
   const loadLocation = useEffectEvent(async (targetLocation: AppLocation): Promise<void> => {
@@ -91,9 +124,23 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
 
     try {
       if (targetLocation.view === 'page') {
-        const payload = await fetchLibraryNovels();
+        const search = latestSearchQueryRef.current.trim();
+        const [allPayload, payload] = search
+          ? await Promise.all([
+              fetchLibraryNovels(),
+              fetchLibraryNovels(search),
+            ])
+          : await Promise.all([
+              fetchLibraryNovels(),
+              fetchLibraryNovels(),
+            ]);
 
         startTransition(() => {
+          setLibraryOverview({
+            totalNovels: allPayload.novels.length,
+            downloadedChapters: allPayload.novels.reduce((sum, novel) => sum + novel.downloadedChapters, 0),
+            pendingChapters: allPayload.novels.reduce((sum, novel) => sum + novel.indexedChapters + novel.failedChapters, 0),
+          });
           setNovels(payload.novels);
           setDetail(null);
           setChapter(null);
@@ -165,6 +212,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     location.sourceId,
     location.novelId,
     location.chapterId,
+    deferredSearchQuery,
   ]);
 
   useEffect(() => {
@@ -172,6 +220,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       setCurrentTask(null);
       setMediaBatchProgress(null);
       lastObservedTaskRef.current = null;
+      lastPersistedProgressChapterRef.current = null;
       return;
     }
 
@@ -185,6 +234,40 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     setMediaBatchProgress(null);
     lastObservedTaskRef.current = null;
   }, [location.sourceId, location.novelId]);
+
+  useEffect(() => {
+    if (location.view !== 'reader' || !location.sourceId || !location.novelId || !location.chapterId || !chapter) {
+      return;
+    }
+
+    if (lastPersistedProgressChapterRef.current === location.chapterId) {
+      return;
+    }
+
+    void updateLibraryReadingProgress(location.sourceId, location.novelId, location.chapterId)
+      .then((payload) => {
+        lastPersistedProgressChapterRef.current = location.chapterId;
+        startTransition(() => {
+          setDetail((current) => current ? {
+            ...current,
+            novel: {
+              ...current.novel,
+              readingProgress: payload.progress,
+            },
+          } : current);
+
+          setChapter((current) => current ? {
+            ...current,
+            chapter: {
+              ...current.chapter,
+              readingProgress: payload.progress,
+            },
+          } : current);
+        });
+      })
+      .catch(() => {
+      });
+  }, [chapter, location.chapterId, location.novelId, location.sourceId, location.view]);
 
   useEffect(() => {
     if (!currentTask || (currentTask.status !== 'queued' && currentTask.status !== 'running')) {
@@ -260,6 +343,148 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
 
   async function refresh() {
     await loadLocation(latestLocationRef.current);
+  }
+
+  function clearSearch() {
+    setSearchQuery('');
+  }
+
+  async function addAlias(alias: string) {
+    if (!location.sourceId || !location.novelId) {
+      return;
+    }
+
+    setMutationBusyKey('alias-create');
+
+    try {
+      await createLibraryAlias(location.sourceId, location.novelId, alias);
+      publishNotice({
+        tone: 'success',
+        title: '别名已保存',
+        message: '现在可以用这个别名参与书库检索。',
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Alias creation failed.';
+      publishNotice({ tone: 'error', title: '别名保存失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function renameAlias(aliasId: string, alias: string) {
+    if (!location.sourceId || !location.novelId) {
+      return;
+    }
+
+    setMutationBusyKey(`alias:${aliasId}`);
+
+    try {
+      await updateLibraryAlias(location.sourceId, location.novelId, aliasId, alias);
+      publishNotice({
+        tone: 'success',
+        title: '别名已更新',
+        message: '新的别名内容已经生效。',
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Alias update failed.';
+      publishNotice({ tone: 'error', title: '别名更新失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function removeAlias(aliasId: string) {
+    if (!location.sourceId || !location.novelId) {
+      return;
+    }
+
+    setMutationBusyKey(`alias:${aliasId}`);
+
+    try {
+      await deleteLibraryAlias(location.sourceId, location.novelId, aliasId);
+      publishNotice({
+        tone: 'success',
+        title: '别名已删除',
+        message: '该别名不会再参与检索。',
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Alias deletion failed.';
+      publishNotice({ tone: 'error', title: '别名删除失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function addBookmark(chapterId: string, note: string) {
+    if (!location.sourceId || !location.novelId) {
+      return;
+    }
+
+    setMutationBusyKey('bookmark-create');
+
+    try {
+      await createLibraryBookmark(location.sourceId, location.novelId, chapterId, note);
+      publishNotice({
+        tone: 'success',
+        title: '书签已保存',
+        message: '已经把这章记到书签列表里。',
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Bookmark creation failed.';
+      publishNotice({ tone: 'error', title: '书签保存失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function editBookmark(bookmarkId: string, note: string) {
+    if (!location.sourceId || !location.novelId) {
+      return;
+    }
+
+    setMutationBusyKey(`bookmark:${bookmarkId}`);
+
+    try {
+      await updateLibraryBookmark(location.sourceId, location.novelId, bookmarkId, note);
+      publishNotice({
+        tone: 'success',
+        title: '书签备注已更新',
+        message: '新的备注内容已经保存。',
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Bookmark update failed.';
+      publishNotice({ tone: 'error', title: '书签更新失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function removeBookmark(bookmarkId: string) {
+    if (!location.sourceId || !location.novelId) {
+      return;
+    }
+
+    setMutationBusyKey(`bookmark:${bookmarkId}`);
+
+    try {
+      await deleteLibraryBookmark(location.sourceId, location.novelId, bookmarkId);
+      publishNotice({
+        tone: 'success',
+        title: '书签已删除',
+        message: '这条书签已经从列表移除。',
+      });
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Bookmark deletion failed.';
+      publishNotice({ tone: 'error', title: '书签删除失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
   }
 
   async function runIncrementalSync() {
@@ -560,9 +785,12 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
 
   return {
     location,
+    libraryOverview,
     novels,
     detail,
     chapter,
+    searchQuery,
+    mutationBusyKey,
     loading,
     errorMessage,
     syncBusy,
@@ -571,9 +799,17 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     mediaBatchProgress,
     currentTask,
     taskStreamState,
+    setSearchQuery,
+    clearSearch,
     openNovel,
     openChapter,
     refresh,
+    addAlias,
+    renameAlias,
+    removeAlias,
+    addBookmark,
+    editBookmark,
+    removeBookmark,
     runIncrementalSync,
     syncMissingChapters,
     redownloadAllDownloadedChapters,

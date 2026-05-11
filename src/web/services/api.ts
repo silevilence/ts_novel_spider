@@ -1,5 +1,8 @@
 import type { HealthPayload } from '../../server/routes/health';
 import type {
+  ControlLlmProviderModelsPayload,
+  ControlLlmProvidersPayload,
+  ControlNeo4jPayload,
   ControlNetworkProxyPayload,
   ControlPreviewPayload,
   ControlSourcesPayload,
@@ -7,11 +10,14 @@ import type {
   ControlTasksPayload,
 } from '../../server/routes/control-center';
 import type {
+  LibraryAliasPayload,
+  LibraryBookmarkPayload,
   LibraryChapterDetailPayload,
   LibraryMediaBatchPayload,
   LibraryMediaPayload,
   LibraryNovelDetailPayload,
   LibraryNovelSummaryPayload,
+  LibraryReadingProgressPayload,
 } from '../../server/routes/library';
 
 export type LibraryExportFormat = 'markdown' | 'txt' | 'epub';
@@ -24,6 +30,48 @@ export interface UpdateNetworkProxyInput {
   username: string;
   password: string;
   bypassHosts: string[];
+}
+
+export type ModelCapability = 'chat' | 'embedding' | 'rerank';
+export type ModelCapabilityMode = 'manual' | 'auto';
+export type LlmProviderType = 'openai-compatible' | 'anthropic' | 'google-generative-ai' | 'ollama';
+
+export interface UpdateLlmModelInput {
+  id: string;
+  label: string;
+  modelId: string;
+  enabled: boolean;
+  capabilityMode: ModelCapabilityMode;
+  capabilities: ModelCapability[];
+  defaultFor: ModelCapability[];
+}
+
+export interface UpdateLlmProviderInput {
+  id: string;
+  label: string;
+  type: LlmProviderType;
+  enabled: boolean;
+  baseUrl: string;
+  apiKey: string;
+  organization: string;
+  models: UpdateLlmModelInput[];
+}
+
+export interface DiscoverLlmProviderModelsInput {
+  label: string;
+  type: LlmProviderType;
+  enabled: boolean;
+  baseUrl: string;
+  apiKey: string;
+  organization: string;
+}
+
+export interface UpdateNeo4jInput {
+  enabled: boolean;
+  uri: string;
+  username: string;
+  password: string;
+  database: string;
 }
 
 export async function fetchHealth(): Promise<HealthPayload> {
@@ -42,6 +90,98 @@ export async function fetchControlSources(): Promise<ControlSourcesPayload> {
 
 export async function fetchNetworkProxy(): Promise<ControlNetworkProxyPayload> {
   return requestJson<ControlNetworkProxyPayload>('/api/control/network-proxy');
+}
+
+export async function fetchLlmProvidersPreferences(): Promise<ControlLlmProvidersPayload> {
+  return requestJson<ControlLlmProvidersPayload>('/api/control/preferences/llm-providers');
+}
+
+export async function updateLlmProvidersPreferences(
+  providers: UpdateLlmProviderInput[],
+): Promise<ControlLlmProvidersPayload> {
+  const response = await fetch('/api/control/preferences/llm-providers', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ providers }),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'LLM preferences update failed');
+  }
+
+  return (await response.json()) as ControlLlmProvidersPayload;
+}
+
+export async function discoverLlmProviderModels(
+  provider: DiscoverLlmProviderModelsInput,
+): Promise<ControlLlmProviderModelsPayload> {
+  const response = await fetch('/api/control/preferences/llm-providers/discover-models', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ provider }),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'LLM model discovery failed');
+  }
+
+  return (await response.json()) as ControlLlmProviderModelsPayload;
+}
+
+export async function validateLlmProviderModel(
+  providerId: string,
+  modelId: string,
+): Promise<ControlLlmProvidersPayload> {
+  const response = await fetch(
+    `/api/control/preferences/llm-providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}/validate`,
+    {
+      method: 'POST',
+    },
+  );
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'LLM model validation failed');
+  }
+
+  return (await response.json()) as ControlLlmProvidersPayload;
+}
+
+export async function fetchNeo4jPreferences(): Promise<ControlNeo4jPayload> {
+  return requestJson<ControlNeo4jPayload>('/api/control/preferences/neo4j');
+}
+
+export async function updateNeo4jPreferences(
+  input: UpdateNeo4jInput,
+): Promise<ControlNeo4jPayload> {
+  const response = await fetch('/api/control/preferences/neo4j', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Neo4j preferences update failed');
+  }
+
+  return (await response.json()) as ControlNeo4jPayload;
+}
+
+export async function validateNeo4jPreferences(): Promise<ControlNeo4jPayload> {
+  const response = await fetch('/api/control/preferences/neo4j/validate', {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Neo4j validation failed');
+  }
+
+  return (await response.json()) as ControlNeo4jPayload;
 }
 
 export async function updateNetworkProxy(
@@ -119,8 +259,12 @@ export async function fetchRecentTasks(limit = 8): Promise<ControlTasksPayload> 
   return requestJson<ControlTasksPayload>(`/api/control/tasks?limit=${limit}`);
 }
 
-export async function fetchLibraryNovels(): Promise<LibraryNovelSummaryPayload> {
-  return requestJson<LibraryNovelSummaryPayload>('/api/library/novels');
+export async function fetchLibraryNovels(query?: string): Promise<LibraryNovelSummaryPayload> {
+  const search = query?.trim()
+    ? `?q=${encodeURIComponent(query.trim())}`
+    : '';
+
+  return requestJson<LibraryNovelSummaryPayload>(`/api/library/novels${search}`);
 }
 
 export async function fetchLibraryNovel(
@@ -180,6 +324,110 @@ export async function cacheLibraryNovelMedia(
   return (await response.json()) as LibraryMediaBatchPayload;
 }
 
+export async function createLibraryAlias(
+  sourceId: string,
+  novelId: string,
+  alias: string,
+): Promise<LibraryAliasPayload> {
+  return requestJson<LibraryAliasPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/aliases`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias }),
+    },
+  );
+}
+
+export async function updateLibraryAlias(
+  sourceId: string,
+  novelId: string,
+  aliasId: string,
+  alias: string,
+): Promise<LibraryAliasPayload> {
+  return requestJson<LibraryAliasPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/aliases/${encodeURIComponent(aliasId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias }),
+    },
+  );
+}
+
+export async function deleteLibraryAlias(
+  sourceId: string,
+  novelId: string,
+  aliasId: string,
+): Promise<void> {
+  await requestVoid(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/aliases/${encodeURIComponent(aliasId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export async function updateLibraryReadingProgress(
+  sourceId: string,
+  novelId: string,
+  chapterId: string,
+): Promise<LibraryReadingProgressPayload> {
+  return requestJson<LibraryReadingProgressPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/progress`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chapterId }),
+    },
+  );
+}
+
+export async function createLibraryBookmark(
+  sourceId: string,
+  novelId: string,
+  chapterId: string,
+  note: string,
+): Promise<LibraryBookmarkPayload> {
+  return requestJson<LibraryBookmarkPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/bookmarks`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chapterId, note }),
+    },
+  );
+}
+
+export async function updateLibraryBookmark(
+  sourceId: string,
+  novelId: string,
+  bookmarkId: string,
+  note: string,
+): Promise<LibraryBookmarkPayload> {
+  return requestJson<LibraryBookmarkPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/bookmarks/${encodeURIComponent(bookmarkId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    },
+  );
+}
+
+export async function deleteLibraryBookmark(
+  sourceId: string,
+  novelId: string,
+  bookmarkId: string,
+): Promise<void> {
+  await requestVoid(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/bookmarks/${encodeURIComponent(bookmarkId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
 export function buildLibraryExportDownloadUrl(
   sourceId: string,
   novelId: string,
@@ -188,14 +436,22 @@ export function buildLibraryExportDownloadUrl(
   return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/exports/${encodeURIComponent(format)}/download`;
 }
 
-async function requestJson<TPayload>(url: string): Promise<TPayload> {
-  const response = await fetch(url);
+async function requestJson<TPayload>(url: string, init?: RequestInit): Promise<TPayload> {
+  const response = await fetch(url, init);
 
   if (!response.ok) {
     throw await buildRequestError(response, `Request failed with status ${response.status}`);
   }
 
   return (await response.json()) as TPayload;
+}
+
+async function requestVoid(url: string, init?: RequestInit): Promise<void> {
+  const response = await fetch(url, init);
+
+  if (!response.ok) {
+    throw await buildRequestError(response, `Request failed with status ${response.status}`);
+  }
 }
 
 async function buildRequestError(response: Response, fallbackMessage: string): Promise<Error> {

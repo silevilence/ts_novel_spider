@@ -494,14 +494,175 @@ button:focus-visible {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.provider-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.provider-workbench {
+  display: grid;
+  grid-template-columns: minmax(220px, 252px) minmax(0, 1fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.provider-sidebar,
+.provider-detail-stack,
+.provider-sidebar-list,
+.provider-section,
+.model-section {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.provider-nav-card {
+  width: 100%;
+  display: grid;
+  gap: 0.45rem;
+  text-align: left;
+  padding: 0.78rem 0.9rem;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(6, 19, 30, 0.78);
+  color: var(--ink);
+}
+
+.provider-nav-card.active {
+  border-color: rgba(127, 208, 255, 0.42);
+  background: linear-gradient(180deg, rgba(11, 30, 48, 0.96), rgba(8, 23, 36, 0.88));
+  box-shadow: 0 16px 40px rgba(2, 10, 18, 0.28);
+}
+
+.provider-nav-card p,
+.provider-nav-card strong {
+  margin: 0;
+}
+
+.provider-nav-head,
+.model-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.model-section-head-side {
+  display: grid;
+  justify-items: end;
+  gap: 0.55rem;
+}
+
+.provider-inline-note {
+  padding: 0.72rem 0.82rem;
+}
+
 .proxy-toggle {
   align-self: end;
   min-height: 44px;
 }
 
 .proxy-summary .card p,
-.proxy-validation-card p {
+.proxy-validation-card p,
+.model-validation-card p,
+.provider-summary .card p {
   margin: 0.45rem 0 0;
+}
+
+.provider-list,
+.model-list,
+.capability-stack,
+.preference-empty {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.provider-card,
+.model-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.88rem 0.98rem;
+}
+
+.model-card {
+  border-color: rgba(127, 208, 255, 0.18);
+  background: linear-gradient(180deg, rgba(10, 28, 44, 0.9), rgba(7, 19, 32, 0.8));
+}
+
+.provider-card-header,
+.model-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.model-card-header-side,
+.model-summary-copy {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.model-card-header-side {
+  justify-items: end;
+}
+
+.model-summary-id {
+  margin: 0;
+  color: rgba(226, 235, 244, 0.78);
+  font-size: 0.95rem;
+}
+
+.model-card-toggle {
+  min-height: 34px;
+  padding: 0.45rem 0.78rem;
+}
+
+.model-card.is-collapsed {
+  gap: 0.55rem;
+}
+
+.provider-card-header h3,
+.model-card-header h4,
+.preference-empty h3 {
+  margin-bottom: 0.35rem;
+}
+
+.provider-grid,
+.model-grid,
+.neo4j-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.provider-grid label,
+.model-grid label,
+.neo4j-grid label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.capability-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.capability-note {
+  margin: 0.25rem 0 0;
+}
+
+.capability-chip {
+  min-height: 38px;
+  padding: 0.55rem 0.85rem;
+}
+
+.capability-chip.active {
+  background: rgba(127, 208, 255, 0.18);
+  border-color: rgba(127, 208, 255, 0.35);
+  color: #cfeeff;
 }
 
 .directory-toolbar {
@@ -599,9 +760,10 @@ button:focus-visible {
 }
 
 .chapter-link-button {
-  display: grid;
-  gap: 0.7rem;
-  justify-items: start;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
   min-width: 0;
   width: 100%;
   min-height: 0;
@@ -646,9 +808,17 @@ button:focus-visible {
 }
 
 .chapter-status-row {
+  max-width: 100%;
+}
+
+.chapter-status-row.inline {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.chapter-status-row.stacked {
   width: 100%;
   justify-content: flex-start;
-  max-width: 100%;
   padding: 0 0.8rem 0.72rem;
 }
 
@@ -755,8 +925,123 @@ button:focus-visible {
 .library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 1rem;
   align-items: start;
+  gap: 0.8rem;
+}
+
+.library-search-toolbar,
+.library-inline-form,
+.library-list-block,
+.library-enhancement-panel,
+.reader-helper-card,
+.library-search-guide {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.library-search-toolbar {
+  align-items: end;
+}
+
+.library-search-bar {
+  min-width: min(620px, 100%);
+}
+
+.library-search-bar input,
+.library-inline-form input {
+  min-height: 42px;
+  width: 100%;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(5, 16, 27, 0.78);
+  color: var(--ink);
+}
+
+.library-search-guide {
+  padding: 1rem 1.05rem;
+  border-color: rgba(127, 208, 255, 0.18);
+  background: linear-gradient(180deg, rgba(8, 24, 37, 0.88), rgba(6, 18, 29, 0.8));
+}
+
+.library-search-guide h3 {
+  margin: 0;
+}
+
+.library-search-example-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.library-search-example {
+  min-height: 36px;
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+}
+
+.alias-chip-row {
+  margin-top: -0.1rem;
+}
+
+.subtle-tag {
+  background: rgba(127, 208, 255, 0.09);
+  border-color: rgba(127, 208, 255, 0.18);
+}
+
+.compact-card {
+  padding: 0.85rem 0.95rem;
+}
+
+.compact-card strong {
+  display: block;
+  margin: 0.2rem 0 0.5rem;
+}
+
+.library-inline-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.library-inline-form.grow {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.library-inline-form input::placeholder {
+  color: var(--muted);
+}
+
+.library-list-block {
+  align-content: start;
+}
+
+.compact-list {
+  gap: 0.65rem;
+}
+
+.library-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.9rem;
+}
+
+.library-list-item strong,
+.library-list-item p {
+  margin: 0;
+}
+
+.bookmark-list-item {
+  align-items: center;
+}
+
+.library-enhancement-panel {
+  gap: 1rem;
+}
+
+.reader-helper-card {
+  margin-bottom: 1rem;
+  padding: 1rem 1.05rem;
 }
 
 .library-card {
@@ -770,7 +1055,6 @@ button:focus-visible {
   justify-content: space-between;
   align-items: flex-start;
   gap: 0.75rem;
-  flex-wrap: wrap;
 }
 
 .library-card-head .label {
@@ -780,6 +1064,71 @@ button:focus-visible {
 .library-card-detail-button {
   min-height: 38px;
   padding: 0.55rem 0.9rem;
+}
+
+.compact-actions {
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.model-discovery-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.82rem 0.92rem;
+  border-color: rgba(127, 208, 255, 0.2);
+  background: linear-gradient(180deg, rgba(9, 24, 40, 0.9), rgba(6, 18, 31, 0.84));
+}
+
+.model-discovery-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.model-discovery-toolbar .toolbar-search {
+  min-width: min(260px, 100%);
+}
+
+.model-discovery-toolbar input {
+  min-height: 38px;
+  padding: 0.58rem 0.8rem;
+}
+
+.model-discovery-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.model-discovery-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.9rem;
+  padding: 0.8rem 0.88rem;
+  border-radius: 18px;
+  border: 1px solid rgba(127, 208, 255, 0.15);
+  background: rgba(5, 16, 27, 0.78);
+}
+
+.model-discovery-item.is-disabled {
+  opacity: 0.54;
+}
+
+.model-discovery-copy {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.model-discovery-copy p,
+.model-discovery-copy strong {
+  margin: 0;
+}
+
+.model-discovery-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0.55rem;
 }
 
 .library-card-copy {
@@ -1271,6 +1620,8 @@ button:focus-visible {
   .route-summary-strip,
   .settings-summary-strip,
   .panel-grid,
+  .provider-summary,
+  .provider-workbench,
   .proxy-summary,
   .task-layout,
   .reader-layout,
@@ -1292,16 +1643,26 @@ button:focus-visible {
   .chapter-item,
   .volume-toggle,
   .fold-header,
+  .provider-nav-head,
+  .model-section-head,
+  .model-discovery-item,
   .reader-article-header,
   .reader-directory-drawer-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
+  .model-section-head-side,
+  .model-discovery-actions,
+  .model-card-header-side {
+    justify-items: stretch;
+  }
+
   .dock-actions,
   .action-row,
   .action-row.wide,
-  .reader-footer-nav {
+  .reader-footer-nav,
+  .model-discovery-toolbar {
     width: 100%;
     flex-direction: column;
     align-items: stretch;

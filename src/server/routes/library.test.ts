@@ -131,6 +131,9 @@ test('library routes expose stored novels, detail stats and chapter reading data
     assert.equal(detailPayload.novel.media.pending, 1);
     assert.equal(detailPayload.novel.chapters[0]?.media.total, 1);
     assert.equal(detailPayload.novel.chapters[2]?.hasContent, false);
+    assert.deepEqual(detailPayload.novel.aliases, []);
+    assert.equal(detailPayload.novel.readingProgress, null);
+    assert.deepEqual(detailPayload.novel.bookmarks, []);
 
     const chapterResponse = await fetch(
       `${baseUrl}/api/library/novels/syosetu/n1000lib/chapters/chapter-1`,
@@ -154,6 +157,169 @@ test('library routes expose stored novels, detail stats and chapter reading data
       chapterPayload.chapter.mediaAssets[0]?.sourceUrl,
       'https://cdn.example.com/cover/chapter-1.png',
     );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
+test('library routes support advanced search, aliases, progress watermark and bookmarks', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const aliasCreateResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/aliases`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ alias: '样例别名' }),
+    });
+    const aliasCreatePayload = (await aliasCreateResponse.json()) as {
+      alias: { id: string; alias: string };
+    };
+
+    assert.equal(aliasCreateResponse.status, 201);
+    assert.equal(aliasCreatePayload.alias.alias, '样例别名');
+
+    const searchByAliasResponse = await fetch(`${baseUrl}/api/library/novels?q=alias:%E6%A0%B7%E4%BE%8B%E5%88%AB%E5%90%8D`);
+    const searchByAliasPayload = (await searchByAliasResponse.json()) as {
+      novels: Array<{ metadata: { novelId: string } }>;
+    };
+
+    assert.equal(searchByAliasResponse.status, 200);
+    assert.equal(searchByAliasPayload.novels.length, 1);
+    assert.equal(searchByAliasPayload.novels[0]?.metadata.novelId, 'n1000lib');
+
+    const searchByBooleanResponse = await fetch(`${baseUrl}/api/library/novels?q=name:%E7%A6%BB%E7%BA%BF+tag:%E4%B9%A6%E5%BA%93+-site:other`);
+    const searchByBooleanPayload = (await searchByBooleanResponse.json()) as {
+      novels: Array<{ metadata: { novelId: string } }>;
+    };
+
+    assert.equal(searchByBooleanResponse.status, 200);
+    assert.equal(searchByBooleanPayload.novels.length, 1);
+
+    const bookmarkCreateResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/bookmarks`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        chapterId: 'chapter-1',
+        note: '这里开始进入主线。',
+      }),
+    });
+    const bookmarkCreatePayload = (await bookmarkCreateResponse.json()) as {
+      bookmark: { id: string; note: string; chapterId: string };
+    };
+
+    assert.equal(bookmarkCreateResponse.status, 201);
+    assert.equal(bookmarkCreatePayload.bookmark.chapterId, 'chapter-1');
+
+    const progressChapter2Response = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/progress`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ chapterId: 'chapter-2' }),
+    });
+    const progressChapter2Payload = (await progressChapter2Response.json()) as {
+      progress: { currentChapterId: string; highestChapterId: string; highestChapterIndex: number };
+    };
+
+    assert.equal(progressChapter2Response.status, 200);
+    assert.equal(progressChapter2Payload.progress.currentChapterId, 'chapter-2');
+    assert.equal(progressChapter2Payload.progress.highestChapterId, 'chapter-2');
+    assert.equal(progressChapter2Payload.progress.highestChapterIndex, 2);
+
+    const progressChapter1Response = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/progress`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ chapterId: 'chapter-1' }),
+    });
+    const progressChapter1Payload = (await progressChapter1Response.json()) as {
+      progress: { currentChapterId: string; highestChapterId: string; highestChapterIndex: number };
+    };
+
+    assert.equal(progressChapter1Response.status, 200);
+    assert.equal(progressChapter1Payload.progress.currentChapterId, 'chapter-1');
+    assert.equal(progressChapter1Payload.progress.highestChapterId, 'chapter-2');
+    assert.equal(progressChapter1Payload.progress.highestChapterIndex, 2);
+
+    const bookmarkUpdateResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/bookmarks/${bookmarkCreatePayload.bookmark.id}`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ note: '已更新备注。' }),
+    });
+    const bookmarkUpdatePayload = (await bookmarkUpdateResponse.json()) as {
+      bookmark: { note: string };
+    };
+
+    assert.equal(bookmarkUpdateResponse.status, 200);
+    assert.equal(bookmarkUpdatePayload.bookmark.note, '已更新备注。');
+
+    const aliasUpdateResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/aliases/${aliasCreatePayload.alias.id}`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ alias: '更新后的别名' }),
+    });
+    const aliasUpdatePayload = (await aliasUpdateResponse.json()) as {
+      alias: { alias: string };
+    };
+
+    assert.equal(aliasUpdateResponse.status, 200);
+    assert.equal(aliasUpdatePayload.alias.alias, '更新后的别名');
+
+    const detailResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib`);
+    const detailPayload = (await detailResponse.json()) as {
+      novel: {
+        aliases: Array<{ alias: string }>;
+        readingProgress: { currentChapterId: string; highestChapterId: string } | null;
+        bookmarks: Array<{ id: string; note: string }>;
+      };
+    };
+
+    assert.equal(detailResponse.status, 200);
+    assert.equal(detailPayload.novel.aliases[0]?.alias, '更新后的别名');
+    assert.equal(detailPayload.novel.readingProgress?.currentChapterId, 'chapter-1');
+    assert.equal(detailPayload.novel.readingProgress?.highestChapterId, 'chapter-2');
+    assert.equal(detailPayload.novel.bookmarks[0]?.note, '已更新备注。');
+
+    const bookmarkDeleteResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/bookmarks/${bookmarkCreatePayload.bookmark.id}`, {
+      method: 'DELETE',
+    });
+    assert.equal(bookmarkDeleteResponse.status, 204);
+
+    const aliasDeleteResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/aliases/${aliasCreatePayload.alias.id}`, {
+      method: 'DELETE',
+    });
+    assert.equal(aliasDeleteResponse.status, 204);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {

@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type {
+  StoredBookmarkRow,
+  StoredNovelAliasRow,
+  StoredReadingProgressRow,
+} from './novel-repository';
+import type {
   NovelMetadata,
   StoredChapterRecord,
   StoredNovelSnapshot,
@@ -16,6 +21,38 @@ export interface LibraryNovelSummary {
   failedChapters: number;
   indexedChapters: number;
   latestDownloadedAt: string | null;
+  aliases: LibraryNovelAlias[];
+  readingProgress: LibraryReadingProgress | null;
+  bookmarkCount: number;
+}
+
+export interface LibraryNovelAlias {
+  id: string;
+  alias: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LibraryReadingProgress {
+  currentChapterId: string;
+  currentChapterIndex: number;
+  currentChapterTitle: string | null;
+  currentUpdatedAt: string;
+  highestChapterId: string;
+  highestChapterIndex: number;
+  highestChapterTitle: string | null;
+  highestUpdatedAt: string;
+}
+
+export interface LibraryBookmark {
+  id: string;
+  chapterId: string;
+  chapterIndex: number;
+  chapterTitle: string;
+  volumeTitle: string | null;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface LibraryMediaSummary {
@@ -49,6 +86,9 @@ export interface LibraryNovelDetail {
   metadata: NovelMetadata;
   updatedAt: string;
   chapters: LibraryChapterSummary[];
+  aliases: LibraryNovelAlias[];
+  readingProgress: LibraryReadingProgress | null;
+  bookmarks: LibraryBookmark[];
   stats: {
     total: number;
     downloaded: number;
@@ -62,6 +102,9 @@ export interface LibraryChapterDetail {
   sourceId: string;
   metadata: NovelMetadata;
   updatedAt: string;
+  aliases: LibraryNovelAlias[];
+  readingProgress: LibraryReadingProgress | null;
+  bookmarks: LibraryBookmark[];
   chapter: LibraryChapterSummary & {
     content: string;
   };
@@ -73,6 +116,12 @@ export interface LibraryChapterDetail {
 export interface OfflineLibraryAssetServiceOptions {
   storageRoot?: string;
   fetchImpl?: typeof fetch;
+}
+
+interface LibraryStateExtras {
+  aliases?: StoredNovelAliasRow[];
+  readingProgress?: StoredReadingProgressRow | null;
+  bookmarks?: StoredBookmarkRow[];
 }
 
 const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?)/gi;
@@ -115,17 +164,23 @@ export class OfflineLibraryAssetService {
     };
   }
 
-  buildNovelDetail(snapshot: StoredNovelSnapshot): LibraryNovelDetail {
+  buildNovelDetail(snapshot: StoredNovelSnapshot, extras: LibraryStateExtras = {}): LibraryNovelDetail {
     const chapters = snapshot.chapters.map((chapter) => this.summarizeChapter(snapshot, chapter));
     const mediaAssets = chapters.flatMap((chapter) =>
       this.listMediaAssets(snapshot, chapter),
     );
+    const aliases = mapLibraryAliases(extras.aliases ?? []);
+    const readingProgress = mapLibraryReadingProgress(snapshot, extras.readingProgress ?? null);
+    const bookmarks = mapLibraryBookmarks(extras.bookmarks ?? []);
 
     return {
       sourceId: snapshot.sourceId,
       metadata: snapshot.metadata,
       updatedAt: snapshot.updatedAt,
       chapters,
+      aliases,
+      readingProgress,
+      bookmarks,
       stats: {
         total: chapters.length,
         downloaded: chapters.filter((chapter) => chapter.status === 'downloaded').length,
@@ -136,7 +191,7 @@ export class OfflineLibraryAssetService {
     };
   }
 
-  buildChapterDetail(snapshot: StoredNovelSnapshot, chapterId: string): LibraryChapterDetail | null {
+  buildChapterDetail(snapshot: StoredNovelSnapshot, chapterId: string, extras: LibraryStateExtras = {}): LibraryChapterDetail | null {
     const chapterIndex = snapshot.chapters.findIndex((chapter) => chapter.id === chapterId);
 
     if (chapterIndex < 0) {
@@ -149,11 +204,17 @@ export class OfflineLibraryAssetService {
     }
 
     const summarizedChapter = this.summarizeChapter(snapshot, chapter);
+    const aliases = mapLibraryAliases(extras.aliases ?? []);
+    const readingProgress = mapLibraryReadingProgress(snapshot, extras.readingProgress ?? null);
+    const bookmarks = mapLibraryBookmarks(extras.bookmarks ?? []);
 
     return {
       sourceId: snapshot.sourceId,
       metadata: snapshot.metadata,
       updatedAt: snapshot.updatedAt,
+      aliases,
+      readingProgress,
+      bookmarks,
       chapter: {
         ...summarizedChapter,
         content: chapter.content,
@@ -393,4 +454,49 @@ function safePathname(sourceUrl: string): string {
   } catch {
     return sourceUrl;
   }
+}
+
+function mapLibraryAliases(aliases: StoredNovelAliasRow[]): LibraryNovelAlias[] {
+  return aliases.map((alias) => ({
+    id: alias.id,
+    alias: alias.alias,
+    createdAt: alias.createdAt,
+    updatedAt: alias.updatedAt,
+  }));
+}
+
+function mapLibraryReadingProgress(
+  snapshot: StoredNovelSnapshot,
+  readingProgress: StoredReadingProgressRow | null,
+): LibraryReadingProgress | null {
+  if (!readingProgress) {
+    return null;
+  }
+
+  const currentChapter = snapshot.chapters.find((chapter) => chapter.id === readingProgress.currentChapterId);
+  const highestChapter = snapshot.chapters.find((chapter) => chapter.id === readingProgress.highestChapterId);
+
+  return {
+    currentChapterId: readingProgress.currentChapterId,
+    currentChapterIndex: readingProgress.currentChapterIndex,
+    currentChapterTitle: currentChapter?.title ?? null,
+    currentUpdatedAt: readingProgress.currentUpdatedAt,
+    highestChapterId: readingProgress.highestChapterId,
+    highestChapterIndex: readingProgress.highestChapterIndex,
+    highestChapterTitle: highestChapter?.title ?? null,
+    highestUpdatedAt: readingProgress.highestUpdatedAt,
+  };
+}
+
+function mapLibraryBookmarks(bookmarks: StoredBookmarkRow[]): LibraryBookmark[] {
+  return bookmarks.map((bookmark) => ({
+    id: bookmark.id,
+    chapterId: bookmark.chapterId,
+    chapterIndex: bookmark.chapterIndex,
+    chapterTitle: bookmark.chapterTitle,
+    volumeTitle: bookmark.volumeTitle,
+    note: bookmark.note,
+    createdAt: bookmark.createdAt,
+    updatedAt: bookmark.updatedAt,
+  }));
 }

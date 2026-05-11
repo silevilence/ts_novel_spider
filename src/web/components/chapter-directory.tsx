@@ -16,6 +16,9 @@ export interface ChapterDirectoryEntry {
   status: ChapterPersistStatus;
   isNew: boolean;
   wasDownloaded: boolean;
+  isCurrentProgress?: boolean;
+  isProgressWatermark?: boolean;
+  bookmarkCount?: number;
   media?: {
     total: number;
     cached: number;
@@ -190,8 +193,11 @@ export function ChapterDirectory({
                       const isActive = activeChapterId === chapter.id;
                       const mediaSummary = summarizeChapterMedia(chapter.media);
                       const statusRow = (
-                        <div className="badge-row chapter-status-row">
+                        <div className={`badge-row chapter-status-row ${selectionMode ? 'stacked' : 'inline'}`}>
                           {isActive ? <span className="status-badge ok">阅读中</span> : null}
+                          {chapter.isCurrentProgress ? <span className="status-badge state-downloaded">当前进度</span> : null}
+                          {chapter.isProgressWatermark ? <span className="status-badge state-downloaded">最高进度</span> : null}
+                          {(chapter.bookmarkCount ?? 0) > 0 ? <span className="status-badge new">书签 {chapter.bookmarkCount}</span> : null}
                           {chapter.isNew ? <span className="status-badge new">新增</span> : null}
                           {chapter.wasDownloaded ? <span className="status-badge ok">{selectionMode ? '已下载' : '可阅读'}</span> : null}
                           {mediaSummary.hasMedia ? <span className="status-badge state-indexed">{mediaSummary.presenceLabel}</span> : <span className="count-chip subtle">无图</span>}

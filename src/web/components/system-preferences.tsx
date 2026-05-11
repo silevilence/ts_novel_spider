@@ -1,5 +1,7 @@
 import { useState } from 'react';
 
+import { LlmProviderPanel } from './llm-provider-panel';
+import { Neo4jPanel } from './neo4j-panel';
 import { NetworkProxyPanel } from './network-proxy-panel';
 import type {
   ControlCenterModel,
@@ -15,15 +17,17 @@ interface SystemPreferencesProps {
 export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPreferencesProps) {
   const [crawlOpen, setCrawlOpen] = useState(true);
   const [proxyOpen, setProxyOpen] = useState(false);
+  const [llmOpen, setLlmOpen] = useState(false);
+  const [neo4jOpen, setNeo4jOpen] = useState(false);
 
   return (
     <div className="settings-stack">
       <section className="hero route-hero">
         <div className="route-header">
-          <p className="eyebrow">下载设置</p>
-          <h2>调整默认下载方式</h2>
+          <p className="eyebrow">系统偏好</p>
+          <h2>统一管理全局默认配置</h2>
           <p className="route-copy">
-            这里可以调整下载速度、失败重试次数和代理设置。保存后，新任务会直接使用这些选项。
+            这里集中管理下载方式、网络代理、模型服务和图数据库连接。保存后，后续新任务和后续 AI 能力都会直接复用这些默认值。
           </p>
         </div>
 
@@ -117,6 +121,44 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
         {proxyOpen ? (
           <div className="fold-content">
             <NetworkProxyPanel onNotice={onNotify} />
+          </div>
+        ) : null}
+      </section>
+
+      <section className="fold-card">
+        <div className="fold-header">
+          <div>
+            <p className="eyebrow">模型服务</p>
+            <h2>大模型服务提供商</h2>
+            <p className="panel-note">维护默认服务地址、认证信息和模型能力映射，后续翻译和检索功能会用到这里。</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={() => setLlmOpen((current) => !current)}>
+            {llmOpen ? '收起' : '展开'}
+          </button>
+        </div>
+
+        {llmOpen ? (
+          <div className="fold-content">
+            <LlmProviderPanel onNotice={onNotify} />
+          </div>
+        ) : null}
+      </section>
+
+      <section className="fold-card">
+        <div className="fold-header">
+          <div>
+            <p className="eyebrow">图数据库</p>
+            <h2>Neo4j 连接</h2>
+            <p className="panel-note">为后续实体关系图谱和检索增强准备统一的数据库入口。</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={() => setNeo4jOpen((current) => !current)}>
+            {neo4jOpen ? '收起' : '展开'}
+          </button>
+        </div>
+
+        {neo4jOpen ? (
+          <div className="fold-content">
+            <Neo4jPanel onNotice={onNotify} />
           </div>
         ) : null}
       </section>

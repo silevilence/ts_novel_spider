@@ -13,6 +13,15 @@ import type {
   NetworkProxyConfigInput,
   NetworkProxyValidationResult,
 } from '../core/network-proxy';
+import type {
+  LlmDiscoveredModel,
+  LlmModelValidationResult,
+  LlmProviderConfig,
+  LlmProviderConfigInput,
+  Neo4jConfig,
+  Neo4jConfigInput,
+  Neo4jValidationResult,
+} from '../core/system-preferences';
 import type { NovelMetadata, ResolvedChapterState, SpiderRunFailure } from '../core/spider';
 
 export interface ApiLogEvent {
@@ -69,6 +78,21 @@ export interface ControlNetworkProxyPayload {
   validation: NetworkProxyValidationResult | null;
 }
 
+export interface ControlLlmProvidersPayload {
+  providers: LlmProviderConfig[];
+  validations: LlmModelValidationResult[];
+  updatedAt: string | null;
+}
+
+export interface ControlLlmProviderModelsPayload {
+  models: LlmDiscoveredModel[];
+}
+
+export interface ControlNeo4jPayload {
+  config: Neo4jConfig;
+  validation: Neo4jValidationResult | null;
+}
+
 export interface ControlCenterRouterOptions {
   service: ControlCenterService;
 }
@@ -94,6 +118,22 @@ interface UpdateNetworkProxyRequestBody {
 
 interface ValidateNetworkProxyRequestBody {
   targetUrl?: unknown;
+}
+
+interface UpdateLlmProvidersRequestBody {
+  providers?: unknown;
+}
+
+interface DiscoverLlmProviderModelsRequestBody {
+  provider?: unknown;
+}
+
+interface UpdateNeo4jRequestBody {
+  enabled?: unknown;
+  uri?: unknown;
+  username?: unknown;
+  password?: unknown;
+  database?: unknown;
 }
 
 export function createControlCenterRouter({ service }: ControlCenterRouterOptions): Router {
@@ -137,6 +177,75 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     } catch (error) {
       response.status(400).json({
         message: error instanceof Error ? error.message : 'Invalid proxy validation request.',
+      });
+    }
+  });
+
+  router.get('/preferences/llm-providers', (_request, response) => {
+    response.json(serializeLlmPreferences(service.getLlmPreferences()));
+  });
+
+  router.put('/preferences/llm-providers', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as UpdateLlmProvidersRequestBody;
+      response.json(serializeLlmPreferences(service.updateLlmPreferences(parseLlmProviders(body.providers))));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid LLM preferences request.',
+      });
+    }
+  });
+
+  router.post('/preferences/llm-providers/discover-models', async (request, response) => {
+    try {
+      const body = (request.body ?? {}) as DiscoverLlmProviderModelsRequestBody;
+      const payload: ControlLlmProviderModelsPayload = {
+        models: await service.discoverLlmProviderModels(parseSingleLlmProvider(body.provider)),
+      };
+
+      response.json(payload);
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid LLM model discovery request.',
+      });
+    }
+  });
+
+  router.post('/preferences/llm-providers/:providerId/models/:modelId/validate', async (request, response) => {
+    try {
+      response.json(
+        serializeLlmPreferences(
+          await service.validateLlmPreferenceModel(request.params.providerId, request.params.modelId),
+        ),
+      );
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid LLM validation request.',
+      });
+    }
+  });
+
+  router.get('/preferences/neo4j', (_request, response) => {
+    response.json(serializeNeo4jPreferences(service.getNeo4jPreferences()));
+  });
+
+  router.put('/preferences/neo4j', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as UpdateNeo4jRequestBody;
+      response.json(serializeNeo4jPreferences(service.updateNeo4jPreferences(parseNeo4jBody(body))));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid Neo4j preferences request.',
+      });
+    }
+  });
+
+  router.post('/preferences/neo4j/validate', async (_request, response) => {
+    try {
+      response.json(serializeNeo4jPreferences(await service.validateNeo4jPreferences()));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid Neo4j validation request.',
       });
     }
   });
@@ -312,6 +421,28 @@ function serializeNetworkProxyState(state: {
   };
 }
 
+function serializeLlmPreferences(state: {
+  providers: LlmProviderConfig[];
+  validations: LlmModelValidationResult[];
+  updatedAt: string | null;
+}): ControlLlmProvidersPayload {
+  return {
+    providers: state.providers,
+    validations: state.validations,
+    updatedAt: state.updatedAt,
+  };
+}
+
+function serializeNeo4jPreferences(state: {
+  config: Neo4jConfig;
+  validation: Neo4jValidationResult | null;
+}): ControlNeo4jPayload {
+  return {
+    config: state.config,
+    validation: state.validation,
+  };
+}
+
 function requiredQueryString(value: unknown, key: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new Error(`Query parameter ${key} is required.`);
@@ -359,6 +490,88 @@ function parseNetworkProxyBody(body: UpdateNetworkProxyRequestBody): NetworkProx
     ...(username !== undefined ? { username } : {}),
     ...(password !== undefined ? { password } : {}),
     ...(bypassHosts !== undefined ? { bypassHosts } : {}),
+  };
+}
+
+function parseLlmProviders(value: unknown): LlmProviderConfigInput[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Request field providers must be an array.');
+  }
+
+  return value.map((entry, providerIndex) => parseLlmProvider(entry, providerIndex));
+}
+
+function parseSingleLlmProvider(value: unknown): LlmProviderConfigInput {
+  return parseLlmProvider(value, 0);
+}
+
+function parseLlmProvider(value: unknown, providerIndex: number): LlmProviderConfigInput {
+  if (!isRecord(value)) {
+    throw new Error(`providers[${providerIndex}] must be an object.`);
+  }
+
+  const id = optionalStringField(value.id);
+  const label = optionalStringField(value.label);
+  const type = optionalProviderType(value.type);
+  const baseUrl = optionalStringField(value.baseUrl);
+  const apiKey = optionalStringField(value.apiKey);
+  const organization = optionalStringField(value.organization);
+
+  return {
+    ...(id !== undefined ? { id } : {}),
+    ...(label !== undefined ? { label } : {}),
+    ...(type !== undefined ? { type } : {}),
+    ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
+    ...(baseUrl !== undefined ? { baseUrl } : {}),
+    ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(organization !== undefined ? { organization } : {}),
+    ...(value.models !== undefined ? { models: parseLlmModels(value.models, providerIndex) } : {}),
+  };
+}
+
+function parseLlmModels(value: unknown, providerIndex: number) {
+  if (!Array.isArray(value)) {
+    throw new Error(`providers[${providerIndex}].models must be an array.`);
+  }
+
+  return value.map((entry, modelIndex) => {
+    if (!isRecord(entry)) {
+      throw new Error(`providers[${providerIndex}].models[${modelIndex}] must be an object.`);
+    }
+
+    const id = optionalStringField(entry.id);
+    const label = optionalStringField(entry.label);
+    const modelId = optionalStringField(entry.modelId);
+    const capabilityMode = optionalCapabilityMode(entry.capabilityMode);
+
+    return {
+      ...(id !== undefined ? { id } : {}),
+      ...(label !== undefined ? { label } : {}),
+      ...(modelId !== undefined ? { modelId } : {}),
+      ...(typeof entry.enabled === 'boolean' ? { enabled: entry.enabled } : {}),
+      ...(capabilityMode !== undefined ? { capabilityMode } : {}),
+      ...(entry.capabilities !== undefined
+        ? { capabilities: parseCapabilityArray(entry.capabilities, `providers[${providerIndex}].models[${modelIndex}].capabilities`) }
+        : {}),
+      ...(entry.defaultFor !== undefined
+        ? { defaultFor: parseCapabilityArray(entry.defaultFor, `providers[${providerIndex}].models[${modelIndex}].defaultFor`) }
+        : {}),
+    };
+  });
+}
+
+function parseNeo4jBody(body: UpdateNeo4jRequestBody): Neo4jConfigInput {
+  const uri = optionalStringField(body.uri);
+  const username = optionalStringField(body.username);
+  const password = optionalStringField(body.password);
+  const database = optionalStringField(body.database);
+
+  return {
+    enabled: requiredBoolean(body.enabled, 'enabled'),
+    ...(uri !== undefined ? { uri } : {}),
+    ...(username !== undefined ? { username } : {}),
+    ...(password !== undefined ? { password } : {}),
+    ...(database !== undefined ? { database } : {}),
   };
 }
 
@@ -422,7 +635,57 @@ function optionalProtocol(value: unknown): 'http' | 'https' | undefined {
   throw new Error('Request field protocol must be either http or https.');
 }
 
+function optionalProviderType(value: unknown): 'openai-compatible' | 'anthropic' | 'google-generative-ai' | 'ollama' | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (value === 'openai-compatible' || value === 'anthropic' || value === 'google-generative-ai' || value === 'ollama') {
+    return value;
+  }
+
+  throw new Error('Request field type must be openai-compatible, anthropic, google-generative-ai, or ollama.');
+}
+
+function optionalCapabilityMode(value: unknown): 'manual' | 'auto' | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (value === 'manual' || value === 'auto') {
+    return value;
+  }
+
+  throw new Error('Capability mode must be manual or auto.');
+}
+
+function parseCapabilityArray(value: unknown, key: string): Array<'chat' | 'embedding' | 'rerank'> {
+  if (!Array.isArray(value)) {
+    throw new Error(`${key} must be an array.`);
+  }
+
+  return value.map((entry, index) => {
+    if (entry === 'chat' || entry === 'embedding' || entry === 'rerank') {
+      return entry;
+    }
+
+    throw new Error(`${key}[${index}] must be chat, embedding or rerank.`);
+  });
+}
+
 function optionalBodyString(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('Expected a string field.');
+  }
+
+  return value.trim();
+}
+
+function optionalStringField(value: unknown): string | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -462,4 +725,8 @@ function optionalUrlString(value: unknown): string | undefined {
   }
 
   return value.trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object';
 }

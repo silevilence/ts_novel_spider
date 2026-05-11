@@ -38,7 +38,20 @@ const MARKDOWN_IMAGE_PATTERN = /^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/i;
 
 export function toLibraryDirectoryChapters(
   chapters: LibraryNovelDetailPayload['novel']['chapters'],
+  options: {
+    readingProgress?: LibraryNovelDetailPayload['novel']['readingProgress'];
+    bookmarks?: LibraryNovelDetailPayload['novel']['bookmarks'];
+  } = {},
 ): ChapterDirectoryEntry[] {
+  const bookmarkCountByChapterId = new Map<string, number>();
+
+  for (const bookmark of options.bookmarks ?? []) {
+    bookmarkCountByChapterId.set(
+      bookmark.chapterId,
+      (bookmarkCountByChapterId.get(bookmark.chapterId) ?? 0) + 1,
+    );
+  }
+
   return chapters.map((chapter) => ({
     id: chapter.id,
     index: chapter.index,
@@ -47,6 +60,9 @@ export function toLibraryDirectoryChapters(
     status: chapter.status,
     isNew: false,
     wasDownloaded: chapter.status === 'downloaded',
+    isCurrentProgress: options.readingProgress?.currentChapterId === chapter.id,
+    isProgressWatermark: options.readingProgress?.highestChapterId === chapter.id,
+    bookmarkCount: bookmarkCountByChapterId.get(chapter.id) ?? 0,
     ...(chapter.volumeTitle ? { volumeTitle: chapter.volumeTitle } : {}),
     media: chapter.media,
   }));

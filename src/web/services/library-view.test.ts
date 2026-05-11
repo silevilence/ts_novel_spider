@@ -28,11 +28,37 @@ test('toLibraryDirectoryChapters maps stored chapters to shared directory entrie
       hasContent: true,
       media: { total: 2, cached: 1, pending: 1 },
     },
-  ]);
+  ], {
+    readingProgress: {
+      currentChapterId: 'chapter-1',
+      currentChapterIndex: 1,
+      currentChapterTitle: '第一章',
+      currentUpdatedAt: '2026-05-08T00:00:00.000Z',
+      highestChapterId: 'chapter-1',
+      highestChapterIndex: 1,
+      highestChapterTitle: '第一章',
+      highestUpdatedAt: '2026-05-08T00:00:00.000Z',
+    },
+    bookmarks: [
+      {
+        id: 'bookmark-1',
+        chapterId: 'chapter-1',
+        chapterIndex: 1,
+        chapterTitle: '第一章',
+        volumeTitle: '第一卷',
+        note: '备注',
+        createdAt: '2026-05-08T00:00:00.000Z',
+        updatedAt: '2026-05-08T00:00:00.000Z',
+      },
+    ],
+  });
 
   assert.equal(entries[0]?.wasDownloaded, true);
   assert.equal(entries[0]?.media?.cached, 1);
   assert.equal(entries[0]?.volumeTitle, '第一卷');
+  assert.equal(entries[0]?.isCurrentProgress, true);
+  assert.equal(entries[0]?.isProgressWatermark, true);
+  assert.equal(entries[0]?.bookmarkCount, 1);
 });
 
 test('findPreferredReaderChapter chooses the first chapter with local content', () => {
@@ -48,6 +74,9 @@ test('findPreferredReaderChapter chooses the first chapter with local content', 
       infoPageUrl: 'https://example.com',
     },
     updatedAt: '2026-05-08T00:00:00.000Z',
+    aliases: [],
+    readingProgress: null,
+    bookmarks: [],
     stats: { total: 2, downloaded: 1, failed: 0, pending: 1 },
     media: { total: 0, cached: 0, pending: 0 },
     chapters: [

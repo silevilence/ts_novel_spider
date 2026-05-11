@@ -52,6 +52,12 @@ const LIBRARY_EXPORT_OPTIONS: Array<{
 
 const LIBRARY_CARD_DESCRIPTION_LIMIT = 180;
 const LIBRARY_DETAIL_DESCRIPTION_LIMIT = 420;
+const LIBRARY_SEARCH_EXAMPLES = [
+  'name:离线冒险 tag:异世界',
+  'alias:旧译名 or alias:别称',
+  'name:样例 -site:syosetu18',
+  'author:"测试作者" tag:书库',
+];
 
 interface DescriptionDialogState {
   title: string;
@@ -62,16 +68,30 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
   const [isReaderDirectoryOpen, setIsReaderDirectoryOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isRedownloadPickerOpen, setIsRedownloadPickerOpen] = useState(false);
+  const [isSearchGuideOpen, setIsSearchGuideOpen] = useState(false);
   const [descriptionDialog, setDescriptionDialog] = useState<DescriptionDialogState | null>(null);
   const [selectedRedownloadChapterIds, setSelectedRedownloadChapterIds] = useState<string[]>([]);
+  const [aliasDraft, setAliasDraft] = useState('');
+  const [editingAliasId, setEditingAliasId] = useState<string | null>(null);
+  const [editingAliasValue, setEditingAliasValue] = useState('');
+  const [readerBookmarkNote, setReaderBookmarkNote] = useState('');
+  const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null);
+  const [editingBookmarkNote, setEditingBookmarkNote] = useState('');
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setIsReaderDirectoryOpen(false);
     setIsExportDialogOpen(false);
     setIsRedownloadPickerOpen(false);
+    setIsSearchGuideOpen(false);
     setDescriptionDialog(null);
     setSelectedRedownloadChapterIds([]);
+    setAliasDraft('');
+    setEditingAliasId(null);
+    setEditingAliasValue('');
+    setReaderBookmarkNote('');
+    setEditingBookmarkId(null);
+    setEditingBookmarkNote('');
   }, [model.location.path]);
 
   useEffect(() => {
@@ -140,10 +160,36 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
     );
   }
 
+  function renderSearchGuide() {
+    if (!isSearchGuideOpen) {
+      return null;
+    }
+
+    return (
+      <div className="card library-search-guide">
+        <p className="label">查询语法提示</p>
+        <h3>可以按字段、布尔逻辑和括号组合搜索</h3>
+        <p className="library-card-copy">支持字段：name、alias、tag、author、site、summary。空格默认表示同时满足，or 表示任意满足，前面加 - 表示排除。</p>
+        <div className="library-search-example-list">
+          {LIBRARY_SEARCH_EXAMPLES.map((example) => (
+            <button
+              key={example}
+              type="button"
+              className="ghost-button library-search-example"
+              onClick={() => model.setSearchQuery(example)}
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (model.location.view === 'page') {
-    const totalNovels = model.novels.length;
-    const downloadedChapters = model.novels.reduce((sum, novel) => sum + novel.downloadedChapters, 0);
-    const pendingChapters = model.novels.reduce((sum, novel) => sum + novel.indexedChapters + novel.failedChapters, 0);
+    const totalNovels = model.libraryOverview.totalNovels;
+    const downloadedChapters = model.libraryOverview.downloadedChapters;
+    const pendingChapters = model.libraryOverview.pendingChapters;
 
     return (
       <div className="page-stack">
@@ -169,6 +215,27 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
             </article>
           </div>
 
+          <div className="library-search-toolbar">
+            <label className="toolbar-search library-search-bar">
+              <span>搜索书库</span>
+              <input
+                value={model.searchQuery}
+                onChange={(event) => model.setSearchQuery(event.target.value)}
+                placeholder="试试 name:作品名、tag:标签、alias:别名，或用 - 排除条件"
+              />
+            </label>
+            <div className="action-row wrap compact-actions">
+              <button type="button" className="ghost-button" onClick={() => setIsSearchGuideOpen((current) => !current)}>
+                {isSearchGuideOpen ? '收起语法提示' : '查看语法提示'}
+              </button>
+              <button type="button" className="ghost-button" onClick={() => model.clearSearch()} disabled={model.searchQuery.trim().length === 0}>
+                清空查询
+              </button>
+            </div>
+          </div>
+
+          {renderSearchGuide()}
+
           <div className="action-row wrap">
             <button type="button" className="ghost-button" onClick={onOpenControl}>
               去抓取新作品
@@ -185,7 +252,7 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
               <p className="eyebrow">书库列表</p>
               <h2>已下载小说</h2>
             </div>
-            <p className="panel-note">{model.errorMessage ?? '按作品查看作者、标签、下载情况和最近更新时间。'}</p>
+            <p className="panel-note">{model.errorMessage ?? `当前显示 ${model.novels.length} 本作品；支持书名、别名、标签、作者和站点组合检索。`}</p>
           </div>
 
           {model.novels.length === 0 ? (
@@ -234,10 +301,31 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
                         ? novel.metadata.tags.map((tag) => <span key={tag} className="tag">{tag}</span>)
                         : <span className="muted">无标签</span>}
                     </div>
+                    {novel.aliases.length > 0 ? (
+                      <div className="tag-row alias-chip-row">
+                        {novel.aliases.map((alias) => <span key={alias.id} className="tag subtle-tag">别名：{alias.alias}</span>)}
+                      </div>
+                    ) : null}
                     <div className="badge-row">
                       <span className="status-badge ok">已下载 {novel.downloadedChapters}</span>
                       <span className="status-badge state-indexed">未下载 {novel.indexedChapters + novel.failedChapters}</span>
+                      <span className="status-badge state-downloaded">书签 {novel.bookmarkCount}</span>
                     </div>
+                    {novel.readingProgress ? (
+                      <div className="card library-progress-card compact-card">
+                        <p className="label">继续阅读</p>
+                        <strong>最高进度在第 {novel.readingProgress.highestChapterIndex} 章</strong>
+                        <div className="action-row wrap compact-actions">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => model.openChapter(novel.sourceId, novel.metadata.novelId, novel.readingProgress!.highestChapterId)}
+                          >
+                            继续阅读
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </article>
                 );
               })}
@@ -260,7 +348,192 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
     );
   }
 
+  const detailNovel = detail;
+  const preferredChapterId = findPreferredReaderChapter(detailNovel);
   const detailDescriptionPreview = buildTextPreview(detail.metadata.description, LIBRARY_DETAIL_DESCRIPTION_LIMIT);
+  const resumeChapterId = detail.readingProgress?.highestChapterId ?? preferredChapterId;
+  const resumeCurrentChapterId = detail.readingProgress?.currentChapterId ?? null;
+  const currentChapterBookmarks = model.location.view === 'reader'
+    ? detailNovel.bookmarks.filter((bookmark) => bookmark.chapterId === model.location.chapterId)
+    : [];
+
+  function renderAliasManager() {
+    return (
+      <section className="panel library-enhancement-panel">
+        <div className="panel-heading split align-start">
+          <div>
+            <p className="eyebrow">书名别名</p>
+            <h2>别名映射</h2>
+            <p className="panel-note">给这本书补充常用别称、旧译名或你自己的检索叫法，保存后会直接参与搜索排序。</p>
+          </div>
+          <span className="count-chip accent">{detailNovel.aliases.length} 条</span>
+        </div>
+
+        <div className="library-inline-form">
+          <input
+            value={aliasDraft}
+            onChange={(event) => setAliasDraft(event.target.value)}
+            placeholder="新增一个别名，比如旧译名或简称"
+          />
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() => {
+              void model.addAlias(aliasDraft);
+              setAliasDraft('');
+            }}
+            disabled={model.mutationBusyKey === 'alias-create' || aliasDraft.trim().length === 0}
+          >
+            {model.mutationBusyKey === 'alias-create' ? '保存中...' : '添加别名'}
+          </button>
+        </div>
+
+        {detailNovel.aliases.length === 0 ? (
+          <div className="empty-state compact">
+            <p>还没有别名。补一两个常用叫法后，搜书会更准。</p>
+          </div>
+        ) : (
+          <div className="library-list-block">
+            {detailNovel.aliases.map((alias) => (
+              <article key={alias.id} className="card library-list-item">
+                {editingAliasId === alias.id ? (
+                  <div className="library-inline-form grow">
+                    <input value={editingAliasValue} onChange={(event) => setEditingAliasValue(event.target.value)} />
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => {
+                        void model.renameAlias(alias.id, editingAliasValue);
+                        setEditingAliasId(null);
+                        setEditingAliasValue('');
+                      }}
+                      disabled={model.mutationBusyKey === `alias:${alias.id}` || editingAliasValue.trim().length === 0}
+                    >
+                      保存
+                    </button>
+                    <button type="button" className="ghost-button" onClick={() => {
+                      setEditingAliasId(null);
+                      setEditingAliasValue('');
+                    }}>
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <strong>{alias.alias}</strong>
+                      <p className="library-card-copy">最近更新于 {new Date(alias.updatedAt).toLocaleString('zh-CN')}</p>
+                    </div>
+                    <div className="action-row wrap compact-actions">
+                      <button type="button" className="ghost-button" onClick={() => {
+                        setEditingAliasId(alias.id);
+                        setEditingAliasValue(alias.alias);
+                      }}>
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => void model.removeAlias(alias.id)}
+                        disabled={model.mutationBusyKey === `alias:${alias.id}`}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  function renderBookmarkPanel() {
+    return (
+      <section className="panel library-enhancement-panel">
+        <div className="panel-heading split align-start">
+          <div>
+            <p className="eyebrow">章节书签</p>
+            <h2>书签与备注</h2>
+            <p className="panel-note">书签会按章节顺序保存。你可以写一句备注，之后从这里直接跳回对应章节。</p>
+          </div>
+          <span className="count-chip accent">{detailNovel.bookmarks.length} 条</span>
+        </div>
+
+        {detailNovel.bookmarks.length === 0 ? (
+          <div className="empty-state compact">
+            <p>还没有书签。阅读时点“加入书签”，这里就会开始累积。</p>
+          </div>
+        ) : (
+          <div className="library-list-block">
+            {detailNovel.bookmarks.map((bookmark) => (
+              <article key={bookmark.id} className="card library-list-item bookmark-list-item">
+                <div>
+                  <p className="label">第 {bookmark.chapterIndex} 章</p>
+                  <strong>{bookmark.chapterTitle}</strong>
+                  <p className="library-card-copy">{bookmark.note || '没有备注。'}</p>
+                </div>
+
+                {editingBookmarkId === bookmark.id ? (
+                  <div className="library-inline-form grow">
+                    <input
+                      value={editingBookmarkNote}
+                      onChange={(event) => setEditingBookmarkNote(event.target.value)}
+                      placeholder="修改这条书签备注"
+                    />
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => {
+                        void model.editBookmark(bookmark.id, editingBookmarkNote);
+                        setEditingBookmarkId(null);
+                        setEditingBookmarkNote('');
+                      }}
+                      disabled={model.mutationBusyKey === `bookmark:${bookmark.id}`}
+                    >
+                      保存
+                    </button>
+                    <button type="button" className="ghost-button" onClick={() => {
+                      setEditingBookmarkId(null);
+                      setEditingBookmarkNote('');
+                    }}>
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <div className="action-row wrap compact-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => model.openChapter(detailNovel.sourceId, detailNovel.metadata.novelId, bookmark.chapterId)}
+                    >
+                      打开章节
+                    </button>
+                    <button type="button" className="ghost-button" onClick={() => {
+                      setEditingBookmarkId(bookmark.id);
+                      setEditingBookmarkNote(bookmark.note);
+                    }}>
+                      编辑备注
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => void model.removeBookmark(bookmark.id)}
+                      disabled={model.mutationBusyKey === `bookmark:${bookmark.id}`}
+                    >
+                      删除
+                    </button>
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
 
   if (model.location.view === 'reader') {
     const chapter = model.chapter?.chapter;
@@ -318,10 +591,83 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
             >
               打开目录
             </button>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => {
+                void model.addBookmark(readerChapter.id, readerBookmarkNote);
+                setReaderBookmarkNote('');
+              }}
+              disabled={model.mutationBusyKey === 'bookmark-create'}
+            >
+              {model.mutationBusyKey === 'bookmark-create' ? '保存中...' : '加入书签'}
+            </button>
           </div>
         </section>
 
         <section className="panel reader-layout">
+          <div className="card reader-helper-card">
+            <div className="badge-row">
+              <span className="status-badge ok">当前第 {readerChapter.index} 章</span>
+              {detail.readingProgress ? <span className="status-badge state-downloaded">最高进度第 {detail.readingProgress.highestChapterIndex} 章</span> : null}
+            </div>
+            <div className="library-inline-form grow">
+              <input
+                value={readerBookmarkNote}
+                onChange={(event) => setReaderBookmarkNote(event.target.value)}
+                placeholder="可选：给这条书签写一句备注"
+              />
+            </div>
+            {currentChapterBookmarks.length > 0 ? (
+              <div className="library-list-block compact-list">
+                {currentChapterBookmarks.map((bookmark) => (
+                  <article key={bookmark.id} className="card library-list-item bookmark-list-item">
+                    <div>
+                      <strong>{bookmark.note || '这条书签没有备注。'}</strong>
+                      <p className="library-card-copy">保存于 {new Date(bookmark.updatedAt).toLocaleString('zh-CN')}</p>
+                    </div>
+                    {editingBookmarkId === bookmark.id ? (
+                      <div className="library-inline-form grow">
+                        <input value={editingBookmarkNote} onChange={(event) => setEditingBookmarkNote(event.target.value)} />
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={() => {
+                            void model.editBookmark(bookmark.id, editingBookmarkNote);
+                            setEditingBookmarkId(null);
+                            setEditingBookmarkNote('');
+                          }}
+                          disabled={model.mutationBusyKey === `bookmark:${bookmark.id}`}
+                        >
+                          保存
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="action-row wrap compact-actions">
+                        <button type="button" className="ghost-button" onClick={() => {
+                          setEditingBookmarkId(bookmark.id);
+                          setEditingBookmarkNote(bookmark.note);
+                        }}>
+                          编辑
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => void model.removeBookmark(bookmark.id)}
+                          disabled={model.mutationBusyKey === `bookmark:${bookmark.id}`}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="panel-note">这一章还没有书签，想回头重读时可以先记一条。</p>
+            )}
+          </div>
+
           <article className="reader-article">
             <div className="reader-article-header">
               <div className="panel-heading reader-copy-header">
@@ -456,7 +802,10 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
               </div>
 
               <ChapterDirectory
-                chapters={toLibraryDirectoryChapters(detail.chapters)}
+                chapters={toLibraryDirectoryChapters(detail.chapters, {
+                  readingProgress: detail.readingProgress,
+                  bookmarks: detail.bookmarks,
+                })}
                 mode="inspect"
                 activeChapterId={readerChapter.id}
                 loading={model.loading}
@@ -472,7 +821,6 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
     );
   }
 
-  const preferredChapterId = findPreferredReaderChapter(detail);
   const preferredMediaChapterId = detail.chapters.find((chapter) => chapter.hasContent && chapter.media.total > 0)?.id
     ?? detail.chapters.find((chapter) => chapter.status === 'downloaded' && chapter.media.total > 0)?.id
     ?? null;
@@ -542,13 +890,13 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
           >
             {redownloadCandidateChapters.length === 0 ? '没有失败或可选章节' : '选择失败或指定章节'}
           </button>
-          {preferredChapterId ? (
+          {resumeChapterId ? (
             <button
               type="button"
               className="primary-button"
-              onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, preferredChapterId)}
+              onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, resumeChapterId)}
             >
-              开始离线阅读
+              {detail.readingProgress ? '继续阅读' : '开始离线阅读'}
             </button>
           ) : null}
           <a className="secondary-link" href={detail.metadata.infoPageUrl} target="_blank" rel="noreferrer">去原站查看</a>
@@ -642,7 +990,31 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
           <p className="label">资源缓存</p>
           <strong>{detail.media.cached}/{detail.media.total}</strong>
         </div>
+        <div className="card span-2">
+          <p className="label">阅读进度</p>
+          <strong>
+            {detail.readingProgress
+              ? `最高已读到第 ${detail.readingProgress.highestChapterIndex} 章${detail.readingProgress.highestChapterTitle ? ` · ${detail.readingProgress.highestChapterTitle}` : ''}`
+              : '还没有阅读记录'}
+          </strong>
+          <p className="library-card-copy">
+            {detail.readingProgress
+              ? `最近打开的是第 ${detail.readingProgress.currentChapterIndex} 章。回看早期章节时，最高进度不会被覆盖。`
+              : '打开章节后会自动记住你的阅读水位线。'}
+          </p>
+          {resumeCurrentChapterId && resumeCurrentChapterId !== resumeChapterId ? (
+            <div className="action-row wrap compact-actions">
+              <button type="button" className="ghost-button" onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, resumeCurrentChapterId)}>
+                打开最近阅读章节
+              </button>
+            </div>
+          ) : null}
+        </div>
       </section>
+
+      {renderAliasManager()}
+
+      {renderBookmarkPanel()}
 
       <section className="panel export-hub">
         <div className="panel-heading split align-start">
@@ -908,7 +1280,10 @@ export function LibraryWorkspace({ model, onOpenControl }: LibraryWorkspaceProps
 
       <div ref={chapterDirectoryRef} className="library-directory-anchor">
         <ChapterDirectory
-          chapters={toLibraryDirectoryChapters(detail.chapters)}
+          chapters={toLibraryDirectoryChapters(detail.chapters, {
+            readingProgress: detail.readingProgress,
+            bookmarks: detail.bookmarks,
+          })}
           mode="inspect"
           loading={model.loading}
           title="章节目录"

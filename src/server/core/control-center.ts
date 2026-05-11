@@ -12,10 +12,24 @@ import {
   type NetworkProxyState,
 } from './network-proxy';
 import {
+  SystemPreferencesService,
+  type LlmDiscoveredModel,
+  type LlmPreferencesState,
+  type LlmProviderConfigInput,
+  type Neo4jConfigInput,
+  type Neo4jPreferencesState,
+} from './system-preferences';
+import {
+  searchLibraryNovels,
+} from './library-search';
+import {
   OfflineLibraryAssetService,
+  type LibraryBookmark,
   type LibraryChapterDetail,
+  type LibraryNovelAlias,
   type LibraryNovelDetail,
   type LibraryNovelSummary,
+  type LibraryReadingProgress,
 } from './offline-library';
 import {
   LocalExportEngine,
@@ -147,6 +161,7 @@ export interface ControlCenterServiceOptions {
   repository?: SqliteNovelRepository;
   spiders?: SpiderRegistryEntry[];
   networkProxy?: NetworkProxyService;
+  systemPreferences?: SystemPreferencesService;
   offlineAssetStoragePath?: string;
   exportStoragePath?: string;
   assetFetchImpl?: typeof fetch;
@@ -160,6 +175,8 @@ export class ControlCenterService {
   readonly #ownsRepository: boolean;
   readonly #networkProxy: NetworkProxyService;
   readonly #ownsNetworkProxy: boolean;
+  readonly #systemPreferences: SystemPreferencesService;
+  readonly #ownsSystemPreferences: boolean;
   readonly #registry: Map<string, SpiderRegistryEntry>;
   readonly #tasks = new Map<string, CrawlTaskState>();
   readonly #offlineLibrary: OfflineLibraryAssetService;
@@ -169,9 +186,12 @@ export class ControlCenterService {
     const databasePath = options.databasePath ?? defaultDatabasePath();
     this.#ownsRepository = options.repository === undefined;
     this.#ownsNetworkProxy = options.networkProxy === undefined;
+    this.#ownsSystemPreferences = options.systemPreferences === undefined;
     this.#repository = options.repository ?? new SqliteNovelRepository(databasePath);
     this.#networkProxy =
       options.networkProxy ?? new NetworkProxyService({ storageFilePath: defaultNetworkProxyConfigPath() });
+    this.#systemPreferences =
+      options.systemPreferences ?? new SystemPreferencesService({ storageFilePath: defaultSystemPreferencesPath() });
     this.#offlineLibrary = new OfflineLibraryAssetService({
       ...(options.offlineAssetStoragePath ? { storageRoot: options.offlineAssetStoragePath } : {}),
       ...(options.assetFetchImpl ? { fetchImpl: options.assetFetchImpl } : {}),
@@ -199,14 +219,18 @@ export class ControlCenterService {
     if (this.#ownsNetworkProxy) {
       this.#networkProxy.close();
     }
+
+    if (this.#ownsSystemPreferences) {
+      // Reserved for future resources managed by the preference service.
+    }
   }
 
   listSources(): SpiderSourceDescriptor[] {
     return [...this.#registry.values()].map((entry) => entry.descriptor);
   }
 
-  listLibraryNovels(): LibraryNovelSummary[] {
-    return this.#repository.listNovels().map((novel) => ({
+  listLibraryNovels(query?: string): LibraryNovelSummary[] {
+    const libraryNovels = this.#repository.listNovels().map((novel) => ({
       sourceId: novel.sourceId,
       metadata: novel.metadata,
       updatedAt: novel.updatedAt,
@@ -214,17 +238,129 @@ export class ControlCenterService {
       failedChapters: novel.failedChapters,
       indexedChapters: novel.indexedChapters,
       latestDownloadedAt: novel.latestDownloadedAt,
+      aliases: novel.aliases.map((alias) => ({
+        id: alias.id,
+        alias: alias.alias,
+        createdAt: alias.createdAt,
+        updatedAt: alias.updatedAt,
+      })),
+      readingProgress: novel.readingProgress
+        ? {
+            currentChapterId: novel.readingProgress.currentChapterId,
+            currentChapterIndex: novel.readingProgress.currentChapterIndex,
+            currentChapterTitle: null,
+            currentUpdatedAt: novel.readingProgress.currentUpdatedAt,
+            highestChapterId: novel.readingProgress.highestChapterId,
+            highestChapterIndex: novel.readingProgress.highestChapterIndex,
+            highestChapterTitle: null,
+            highestUpdatedAt: novel.readingProgress.highestUpdatedAt,
+          }
+        : null,
+      bookmarkCount: novel.bookmarkCount,
     }));
+
+    if (!query?.trim()) {
+      return libraryNovels;
+    }
+
+    return searchLibraryNovels(libraryNovels, query);
   }
 
   getLibraryNovel(sourceId: string, novelId: string): LibraryNovelDetail | null {
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
-    return snapshot ? this.#offlineLibrary.buildNovelDetail(snapshot) : null;
+    return snapshot
+      ? this.#offlineLibrary.buildNovelDetail(snapshot, {
+          aliases: this.#repository.listNovelAliases(sourceId, novelId),
+          readingProgress: this.#repository.getReadingProgress(sourceId, novelId),
+          bookmarks: this.#repository.listBookmarks(sourceId, novelId),
+        })
+      : null;
   }
 
   getLibraryChapter(sourceId: string, novelId: string, chapterId: string): LibraryChapterDetail | null {
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
-    return snapshot ? this.#offlineLibrary.buildChapterDetail(snapshot, chapterId) : null;
+    return snapshot
+      ? this.#offlineLibrary.buildChapterDetail(snapshot, chapterId, {
+          aliases: this.#repository.listNovelAliases(sourceId, novelId),
+          readingProgress: this.#repository.getReadingProgress(sourceId, novelId),
+          bookmarks: this.#repository.listBookmarks(sourceId, novelId),
+        })
+      : null;
+  }
+
+  createLibraryAlias(sourceId: string, novelId: string, alias: string): LibraryNovelAlias {
+    const createdAlias = this.#repository.createNovelAlias(sourceId, novelId, alias);
+    return {
+      id: createdAlias.id,
+      alias: createdAlias.alias,
+      createdAt: createdAlias.createdAt,
+      updatedAt: createdAlias.updatedAt,
+    };
+  }
+
+  updateLibraryAlias(sourceId: string, novelId: string, aliasId: string, alias: string): LibraryNovelAlias | null {
+    const updatedAlias = this.#repository.updateNovelAlias(sourceId, novelId, aliasId, alias);
+    return updatedAlias
+      ? {
+          id: updatedAlias.id,
+          alias: updatedAlias.alias,
+          createdAt: updatedAlias.createdAt,
+          updatedAt: updatedAlias.updatedAt,
+        }
+      : null;
+  }
+
+  deleteLibraryAlias(sourceId: string, novelId: string, aliasId: string): boolean {
+    return this.#repository.deleteNovelAlias(sourceId, novelId, aliasId);
+  }
+
+  updateLibraryReadingProgress(sourceId: string, novelId: string, chapterId: string): LibraryReadingProgress | null {
+    const progress = this.#repository.updateReadingProgress(sourceId, novelId, chapterId);
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+
+    if (!progress || !snapshot) {
+      return null;
+    }
+
+    return this.#offlineLibrary.buildNovelDetail(snapshot, {
+      readingProgress: progress,
+    }).readingProgress;
+  }
+
+  createLibraryBookmark(sourceId: string, novelId: string, chapterId: string, note: string): LibraryBookmark | null {
+    const bookmark = this.#repository.createBookmark(sourceId, novelId, chapterId, note);
+    return bookmark
+      ? {
+          id: bookmark.id,
+          chapterId: bookmark.chapterId,
+          chapterIndex: bookmark.chapterIndex,
+          chapterTitle: bookmark.chapterTitle,
+          volumeTitle: bookmark.volumeTitle,
+          note: bookmark.note,
+          createdAt: bookmark.createdAt,
+          updatedAt: bookmark.updatedAt,
+        }
+      : null;
+  }
+
+  updateLibraryBookmark(sourceId: string, novelId: string, bookmarkId: string, note: string): LibraryBookmark | null {
+    const bookmark = this.#repository.updateBookmark(sourceId, novelId, bookmarkId, note);
+    return bookmark
+      ? {
+          id: bookmark.id,
+          chapterId: bookmark.chapterId,
+          chapterIndex: bookmark.chapterIndex,
+          chapterTitle: bookmark.chapterTitle,
+          volumeTitle: bookmark.volumeTitle,
+          note: bookmark.note,
+          createdAt: bookmark.createdAt,
+          updatedAt: bookmark.updatedAt,
+        }
+      : null;
+  }
+
+  deleteLibraryBookmark(sourceId: string, novelId: string, bookmarkId: string): boolean {
+    return this.#repository.deleteBookmark(sourceId, novelId, bookmarkId);
   }
 
   async cacheLibraryChapterMedia(
@@ -297,6 +433,34 @@ export class ControlCenterService {
   async validateNetworkProxy(targetUrl?: string): Promise<NetworkProxyState> {
     await this.#networkProxy.validate(targetUrl);
     return this.#networkProxy.getState();
+  }
+
+  getLlmPreferences(): LlmPreferencesState {
+    return this.#systemPreferences.getLlmState();
+  }
+
+  updateLlmPreferences(inputs: LlmProviderConfigInput[]): LlmPreferencesState {
+    return this.#systemPreferences.updateLlmProviders(inputs);
+  }
+
+  async discoverLlmProviderModels(input: LlmProviderConfigInput): Promise<LlmDiscoveredModel[]> {
+    return this.#systemPreferences.discoverLlmProviderModels(input);
+  }
+
+  async validateLlmPreferenceModel(providerId: string, modelId: string): Promise<LlmPreferencesState> {
+    return this.#systemPreferences.validateLlmModel(providerId, modelId);
+  }
+
+  getNeo4jPreferences(): Neo4jPreferencesState {
+    return this.#systemPreferences.getNeo4jState();
+  }
+
+  updateNeo4jPreferences(input: Neo4jConfigInput): Neo4jPreferencesState {
+    return this.#systemPreferences.updateNeo4j(input);
+  }
+
+  async validateNeo4jPreferences(): Promise<Neo4jPreferencesState> {
+    return this.#systemPreferences.validateNeo4j();
   }
 
   async previewNovel(input: PreviewNovelInput): Promise<PreviewNovelResult> {
@@ -765,6 +929,12 @@ function defaultNetworkProxyConfigPath(): string {
   const dataDir = path.resolve(process.cwd(), '.data');
   fs.mkdirSync(dataDir, { recursive: true });
   return path.join(dataDir, 'network-proxy.json');
+}
+
+function defaultSystemPreferencesPath(): string {
+  const dataDir = path.resolve(process.cwd(), '.data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  return path.join(dataDir, 'system-preferences.json');
 }
 
 function defaultExportStoragePath(): string {
