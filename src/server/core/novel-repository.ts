@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 
+import type { KnowledgeGraphBuildModelStat } from './library-intelligence-rag';
+
 import type {
   ChapterContent,
   ChapterIndexEntry,
@@ -76,10 +78,16 @@ export interface StoredKnowledgeGraphProfileInput {
   novelId: string;
   chatProviderId: string;
   chatModelId: string;
+  extractionModels: Array<{
+    providerId: string;
+    modelId: string;
+    maxConcurrency: number;
+  }>;
   embeddingProviderId: string;
   embeddingModelId: string;
   rerankProviderId: string;
   rerankModelId: string;
+  extractionConcurrency: number;
   neo4jEnabled: boolean;
   neo4jUri: string;
   neo4jUsername: string;
@@ -94,7 +102,7 @@ export interface StoredKnowledgeGraphProfileRow extends StoredKnowledgeGraphProf
 }
 
 export interface StoredKnowledgeGraphBuildRow {
-  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+  status: 'idle' | 'queued' | 'running' | 'paused' | 'completed' | 'failed';
   stage: 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
   progressPercent: number;
   message: string;
@@ -105,6 +113,7 @@ export interface StoredKnowledgeGraphBuildRow {
   syncedToNeo4jAt: string | null;
   entityCount: number;
   relationCount: number;
+  modelStats: KnowledgeGraphBuildModelStat[];
   updatedAt: string | null;
 }
 
@@ -235,10 +244,12 @@ interface KnowledgeGraphProfileRow {
   novel_id: string;
   chat_provider_id: string;
   chat_model_id: string;
+  extraction_models_json: string;
   embedding_provider_id: string;
   embedding_model_id: string;
   rerank_provider_id: string;
   rerank_model_id: string;
+  extraction_concurrency: number;
   neo4j_enabled: number;
   neo4j_uri: string;
   neo4j_username: string;
@@ -252,7 +263,7 @@ interface KnowledgeGraphProfileRow {
 interface KnowledgeGraphBuildRow {
   source_id: string;
   novel_id: string;
-  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+  status: 'idle' | 'queued' | 'running' | 'paused' | 'completed' | 'failed';
   stage: 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
   progress_percent: number;
   message: string;
@@ -263,6 +274,7 @@ interface KnowledgeGraphBuildRow {
   synced_to_neo4j_at: string | null;
   entity_count: number;
   relation_count: number;
+  model_stats_json: string;
   updated_at: string;
 }
 
@@ -722,10 +734,12 @@ export class SqliteNovelRepository {
             novel_id,
             chat_provider_id,
             chat_model_id,
+            extraction_models_json,
             embedding_provider_id,
             embedding_model_id,
             rerank_provider_id,
             rerank_model_id,
+            extraction_concurrency,
             neo4j_enabled,
             neo4j_uri,
             neo4j_username,
@@ -755,10 +769,12 @@ export class SqliteNovelRepository {
             novel_id,
             chat_provider_id,
             chat_model_id,
+            extraction_models_json,
             embedding_provider_id,
             embedding_model_id,
             rerank_provider_id,
             rerank_model_id,
+            extraction_concurrency,
             neo4j_enabled,
             neo4j_uri,
             neo4j_username,
@@ -768,14 +784,16 @@ export class SqliteNovelRepository {
             locked_at,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(source_id, novel_id) DO UPDATE SET
             chat_provider_id = excluded.chat_provider_id,
             chat_model_id = excluded.chat_model_id,
+            extraction_models_json = excluded.extraction_models_json,
             embedding_provider_id = excluded.embedding_provider_id,
             embedding_model_id = excluded.embedding_model_id,
             rerank_provider_id = excluded.rerank_provider_id,
             rerank_model_id = excluded.rerank_model_id,
+            extraction_concurrency = excluded.extraction_concurrency,
             neo4j_enabled = excluded.neo4j_enabled,
             neo4j_uri = excluded.neo4j_uri,
             neo4j_username = excluded.neo4j_username,
@@ -791,10 +809,12 @@ export class SqliteNovelRepository {
         input.novelId,
         input.chatProviderId,
         input.chatModelId,
+        JSON.stringify(input.extractionModels),
         input.embeddingProviderId,
         input.embeddingModelId,
         input.rerankProviderId,
         input.rerankModelId,
+        input.extractionConcurrency,
         input.neo4jEnabled ? 1 : 0,
         input.neo4jUri,
         input.neo4jUsername,
@@ -831,6 +851,7 @@ export class SqliteNovelRepository {
             synced_to_neo4j_at,
             entity_count,
             relation_count,
+            model_stats_json,
             updated_at
           FROM novel_graph_builds
           WHERE source_id = ? AND novel_id = ?
@@ -844,7 +865,7 @@ export class SqliteNovelRepository {
   saveKnowledgeGraphBuild(input: {
     sourceId: string;
     novelId: string;
-    status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+    status: 'idle' | 'queued' | 'running' | 'paused' | 'completed' | 'failed';
     stage: 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
     progressPercent: number;
     message: string;
@@ -855,6 +876,7 @@ export class SqliteNovelRepository {
     syncedToNeo4jAt: string | null;
     entityCount: number;
     relationCount: number;
+    modelStats: KnowledgeGraphBuildModelStat[];
   }): StoredKnowledgeGraphBuildRow {
     this.assertNovelExists(input.sourceId, input.novelId);
 
@@ -876,9 +898,10 @@ export class SqliteNovelRepository {
             synced_to_neo4j_at,
             entity_count,
             relation_count,
+            model_stats_json,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(source_id, novel_id) DO UPDATE SET
             status = excluded.status,
             stage = excluded.stage,
@@ -891,6 +914,7 @@ export class SqliteNovelRepository {
             synced_to_neo4j_at = excluded.synced_to_neo4j_at,
             entity_count = excluded.entity_count,
             relation_count = excluded.relation_count,
+            model_stats_json = excluded.model_stats_json,
             updated_at = excluded.updated_at
         `,
       )
@@ -908,6 +932,7 @@ export class SqliteNovelRepository {
         input.syncedToNeo4jAt,
         input.entityCount,
         input.relationCount,
+        JSON.stringify(input.modelStats),
         updatedAt,
       );
 
@@ -1661,10 +1686,12 @@ export class SqliteNovelRepository {
         novel_id TEXT NOT NULL,
         chat_provider_id TEXT NOT NULL,
         chat_model_id TEXT NOT NULL,
+        extraction_models_json TEXT NOT NULL DEFAULT '[]',
         embedding_provider_id TEXT NOT NULL,
         embedding_model_id TEXT NOT NULL,
         rerank_provider_id TEXT NOT NULL,
         rerank_model_id TEXT NOT NULL,
+        extraction_concurrency INTEGER NOT NULL DEFAULT 2,
         neo4j_enabled INTEGER NOT NULL DEFAULT 0,
         neo4j_uri TEXT NOT NULL DEFAULT '',
         neo4j_username TEXT NOT NULL DEFAULT '',
@@ -1691,6 +1718,7 @@ export class SqliteNovelRepository {
         synced_to_neo4j_at TEXT,
         entity_count INTEGER NOT NULL DEFAULT 0,
         relation_count INTEGER NOT NULL DEFAULT 0,
+        model_stats_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT NOT NULL,
         PRIMARY KEY (source_id, novel_id),
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
@@ -1788,6 +1816,9 @@ export class SqliteNovelRepository {
 
     this.ensureColumnExists('knowledge_graph_entities', 'embedding_json', 'TEXT');
     this.ensureColumnExists('knowledge_graph_chunks', 'embedding_json', 'TEXT');
+    this.ensureColumnExists('novel_graph_profiles', 'extraction_models_json', "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
+    this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
   }
 
   private ensureColumnExists(tableName: string, columnName: string, columnDefinition: string): void {
@@ -1943,10 +1974,12 @@ function mapKnowledgeGraphProfileRow(row: KnowledgeGraphProfileRow): StoredKnowl
     novelId: row.novel_id,
     chatProviderId: row.chat_provider_id,
     chatModelId: row.chat_model_id,
+    extractionModels: parseKnowledgeGraphExtractionModelsJson(row.extraction_models_json),
     embeddingProviderId: row.embedding_provider_id,
     embeddingModelId: row.embedding_model_id,
     rerankProviderId: row.rerank_provider_id,
     rerankModelId: row.rerank_model_id,
+    extractionConcurrency: row.extraction_concurrency,
     neo4jEnabled: Boolean(row.neo4j_enabled),
     neo4jUri: row.neo4j_uri,
     neo4jUsername: row.neo4j_username,
@@ -1971,8 +2004,58 @@ function mapKnowledgeGraphBuildRow(row: KnowledgeGraphBuildRow): StoredKnowledge
     syncedToNeo4jAt: row.synced_to_neo4j_at,
     entityCount: row.entity_count,
     relationCount: row.relation_count,
+    modelStats: parseKnowledgeGraphBuildModelStatsJson(row.model_stats_json),
     updatedAt: row.updated_at,
   };
+}
+
+function parseKnowledgeGraphBuildModelStatsJson(value: string): KnowledgeGraphBuildModelStat[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return [];
+      }
+
+      const candidate = entry as Partial<KnowledgeGraphBuildModelStat>;
+      if (typeof candidate.providerId !== 'string' || typeof candidate.modelId !== 'string') {
+        return [];
+      }
+
+      return [{
+        providerId: candidate.providerId,
+        modelId: candidate.modelId,
+        source: candidate.source === 'global' ? 'global' : 'novel',
+        maxConcurrency: typeof candidate.maxConcurrency === 'number' ? candidate.maxConcurrency : 0,
+        attemptCount: typeof candidate.attemptCount === 'number' ? candidate.attemptCount : 0,
+        llmSuccessCount: typeof candidate.llmSuccessCount === 'number' ? candidate.llmSuccessCount : 0,
+        failureCount: typeof candidate.failureCount === 'number' ? candidate.failureCount : 0,
+        fallbackCount: typeof candidate.fallbackCount === 'number' ? candidate.fallbackCount : 0,
+        handoffInCount: typeof candidate.handoffInCount === 'number' ? candidate.handoffInCount : 0,
+        handoffOutCount: typeof candidate.handoffOutCount === 'number' ? candidate.handoffOutCount : 0,
+        inFlightCount: typeof candidate.inFlightCount === 'number' ? candidate.inFlightCount : 0,
+        consecutiveFailures: typeof candidate.consecutiveFailures === 'number' ? candidate.consecutiveFailures : 0,
+        circuitState: candidate.circuitState === 'open' || candidate.circuitState === 'half-open' ? candidate.circuitState : 'closed',
+        circuitOpenedCount: typeof candidate.circuitOpenedCount === 'number' ? candidate.circuitOpenedCount : 0,
+        cooldownUntil: typeof candidate.cooldownUntil === 'string' ? candidate.cooldownUntil : null,
+        firstAttemptAt: typeof candidate.firstAttemptAt === 'string' ? candidate.firstAttemptAt : null,
+        lastError: typeof candidate.lastError === 'string' ? candidate.lastError : null,
+        lastStartedAt: typeof candidate.lastStartedAt === 'string' ? candidate.lastStartedAt : null,
+        lastCompletedAt: typeof candidate.lastCompletedAt === 'string' ? candidate.lastCompletedAt : null,
+        recentSuccessAt: Array.isArray(candidate.recentSuccessAt)
+          ? candidate.recentSuccessAt.filter((entry): entry is string => typeof entry === 'string').slice(-12)
+          : [],
+        failureRate: typeof candidate.failureRate === 'number' ? candidate.failureRate : 0,
+        throughputPerMinute: typeof candidate.throughputPerMinute === 'number' ? candidate.throughputPerMinute : 0,
+      } satisfies KnowledgeGraphBuildModelStat];
+    });
+  } catch {
+    return [];
+  }
 }
 
 function mapKnowledgeGraphBuildLogRow(row: KnowledgeGraphBuildLogRow): StoredKnowledgeGraphBuildLogRow {
@@ -2052,4 +2135,38 @@ function buildNovelKey(sourceId: string, novelId: string): string {
 
 function normalizeSearchValue(value: string): string {
   return value.trim().toLocaleLowerCase();
+}
+
+function parseKnowledgeGraphExtractionModelsJson(value: string): Array<{
+  providerId: string;
+  modelId: string;
+  maxConcurrency: number;
+}> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return [];
+      }
+
+      const record = entry as Record<string, unknown>;
+      if (typeof record.providerId !== 'string' || typeof record.modelId !== 'string') {
+        return [];
+      }
+
+      return [{
+        providerId: record.providerId,
+        modelId: record.modelId,
+        maxConcurrency: typeof record.maxConcurrency === 'number' && Number.isFinite(record.maxConcurrency)
+          ? Math.trunc(record.maxConcurrency)
+          : 1,
+      }];
+    });
+  } catch {
+    return [];
+  }
 }

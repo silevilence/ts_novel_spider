@@ -470,6 +470,7 @@ button:focus-visible {
 .status-badge.new,
 .status-badge.state-indexed,
 .status-badge.state-queued,
+.status-badge.state-paused,
 .status-badge.state-running,
 .stream-idle {
   background: rgba(255, 209, 102, 0.16);
@@ -1773,6 +1774,10 @@ button:focus-visible {
   overflow: auto;
 }
 
+.intelligence-build-log-list {
+  overflow-anchor: none;
+}
+
 .intelligence-log-item {
   display: grid;
   gap: 0.4rem;
@@ -1796,6 +1801,30 @@ button:focus-visible {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.intelligence-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.7rem;
+}
+
+.intelligence-model-card {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 18px;
+  border: 1px solid rgba(127, 208, 255, 0.12);
+  background: linear-gradient(180deg, rgba(10, 28, 43, 0.9), rgba(6, 18, 30, 0.82));
+}
+
+.intelligence-model-card strong,
+.intelligence-model-footnote {
+  margin: 0;
+}
+
+.intelligence-model-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .intelligence-log-head {

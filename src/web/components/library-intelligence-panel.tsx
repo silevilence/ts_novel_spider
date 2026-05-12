@@ -7,6 +7,8 @@ import {
   deleteLibraryKnowledgeGraph,
   fetchLlmProvidersPreferences,
   fetchNeo4jPreferences,
+  pauseLibraryKnowledgeGraph,
+  resumeLibraryKnowledgeGraph,
   updateLibraryKnowledgeGraphProfile,
   type UpdateKnowledgeGraphProfileInput,
 } from '../services/api';
@@ -55,8 +57,10 @@ interface AssistantMessageItem {
 
 interface GraphDraftState {
   chatModelKey: string;
+  extractionModelEntries: Array<{ key: string; maxConcurrency: number }>;
   embeddingModelKey: string;
   rerankModelKey: string;
+  extractionConcurrency: number;
   neo4jOverrideEnabled: boolean;
   neo4jUri: string;
   neo4jUsername: string;
@@ -84,6 +88,8 @@ export function LibraryIntelligencePanel({
   const [graphDraft, setGraphDraft] = useState(() => createDraft(detailPayload));
   const [graphSaving, setGraphSaving] = useState(false);
   const [graphBuilding, setGraphBuilding] = useState(false);
+  const [graphPausing, setGraphPausing] = useState(false);
+  const [graphResuming, setGraphResuming] = useState(false);
   const [graphDeleting, setGraphDeleting] = useState(false);
 
   const detail = detailPayload.novel;
@@ -98,6 +104,7 @@ export function LibraryIntelligencePanel({
     embedding: [] as GraphModelOption[],
     rerank: [] as GraphModelOption[],
   };
+  const buildModelLabels = llmPreferences ? buildLlmModelLabelMap(llmPreferences) : new Map<string, string>();
   const currentChapterTitle = location.chapterId
     ? detail.chapters.find((chapter) => chapter.id === location.chapterId)?.title ?? null
     : null;
@@ -177,6 +184,58 @@ export function LibraryIntelligencePanel({
       });
     } finally {
       setGraphBuilding(false);
+    }
+  }
+
+  async function handlePauseGraph() {
+    if (graphPausing || (build.status !== 'queued' && build.status !== 'running')) {
+      return;
+    }
+
+    setGraphPausing(true);
+
+    try {
+      await pauseLibraryKnowledgeGraph(detail.sourceId, detail.metadata.novelId);
+      onNotify({
+        tone: 'info',
+        title: '已请求暂停图谱构建',
+        message: '系统会先收尾当前片段，随后停在可继续的位置。',
+      });
+      await onRefresh();
+    } catch (error) {
+      onNotify({
+        tone: 'error',
+        title: '暂停图谱失败',
+        message: error instanceof Error ? error.message : 'Knowledge graph pause failed.',
+      });
+    } finally {
+      setGraphPausing(false);
+    }
+  }
+
+  async function handleResumeGraph() {
+    if (graphResuming || build.status !== 'paused') {
+      return;
+    }
+
+    setGraphResuming(true);
+
+    try {
+      await resumeLibraryKnowledgeGraph(detail.sourceId, detail.metadata.novelId);
+      onNotify({
+        tone: 'info',
+        title: '图谱构建已继续',
+        message: '剩余片段会按你当前保存的配置继续处理。',
+      });
+      await onRefresh();
+    } catch (error) {
+      onNotify({
+        tone: 'error',
+        title: '继续图谱失败',
+        message: error instanceof Error ? error.message : 'Knowledge graph resume failed.',
+      });
+    } finally {
+      setGraphResuming(false);
     }
   }
 
@@ -268,7 +327,7 @@ export function LibraryIntelligencePanel({
               <p className="eyebrow">知识图谱</p>
               <h2>实体关系图谱</h2>
               <p className="panel-note">
-                这本书可以挂自己的模型链路和 Neo4j 目标。图谱一旦构建完成，配置会自动锁定，避免后续结果和当前图谱不一致。
+                这本书可以挂自己的模型链路和 Neo4j 目标。图谱一旦构建完成，配置会自动锁定；如果构建过程中要改并发或模型，先暂停、保存，再继续即可。
               </p>
             </div>
             <div className="badge-row intelligence-status-row">
@@ -316,6 +375,49 @@ export function LibraryIntelligencePanel({
             <div className="progress-track" aria-hidden="true">
               <div className="progress-fill" style={{ width: `${build.progressPercent}%` }} />
             </div>
+            {build.modelStats.length > 0 ? (
+              <div className="intelligence-log-panel">
+                <div className="assistant-trace-heading split">
+                  <span className="label">抽取模型表现</span>
+                  <span className="panel-note">看每个模型当前跑得快不快、稳不稳，哪些片段是它接过去的。</span>
+                </div>
+                <div className="intelligence-model-grid">
+                  {build.modelStats.map((stat) => (
+                    <article key={`${stat.providerId}::${stat.modelId}`} className="intelligence-model-card">
+                      <div className="intelligence-log-head">
+                        <strong>{formatBuildModelLabel(buildModelLabels, stat.providerId, stat.modelId)}</strong>
+                        <div className="badge-row wrap compact-actions">
+                          <span className={`status-badge ${stat.circuitState === 'open' ? 'danger' : stat.circuitState === 'half-open' ? 'state-queued' : 'ok'}`}>
+                            {formatGraphCircuitState(stat.circuitState)}
+                          </span>
+                          <span className="status-badge state-idle">{formatModelSource(stat.source)}</span>
+                        </div>
+                      </div>
+                      <div className="assistant-score-grid intelligence-model-metrics">
+                        <span>吞吐 {formatThroughputPerMinute(stat.throughputPerMinute)}</span>
+                        <span>失败率 {formatFailureRate(stat.failureRate)}</span>
+                        <span>进行中 {stat.inFlightCount}</span>
+                      </div>
+                      <div className="assistant-score-grid intelligence-model-metrics">
+                        <span>成功 {stat.llmSuccessCount}</span>
+                        <span>失败 {stat.failureCount}</span>
+                        <span>接盘 {stat.handoffInCount}</span>
+                        <span>转派 {stat.handoffOutCount}</span>
+                      </div>
+                      <p className="panel-note intelligence-model-footnote">
+                        {stat.circuitState === 'open' && stat.cooldownUntil
+                          ? `已进入冷却，预计 ${new Date(stat.cooldownUntil).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} 后再试。`
+                          : stat.lastError
+                            ? `最近一次失败：${stat.lastError}`
+                            : stat.attemptCount > 0
+                              ? `已尝试 ${stat.attemptCount} 次，单模型并发上限 ${stat.maxConcurrency}。`
+                              : `等待派发，单模型并发上限 ${stat.maxConcurrency}。`}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="intelligence-log-panel">
               <div className="assistant-trace-heading split">
                 <span className="label">构建日志</span>
@@ -324,7 +426,7 @@ export function LibraryIntelligencePanel({
               {knowledgeGraph.buildLogs.length === 0 ? (
                 <p className="panel-note">还没有构建日志。启动生成后，这里会显示每个阶段的进展。</p>
               ) : (
-                <div className="intelligence-log-list">
+                <div className="intelligence-log-list intelligence-build-log-list">
                   {knowledgeGraph.buildLogs.slice(-10).map((log) => (
                     <article key={log.id} className={`intelligence-log-item ${log.level}`}>
                       <div className="intelligence-log-head">
@@ -385,6 +487,104 @@ export function LibraryIntelligencePanel({
                     {graphModelOptions.rerank.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                   </select>
                 </label>
+                <label>
+                  <span>全局抽取并发</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={12}
+                    step={1}
+                    value={graphDraft.extractionConcurrency}
+                    onChange={(event) => setGraphDraft((current) => ({
+                      ...current,
+                      extractionConcurrency: normalizeDraftExtractionConcurrency(Number(event.target.value)),
+                    }))}
+                    disabled={knowledgeGraph.profile.configLocked}
+                  />
+                </label>
+              </div>
+              <p className="panel-note">默认 2，表示这本书一次最多并行处理多少个片段。</p>
+
+              <div className="intelligence-log-panel">
+                <div className="assistant-trace-heading split">
+                  <span className="label">抽取模型池</span>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => setGraphDraft((current) => ({
+                      ...current,
+                      extractionModelEntries: [
+                        ...current.extractionModelEntries,
+                        {
+                          key: current.chatModelKey || graphModelOptions.chat[0]?.key || '',
+                          maxConcurrency: 1,
+                        },
+                      ],
+                    }))}
+                    disabled={knowledgeGraph.profile.configLocked || graphModelOptions.chat.length === 0}
+                  >
+                    添加抽取模型
+                  </button>
+                </div>
+                <p className="panel-note">这里的模型池只用于章节片段抽取；如果不配置，就沿用上面的对话模型或全局默认聊天模型做单模型抽取。</p>
+                {graphDraft.extractionModelEntries.length === 0 ? (
+                  <p className="panel-note">当前未单独配置抽取模型池，会回退到单模型抽取。</p>
+                ) : (
+                  <div className="intelligence-log-list">
+                    {graphDraft.extractionModelEntries.map((entry, index) => (
+                      <div key={`${entry.key || 'empty'}-${index}`} className="intelligence-config-grid">
+                        <label>
+                          <span>抽取模型 {index + 1}</span>
+                          <select
+                            value={entry.key}
+                            onChange={(event) => setGraphDraft((current) => ({
+                              ...current,
+                              extractionModelEntries: current.extractionModelEntries.map((item, itemIndex) => (
+                                itemIndex === index ? { ...item, key: event.target.value } : item
+                              )),
+                            }))}
+                            disabled={knowledgeGraph.profile.configLocked}
+                          >
+                            <option value="">请选择模型</option>
+                            {graphModelOptions.chat.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                          </select>
+                        </label>
+                        <label>
+                          <span>单模型并发</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={12}
+                            step={1}
+                            value={entry.maxConcurrency}
+                            onChange={(event) => setGraphDraft((current) => ({
+                              ...current,
+                              extractionModelEntries: current.extractionModelEntries.map((item, itemIndex) => (
+                                itemIndex === index
+                                  ? { ...item, maxConcurrency: normalizeDraftExtractionConcurrency(Number(event.target.value)) }
+                                  : item
+                              )),
+                            }))}
+                            disabled={knowledgeGraph.profile.configLocked}
+                          />
+                        </label>
+                        <div className="action-row wrap compact-actions">
+                          <button
+                            type="button"
+                            className="ghost-button danger"
+                            onClick={() => setGraphDraft((current) => ({
+                              ...current,
+                              extractionModelEntries: current.extractionModelEntries.filter((_, itemIndex) => itemIndex !== index),
+                            }))}
+                            disabled={knowledgeGraph.profile.configLocked}
+                          >
+                            移除
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <label className="checkbox-field">
@@ -443,8 +643,24 @@ export function LibraryIntelligencePanel({
                 <button type="button" className="ghost-button" onClick={() => void handleSaveGraphProfile()} disabled={graphSaving || knowledgeGraph.profile.configLocked}>
                   {graphSaving ? '保存中...' : knowledgeGraph.profile.configLocked ? '配置已锁定' : '保存单书配置'}
                 </button>
-                <button type="button" className="primary-button" onClick={() => void handleBuildGraph()} disabled={graphBuilding || build.status === 'queued' || build.status === 'running'}>
-                  {graphBuilding || build.status === 'queued' || build.status === 'running' ? '构建中...' : build.lastBuiltAt ? '重新生成图谱' : '开始生成图谱'}
+                {build.status === 'queued' || build.status === 'running' ? (
+                  <button type="button" className="ghost-button" onClick={() => void handlePauseGraph()} disabled={graphPausing}>
+                    {graphPausing ? '暂停中...' : '暂停构建'}
+                  </button>
+                ) : null}
+                {build.status === 'paused' ? (
+                  <button type="button" className="primary-button" onClick={() => void handleResumeGraph()} disabled={graphResuming}>
+                    {graphResuming ? '继续中...' : '继续构建'}
+                  </button>
+                ) : null}
+                <button type="button" className="primary-button" onClick={() => void handleBuildGraph()} disabled={graphBuilding || graphPausing || graphResuming || build.status === 'queued' || build.status === 'running' || build.status === 'paused'}>
+                  {graphBuilding || build.status === 'queued' || build.status === 'running'
+                    ? '构建中...'
+                    : build.status === 'paused'
+                      ? '请先继续当前任务'
+                      : build.lastBuiltAt
+                        ? '重新生成图谱'
+                        : '开始生成图谱'}
                 </button>
                 <button type="button" className="ghost-button danger" onClick={() => void handleDeleteGraph()} disabled={graphDeleting || build.status === 'queued' || build.status === 'running'}>
                   {graphDeleting ? '清空中...' : '清空图谱'}
@@ -644,8 +860,13 @@ function createDraft(detailPayload: LibraryNovelDetailPayload): GraphDraftState 
   const profile = detailPayload.knowledgeGraph.profile;
   return {
     chatModelKey: profile.chatModel ? `${profile.chatModel.providerId}::${profile.chatModel.modelId}` : '',
+    extractionModelEntries: profile.extractionModels.map((model) => ({
+      key: `${model.providerId}::${model.modelId}`,
+      maxConcurrency: normalizeDraftExtractionConcurrency(model.maxConcurrency),
+    })),
     embeddingModelKey: profile.embeddingModel ? `${profile.embeddingModel.providerId}::${profile.embeddingModel.modelId}` : '',
     rerankModelKey: profile.rerankModel ? `${profile.rerankModel.providerId}::${profile.rerankModel.modelId}` : '',
+    extractionConcurrency: normalizeDraftExtractionConcurrency(profile.extractionConcurrency),
     neo4jOverrideEnabled: profile.neo4j.source === 'novel',
     neo4jUri: profile.neo4j.source === 'novel' ? profile.neo4j.uri : '',
     neo4jUsername: profile.neo4j.source === 'novel' ? profile.neo4j.username : '',
@@ -671,8 +892,15 @@ function buildGraphModelOptions(
 function buildGraphProfileInput(draft: GraphDraftState): UpdateKnowledgeGraphProfileInput {
   return {
     chatModel: parseRouteKey(draft.chatModelKey),
+    extractionModels: draft.extractionModelEntries.flatMap((entry) => {
+      const route = parseRouteKey(entry.key);
+      return route?.providerId && route.modelId
+        ? [{ ...route, maxConcurrency: normalizeDraftExtractionConcurrency(entry.maxConcurrency) }]
+        : [];
+    }),
     embeddingModel: parseRouteKey(draft.embeddingModelKey),
     rerankModel: parseRouteKey(draft.rerankModelKey),
+    extractionConcurrency: normalizeDraftExtractionConcurrency(draft.extractionConcurrency),
     neo4j: draft.neo4jOverrideEnabled
       ? {
           enabled: true,
@@ -699,12 +927,22 @@ function parseRouteKey(key: string): { providerId?: string; modelId?: string } |
   };
 }
 
+function normalizeDraftExtractionConcurrency(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 2;
+  }
+
+  return Math.max(1, Math.min(12, Math.trunc(value)));
+}
+
 function formatGraphStatus(status: string): string {
   switch (status) {
     case 'queued':
       return '排队中';
     case 'running':
       return '构建中';
+    case 'paused':
+      return '已暂停';
     case 'completed':
       return '已完成';
     case 'failed':
@@ -740,6 +978,44 @@ function formatBuildLogLevel(level: 'info' | 'warn' | 'error'): string {
     default:
       return '进度';
   }
+}
+
+function buildLlmModelLabelMap(payload: ControlLlmProvidersPayload): Map<string, string> {
+  return new Map(
+    payload.providers.flatMap((provider) =>
+      provider.models.map((model) => [
+        `${provider.id}::${model.id}`,
+        `${model.label} · ${provider.label}`,
+      ] as const),
+    ),
+  );
+}
+
+function formatBuildModelLabel(labels: Map<string, string>, providerId: string, modelId: string): string {
+  return labels.get(`${providerId}::${modelId}`) ?? '未命名模型';
+}
+
+function formatGraphCircuitState(state: 'closed' | 'open' | 'half-open'): string {
+  switch (state) {
+    case 'open':
+      return '冷却中';
+    case 'half-open':
+      return '试探恢复';
+    default:
+      return '正常';
+  }
+}
+
+function formatModelSource(source: 'novel' | 'global'): string {
+  return source === 'novel' ? '单书配置' : '全局默认';
+}
+
+function formatThroughputPerMinute(value: number): string {
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} 次/分钟`;
+}
+
+function formatFailureRate(value: number): string {
+  return `${(value * 100).toFixed(value >= 0.1 ? 0 : 1)}%`;
 }
 
 function cryptoRandomId(): string {

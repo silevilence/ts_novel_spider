@@ -24,6 +24,10 @@ export interface ResolvedCapabilityRoute {
   source: 'novel' | 'global';
 }
 
+export interface ResolvedExtractionRoute extends ResolvedCapabilityRoute {
+  maxConcurrency: number;
+}
+
 export interface KnowledgeGraphBuildArtifacts {
   entities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>>;
   relations: Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>>;
@@ -46,6 +50,34 @@ export interface KnowledgeGraphBuildProgressEvent {
   fallbackCount: number;
   mode: 'llm' | 'fallback';
   warning: string | null;
+  modelStats: KnowledgeGraphBuildModelStat[];
+}
+
+export type KnowledgeGraphModelCircuitState = 'closed' | 'open' | 'half-open';
+
+export interface KnowledgeGraphBuildModelStat {
+  providerId: string;
+  modelId: string;
+  source: 'novel' | 'global';
+  maxConcurrency: number;
+  attemptCount: number;
+  llmSuccessCount: number;
+  failureCount: number;
+  fallbackCount: number;
+  handoffInCount: number;
+  handoffOutCount: number;
+  inFlightCount: number;
+  consecutiveFailures: number;
+  circuitState: KnowledgeGraphModelCircuitState;
+  circuitOpenedCount: number;
+  cooldownUntil: string | null;
+  firstAttemptAt: string | null;
+  lastError: string | null;
+  lastStartedAt: string | null;
+  lastCompletedAt: string | null;
+  recentSuccessAt: string[];
+  failureRate: number;
+  throughputPerMinute: number;
 }
 
 export interface KnowledgeGraphBuildDiagnostics {
@@ -54,6 +86,14 @@ export interface KnowledgeGraphBuildDiagnostics {
   llmFailureCount: number;
   fallbackCount: number;
   failureSamples: string[];
+  modelStats: KnowledgeGraphBuildModelStat[];
+}
+
+export class KnowledgeGraphBuildPausedError extends Error {
+  constructor(message = 'Knowledge graph build paused.') {
+    super(message);
+    this.name = 'KnowledgeGraphBuildPausedError';
+  }
 }
 
 export interface AssistantSourceDocument {
@@ -104,6 +144,34 @@ interface ChunkPlan {
   chapterTitle: string;
   chunkIndex: number;
   content: string;
+}
+
+interface PendingChunkState {
+  chunk: ChunkPlan;
+  attemptedModelKeys: Set<string>;
+}
+
+interface ExtractionModelRuntimeState {
+  providerId: string;
+  modelId: string;
+  source: 'novel' | 'global';
+  maxConcurrency: number;
+  attemptCount: number;
+  llmSuccessCount: number;
+  failureCount: number;
+  fallbackCount: number;
+  handoffInCount: number;
+  handoffOutCount: number;
+  inFlightCount: number;
+  consecutiveFailures: number;
+  circuitState: KnowledgeGraphModelCircuitState;
+  circuitOpenedCount: number;
+  cooldownUntilMs: number | null;
+  firstAttemptAt: string | null;
+  lastError: string | null;
+  lastStartedAt: string | null;
+  lastCompletedAt: string | null;
+  recentSuccessAt: string[];
 }
 
 interface ChunkExtraction {
@@ -193,6 +261,11 @@ const MAX_SCHEMA_EXTRACTION_ATTEMPTS = 2;
 const MAX_PROMPTED_JSON_ATTEMPTS = 3;
 const EXTRACTION_RETRY_BASE_DELAY_MS = 250;
 const EXTRACTION_CONCURRENCY = 2;
+const MODEL_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 1;
+const MODEL_CIRCUIT_BREAKER_BASE_COOLDOWN_MS = 4000;
+const MODEL_CIRCUIT_BREAKER_MAX_COOLDOWN_MS = 20000;
+const MODEL_THROUGHPUT_WINDOW_SIZE = 12;
+const MODEL_THROUGHPUT_MIN_WINDOW_MS = 10000;
 
 const chunkEventSchema = z.object({
   summary: z.string().min(1).max(160),
@@ -227,10 +300,13 @@ const chunkExtractionSchema = z.object({
 
 export async function buildKnowledgeGraphArtifacts(options: {
   snapshot: StoredNovelSnapshot;
-  extractionModel: ResolvedCapabilityRoute | null;
+  extractionModels: ResolvedExtractionRoute[];
   embeddingModel: ResolvedCapabilityRoute | null;
   checkpoints?: StoredKnowledgeGraphBuildCheckpointRow[];
   extractionConcurrency?: number;
+  startedAt?: string | null;
+  modelStatsSeed?: KnowledgeGraphBuildModelStat[];
+  shouldPause?: () => boolean;
   onCheckpoint?: (checkpoint: {
     chunkId: string;
     chapterId: string;
@@ -243,6 +319,9 @@ export async function buildKnowledgeGraphArtifacts(options: {
   onProgress?: (event: KnowledgeGraphBuildProgressEvent) => void | Promise<void>;
 }): Promise<KnowledgeGraphBuildArtifacts> {
   const chunkPlans = createChunkPlans(options.snapshot.chapters);
+  const extractionModels = options.extractionModels.filter((route) => route.maxConcurrency > 0);
+  const buildStartedAtMs = parseTimestampMs(options.startedAt) ?? Date.now();
+  const modelStates = createExtractionModelRuntimeStates(extractionModels, options.modelStatsSeed);
   const entityMap = new Map<string, AggregateEntity>();
   const aliasMap = new Map<string, string>();
   const relationMap = new Map<string, AggregateRelation>();
@@ -276,83 +355,181 @@ export async function buildKnowledgeGraphArtifacts(options: {
   }
 
   let completedChunks = checkpointMap.size;
-  const pendingChunks = chunkPlans.filter((chunk) => !checkpointMap.has(chunk.id));
-  const workerCount = Math.max(1, Math.min(options.extractionModel ? (options.extractionConcurrency ?? EXTRACTION_CONCURRENCY) : 1, pendingChunks.length || 1));
-  let nextPendingIndex = 0;
+  const pendingQueue = chunkPlans
+    .filter((chunk) => !checkpointMap.has(chunk.id))
+    .map((chunk) => ({
+      chunk,
+      attemptedModelKeys: new Set<string>(),
+    } satisfies PendingChunkState));
+  const candidateModelKeys = new Set(
+    extractionModels.flatMap((route) => {
+      const modelKey = getExtractionRouteModelKey(route);
+      return modelKey ? [modelKey] : [];
+    }),
+  );
+  const circuitBreakerEnabled = candidateModelKeys.size > 1;
+  const workerSlots: Array<{ id: string; route: ResolvedExtractionRoute | null }> = extractionModels.length > 0
+    ? createExtractionWorkerSlots(extractionModels)
+    : [{ id: 'fallback::0', route: null }];
+  const maxInFlight = Math.max(
+    1,
+    Math.min(
+      extractionModels.length > 0 ? (options.extractionConcurrency ?? EXTRACTION_CONCURRENCY) : 1,
+      pendingQueue.length || 1,
+      workerSlots.length || 1,
+    ),
+  );
+  const availableSlots = [...workerSlots];
+  const inFlight = new Map<string, Promise<{
+    slot: { id: string; route: ResolvedExtractionRoute | null };
+    pending: PendingChunkState;
+    extraction: ChunkExtraction;
+    warning: string | null;
+  }>>();
 
-  const runWorker = async (): Promise<void> => {
-    while (nextPendingIndex < pendingChunks.length) {
-      const chunk = pendingChunks[nextPendingIndex];
-      nextPendingIndex += 1;
-      if (!chunk) {
-        return;
+  const pauseRequested = () => options.shouldPause?.() === true;
+
+  while (pendingQueue.length > 0 || inFlight.size > 0) {
+    while (inFlight.size < maxInFlight && availableSlots.length > 0) {
+      if (pauseRequested()) {
+        break;
       }
 
-      let extraction: ChunkExtraction;
-      let warning: string | null = null;
+      let scheduledAny = false;
+      const slotScanCount = availableSlots.length;
 
-      await options.onProgress?.({
-        phase: 'started',
-        chunkNumber: chunkPlans.indexOf(chunk) + 1,
-        processedChunks: completedChunks,
-        totalChunks: chunkPlans.length,
-        chapterId: chunk.chapterId,
-        chapterTitle: chunk.chapterTitle,
-        chunkIndex: chunk.chunkIndex,
-        llmSuccessCount,
-        llmFailureCount,
-        fallbackCount,
-        mode: options.extractionModel ? 'llm' : 'fallback',
-        warning: null,
-      });
-
-      if (options.extractionModel) {
-        try {
-          extraction = await extractChunkWithLlm(options.snapshot, chunk, options.extractionModel);
-          usedLlmExtraction = true;
-          llmSuccessCount += 1;
-        } catch (error) {
-          warning = describeErrorMessage(error);
-          llmFailureCount += 1;
-          fallbackCount += 1;
-          pushUnique(failureSamples, warning, 4);
-          extraction = extractChunkHeuristically(options.snapshot, chunk);
+      for (let scanIndex = 0; scanIndex < slotScanCount && inFlight.size < maxInFlight; scanIndex += 1) {
+        const slot = availableSlots.shift();
+        if (!slot) {
+          continue;
         }
-      } else {
-        fallbackCount += 1;
-        extraction = extractChunkHeuristically(options.snapshot, chunk);
+
+        const slotModelState = getModelStateForRoute(modelStates, slot.route);
+        if (isModelCoolingDown(slotModelState)) {
+          availableSlots.push(slot);
+          continue;
+        }
+
+        const pending = dequeueChunkForSlot(pendingQueue, slot.route);
+        if (!pending) {
+          availableSlots.push(slot);
+          continue;
+        }
+
+        markModelAttemptStarted(slotModelState, pending, slot.route);
+
+        scheduledAny = true;
+        await options.onProgress?.({
+          phase: 'started',
+          chunkNumber: chunkPlans.indexOf(pending.chunk) + 1,
+          processedChunks: completedChunks,
+          totalChunks: chunkPlans.length,
+          chapterId: pending.chunk.chapterId,
+          chapterTitle: pending.chunk.chapterTitle,
+          chunkIndex: pending.chunk.chunkIndex,
+          llmSuccessCount,
+          llmFailureCount,
+          fallbackCount,
+          mode: extractionModels.length > 0 ? 'llm' : 'fallback',
+          warning: null,
+          modelStats: snapshotModelStats(modelStates, buildStartedAtMs),
+        });
+
+        inFlight.set(slot.id, processChunkWithRoute(options.snapshot, pending.chunk, slot.route).then((result) => ({
+          slot,
+          pending,
+          ...result,
+        })));
       }
 
-      extractionByChunkId.set(chunk.id, { extraction, warning });
-      await options.onCheckpoint?.({
-        chunkId: chunk.id,
-        chapterId: chunk.chapterId,
-        chapterIndex: chunk.chapterIndex,
-        chunkIndex: chunk.chunkIndex,
-        chapterTitle: chunk.chapterTitle,
-        extractionJson: JSON.stringify(extraction),
-        warningMessage: warning,
-      });
-
-      completedChunks += 1;
-      await options.onProgress?.({
-        phase: 'completed',
-        chunkNumber: chunkPlans.indexOf(chunk) + 1,
-        processedChunks: completedChunks,
-        totalChunks: chunkPlans.length,
-        chapterId: chunk.chapterId,
-        chapterTitle: chunk.chapterTitle,
-        chunkIndex: chunk.chunkIndex,
-        llmSuccessCount,
-        llmFailureCount,
-        fallbackCount,
-        mode: extraction.usedLlm ? 'llm' : 'fallback',
-        warning,
-      });
+      if (!scheduledAny) {
+        break;
+      }
     }
-  };
 
-  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    if (inFlight.size === 0) {
+      if (pendingQueue.length > 0 && pauseRequested()) {
+        throw new KnowledgeGraphBuildPausedError('图谱构建已暂停，未完成的片段会保留到下次继续。');
+      }
+
+      const waitMs = getNextModelCooldownWaitMs(availableSlots, modelStates);
+      if (pendingQueue.length > 0 && waitMs !== null) {
+        await waitForDuration(waitMs);
+        continue;
+      }
+
+      break;
+    }
+
+    const settled = await Promise.race(inFlight.values());
+    inFlight.delete(settled.slot.id);
+    availableSlots.push(settled.slot);
+
+    const routeModelKey = getExtractionRouteModelKey(settled.slot.route);
+    const modelState = getModelStateForRoute(modelStates, settled.slot.route);
+    if (routeModelKey && settled.warning) {
+      settled.pending.attemptedModelKeys.add(routeModelKey);
+    }
+
+    const canHandoff = Boolean(
+      settled.warning
+      && settled.slot.route
+      && hasRemainingCandidateModel(settled.pending.attemptedModelKeys, candidateModelKeys),
+    );
+
+    finalizeModelAttempt(modelState, {
+      warning: settled.warning,
+      usedLlm: settled.extraction.usedLlm,
+      handedOff: canHandoff,
+      enableCircuitBreaker: circuitBreakerEnabled,
+    });
+
+    if (canHandoff) {
+      llmFailureCount += 1;
+      pushUnique(failureSamples, settled.warning ?? '未返回具体错误。', 4);
+      pendingQueue.push(settled.pending);
+      continue;
+    }
+
+    if (settled.extraction.usedLlm) {
+      usedLlmExtraction = true;
+      llmSuccessCount += 1;
+    } else {
+      fallbackCount += 1;
+      if (settled.warning) {
+        llmFailureCount += 1;
+        pushUnique(failureSamples, settled.warning, 4);
+      }
+    }
+
+    extractionByChunkId.set(settled.pending.chunk.id, { extraction: settled.extraction, warning: settled.warning });
+    await options.onCheckpoint?.({
+      chunkId: settled.pending.chunk.id,
+      chapterId: settled.pending.chunk.chapterId,
+      chapterIndex: settled.pending.chunk.chapterIndex,
+      chunkIndex: settled.pending.chunk.chunkIndex,
+      chapterTitle: settled.pending.chunk.chapterTitle,
+      extractionJson: JSON.stringify(settled.extraction),
+      warningMessage: settled.warning,
+    });
+
+    completedChunks += 1;
+    await options.onProgress?.({
+      phase: 'completed',
+      chunkNumber: chunkPlans.indexOf(settled.pending.chunk) + 1,
+      processedChunks: completedChunks,
+      totalChunks: chunkPlans.length,
+      chapterId: settled.pending.chunk.chapterId,
+      chapterTitle: settled.pending.chunk.chapterTitle,
+      chunkIndex: settled.pending.chunk.chunkIndex,
+      llmSuccessCount,
+      llmFailureCount,
+      fallbackCount,
+      mode: settled.extraction.usedLlm ? 'llm' : 'fallback',
+      warning: settled.warning,
+      modelStats: snapshotModelStats(modelStates, buildStartedAtMs),
+    });
+  }
 
   for (const chunk of chunkPlans) {
     const resolved = extractionByChunkId.get(chunk.id);
@@ -371,7 +548,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
     });
   }
 
-  if (options.extractionModel && chunkPlans.length > 0 && !usedLlmExtraction && llmFailureCount === chunkPlans.length) {
+  if (extractionModels.length > 0 && chunkPlans.length > 0 && !usedLlmExtraction && fallbackCount === chunkPlans.length && llmFailureCount > 0) {
     throw new Error(`已配置图谱抽取模型，但所有结构化抽取请求都失败了。最近错误：${failureSamples[0] ?? '未返回具体错误。'}`);
   }
 
@@ -403,6 +580,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
         llmFailureCount,
         fallbackCount,
         failureSamples,
+        modelStats: snapshotModelStats(modelStates, buildStartedAtMs),
       },
     };
   }
@@ -426,8 +604,15 @@ export async function buildKnowledgeGraphArtifacts(options: {
       llmFailureCount,
       fallbackCount,
       failureSamples,
+      modelStats: snapshotModelStats(modelStates, buildStartedAtMs),
     },
   };
+}
+
+export function createKnowledgeGraphBuildModelStats(
+  routes: ResolvedExtractionRoute[],
+): KnowledgeGraphBuildModelStat[] {
+  return snapshotModelStats(createExtractionModelRuntimeStates(routes), Date.now());
 }
 
 export async function collectAssistantSources(options: {
@@ -675,6 +860,316 @@ function applyChunkExtraction(options: {
 
 function parseCheckpointExtraction(extractionJson: string): ChunkExtraction {
   return JSON.parse(extractionJson) as ChunkExtraction;
+}
+
+function createExtractionModelRuntimeStates(
+  routes: ResolvedExtractionRoute[],
+  seed: KnowledgeGraphBuildModelStat[] = [],
+): Map<string, ExtractionModelRuntimeState> {
+  const seedMap = new Map(seed.map((entry) => [`${entry.providerId}::${entry.modelId}`, entry]));
+  const states = new Map<string, ExtractionModelRuntimeState>();
+
+  for (const route of routes) {
+    const key = getExtractionRouteModelKey(route);
+    if (!key) {
+      continue;
+    }
+
+    const existing = states.get(key);
+    if (existing) {
+      existing.maxConcurrency += route.maxConcurrency;
+      continue;
+    }
+
+    const seeded = seedMap.get(key);
+    states.set(key, {
+      providerId: route.provider.id,
+      modelId: route.model.id,
+      source: route.source,
+      maxConcurrency: route.maxConcurrency,
+      attemptCount: seeded?.attemptCount ?? 0,
+      llmSuccessCount: seeded?.llmSuccessCount ?? 0,
+      failureCount: seeded?.failureCount ?? 0,
+      fallbackCount: seeded?.fallbackCount ?? 0,
+      handoffInCount: seeded?.handoffInCount ?? 0,
+      handoffOutCount: seeded?.handoffOutCount ?? 0,
+      inFlightCount: 0,
+      consecutiveFailures: 0,
+      circuitState: 'closed',
+      circuitOpenedCount: seeded?.circuitOpenedCount ?? 0,
+      cooldownUntilMs: null,
+      firstAttemptAt: null,
+      lastError: seeded?.lastError ?? null,
+      lastStartedAt: null,
+      lastCompletedAt: null,
+      recentSuccessAt: [],
+    });
+  }
+
+  return states;
+}
+
+function getModelStateForRoute(
+  modelStates: Map<string, ExtractionModelRuntimeState>,
+  route: ResolvedExtractionRoute | null,
+): ExtractionModelRuntimeState | null {
+  const key = getExtractionRouteModelKey(route);
+  return key ? modelStates.get(key) ?? null : null;
+}
+
+function markModelAttemptStarted(
+  modelState: ExtractionModelRuntimeState | null,
+  pending: PendingChunkState,
+  route: ResolvedExtractionRoute | null,
+): void {
+  if (!modelState) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  if (modelState.circuitState === 'open' && !isModelCoolingDown(modelState)) {
+    modelState.circuitState = 'half-open';
+    modelState.cooldownUntilMs = null;
+  }
+
+  const routeModelKey = getExtractionRouteModelKey(route);
+  if (routeModelKey && pending.attemptedModelKeys.size > 0 && !pending.attemptedModelKeys.has(routeModelKey)) {
+    modelState.handoffInCount += 1;
+  }
+
+  modelState.attemptCount += 1;
+  modelState.inFlightCount += 1;
+  modelState.firstAttemptAt ??= now;
+  modelState.lastStartedAt = now;
+}
+
+function finalizeModelAttempt(
+  modelState: ExtractionModelRuntimeState | null,
+  outcome: {
+    warning: string | null;
+    usedLlm: boolean;
+    handedOff: boolean;
+    enableCircuitBreaker: boolean;
+  },
+): void {
+  if (!modelState) {
+    return;
+  }
+
+  modelState.inFlightCount = Math.max(0, modelState.inFlightCount - 1);
+  modelState.lastCompletedAt = new Date().toISOString();
+
+  if (outcome.warning) {
+    modelState.failureCount += 1;
+    modelState.lastError = outcome.warning;
+    modelState.consecutiveFailures += 1;
+    if (outcome.handedOff) {
+      modelState.handoffOutCount += 1;
+    } else {
+      modelState.fallbackCount += 1;
+    }
+
+    if (outcome.enableCircuitBreaker && modelState.consecutiveFailures >= MODEL_CIRCUIT_BREAKER_FAILURE_THRESHOLD) {
+      modelState.circuitState = 'open';
+      modelState.circuitOpenedCount += 1;
+      const cooldownMs = Math.min(
+        MODEL_CIRCUIT_BREAKER_BASE_COOLDOWN_MS * modelState.circuitOpenedCount,
+        MODEL_CIRCUIT_BREAKER_MAX_COOLDOWN_MS,
+      );
+      modelState.cooldownUntilMs = Date.now() + cooldownMs;
+    }
+    return;
+  }
+
+  if (outcome.usedLlm) {
+    modelState.llmSuccessCount += 1;
+    modelState.recentSuccessAt.push(modelState.lastCompletedAt);
+    if (modelState.recentSuccessAt.length > MODEL_THROUGHPUT_WINDOW_SIZE) {
+      modelState.recentSuccessAt.splice(0, modelState.recentSuccessAt.length - MODEL_THROUGHPUT_WINDOW_SIZE);
+    }
+  }
+
+  modelState.lastError = null;
+  modelState.consecutiveFailures = 0;
+  modelState.circuitState = 'closed';
+  modelState.cooldownUntilMs = null;
+}
+
+function snapshotModelStats(
+  modelStates: Map<string, ExtractionModelRuntimeState>,
+  buildStartedAtMs: number,
+): KnowledgeGraphBuildModelStat[] {
+  return [...modelStates.values()].map((state) => {
+    const recentSuccessTimesMs = state.recentSuccessAt
+      .map((value) => parseTimestampMs(value))
+      .filter((value): value is number => value !== null)
+      .sort((left, right) => left - right);
+    const throughputWindowCount = recentSuccessTimesMs.length;
+    const oldestSuccessMs = throughputWindowCount >= 1 ? recentSuccessTimesMs[0] ?? null : null;
+    const newestSuccessMs = throughputWindowCount >= 1 ? recentSuccessTimesMs[throughputWindowCount - 1] ?? null : null;
+    const throughputWindowMs = throughputWindowCount >= 2
+      && oldestSuccessMs !== null
+      && newestSuccessMs !== null
+      ? Math.max(
+          newestSuccessMs - oldestSuccessMs,
+          MODEL_THROUGHPUT_MIN_WINDOW_MS,
+        )
+      : 0;
+
+    return {
+      providerId: state.providerId,
+      modelId: state.modelId,
+      source: state.source,
+      maxConcurrency: state.maxConcurrency,
+      attemptCount: state.attemptCount,
+      llmSuccessCount: state.llmSuccessCount,
+      failureCount: state.failureCount,
+      fallbackCount: state.fallbackCount,
+      handoffInCount: state.handoffInCount,
+      handoffOutCount: state.handoffOutCount,
+      inFlightCount: state.inFlightCount,
+      consecutiveFailures: state.consecutiveFailures,
+      circuitState: state.circuitState,
+      circuitOpenedCount: state.circuitOpenedCount,
+      cooldownUntil: state.cooldownUntilMs ? new Date(state.cooldownUntilMs).toISOString() : null,
+      firstAttemptAt: state.firstAttemptAt,
+      lastError: state.lastError,
+      lastStartedAt: state.lastStartedAt,
+      lastCompletedAt: state.lastCompletedAt,
+      recentSuccessAt: state.recentSuccessAt,
+      failureRate: state.attemptCount > 0 ? Number((state.failureCount / state.attemptCount).toFixed(4)) : 0,
+      throughputPerMinute: throughputWindowCount >= 2
+        ? Number((((throughputWindowCount - 1) / throughputWindowMs) * 60000).toFixed(2))
+        : 0,
+    };
+  });
+}
+
+function isModelCoolingDown(modelState: ExtractionModelRuntimeState | null): boolean {
+  return Boolean(modelState && modelState.circuitState === 'open' && modelState.cooldownUntilMs && modelState.cooldownUntilMs > Date.now());
+}
+
+function getNextModelCooldownWaitMs(
+  availableSlots: Array<{ id: string; route: ResolvedExtractionRoute | null }>,
+  modelStates: Map<string, ExtractionModelRuntimeState>,
+): number | null {
+  const waitCandidates = availableSlots.flatMap((slot) => {
+    const modelState = getModelStateForRoute(modelStates, slot.route);
+    if (!isModelCoolingDown(modelState) || !modelState?.cooldownUntilMs) {
+      return [];
+    }
+
+    return [Math.max(1, modelState.cooldownUntilMs - Date.now())];
+  });
+
+  if (waitCandidates.length === 0) {
+    return null;
+  }
+
+  return Math.min(...waitCandidates);
+}
+
+function parseTimestampMs(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function waitForDuration(delayMs: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function getExtractionRouteModelKey(route: ResolvedExtractionRoute | null): string | null {
+  return route ? `${route.provider.id}::${route.model.id}` : null;
+}
+
+function hasRemainingCandidateModel(
+  attemptedModelKeys: Set<string>,
+  candidateModelKeys: Set<string>,
+): boolean {
+  for (const key of candidateModelKeys) {
+    if (!attemptedModelKeys.has(key)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function dequeueChunkForSlot(
+  pendingQueue: PendingChunkState[],
+  route: ResolvedExtractionRoute | null,
+): PendingChunkState | null {
+  if (route === null) {
+    return pendingQueue.shift() ?? null;
+  }
+
+  const routeModelKey = getExtractionRouteModelKey(route);
+  if (!routeModelKey) {
+    return pendingQueue.shift() ?? null;
+  }
+
+  const pendingIndex = pendingQueue.findIndex((entry) => !entry.attemptedModelKeys.has(routeModelKey));
+  if (pendingIndex < 0) {
+    return null;
+  }
+
+  const [pending] = pendingQueue.splice(pendingIndex, 1);
+  return pending ?? null;
+}
+
+function createExtractionWorkerSlots(
+  routes: ResolvedExtractionRoute[],
+): Array<{ id: string; route: ResolvedExtractionRoute }> {
+  const slotBuckets = routes.map((route) => Array.from({ length: route.maxConcurrency }, (_, index) => ({
+    id: `${route.provider.id}::${route.model.id}::${index}`,
+    route,
+  })));
+  const slots: Array<{ id: string; route: ResolvedExtractionRoute }> = [];
+  let hasRemaining = true;
+
+  while (hasRemaining) {
+    hasRemaining = false;
+    for (const bucket of slotBuckets) {
+      const slot = bucket.shift();
+      if (!slot) {
+        continue;
+      }
+
+      hasRemaining = true;
+      slots.push(slot);
+    }
+  }
+
+  return slots;
+}
+
+async function processChunkWithRoute(
+  snapshot: StoredNovelSnapshot,
+  chunk: ChunkPlan,
+  route: ResolvedExtractionRoute | null,
+): Promise<{ extraction: ChunkExtraction; warning: string | null }> {
+  if (!route) {
+    return {
+      extraction: extractChunkHeuristically(snapshot, chunk),
+      warning: null,
+    };
+  }
+
+  try {
+    return {
+      extraction: await extractChunkWithLlm(snapshot, chunk, route),
+      warning: null,
+    };
+  } catch (error) {
+    return {
+      extraction: extractChunkHeuristically(snapshot, chunk),
+      warning: describeErrorMessage(error),
+    };
+  }
 }
 
 async function extractChunkWithLlm(

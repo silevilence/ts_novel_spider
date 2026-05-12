@@ -12,7 +12,11 @@ import {
   collectAssistantSources as collectAssistantSourcesForRag,
   type AssistantGraphTraceHit,
   type AssistantRetrievalTrace,
+  createKnowledgeGraphBuildModelStats,
+  KnowledgeGraphBuildPausedError,
+  type KnowledgeGraphBuildModelStat,
   type KnowledgeGraphBuildProgressEvent,
+  type ResolvedCapabilityRoute,
 } from './library-intelligence-rag';
 
 import type {
@@ -35,7 +39,7 @@ import type {
 } from './system-preferences';
 import type { StoredChapterRecord, StoredNovelSnapshot } from './spider';
 
-export type KnowledgeGraphBuildStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+export type KnowledgeGraphBuildStatus = 'idle' | 'queued' | 'running' | 'paused' | 'completed' | 'failed';
 export type KnowledgeGraphBuildStage = 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
 export type KnowledgeGraphEntityType = 'character' | 'location' | 'organization' | 'concept' | 'author';
 export type KnowledgeGraphRelationType = 'co_occurs' | 'alliance' | 'conflict' | 'family';
@@ -59,8 +63,10 @@ export interface KnowledgeGraphNeo4jTarget {
 
 export interface LibraryKnowledgeGraphProfileInput {
   chatModel?: { providerId?: string; modelId?: string } | null;
+  extractionModels?: Array<{ providerId?: string; modelId?: string; maxConcurrency?: number }> | null;
   embeddingModel?: { providerId?: string; modelId?: string } | null;
   rerankModel?: { providerId?: string; modelId?: string } | null;
+  extractionConcurrency?: number;
   neo4j?: {
     enabled?: boolean;
     uri?: string;
@@ -72,8 +78,10 @@ export interface LibraryKnowledgeGraphProfileInput {
 
 export interface LibraryKnowledgeGraphProfile {
   chatModel: KnowledgeGraphModelRoute | null;
+  extractionModels: Array<KnowledgeGraphModelRoute & { maxConcurrency: number }>;
   embeddingModel: KnowledgeGraphModelRoute | null;
   rerankModel: KnowledgeGraphModelRoute | null;
+  extractionConcurrency: number;
   neo4j: KnowledgeGraphNeo4jTarget;
   configLocked: boolean;
   lockedAt: string | null;
@@ -92,6 +100,7 @@ export interface LibraryKnowledgeGraphBuild {
   syncedToNeo4jAt: string | null;
   entityCount: number;
   relationCount: number;
+  modelStats: KnowledgeGraphBuildModelStat[];
   updatedAt: string | null;
 }
 
@@ -219,12 +228,24 @@ const TOKEN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za
 const MAX_GRAPH_ENTITIES = 18;
 const MAX_GRAPH_RELATIONS = 24;
 const MAX_ASSISTANT_SOURCES = 6;
+const DEFAULT_EXTRACTION_CONCURRENCY = 2;
+const MIN_EXTRACTION_CONCURRENCY = 1;
+const MAX_EXTRACTION_CONCURRENCY = 12;
+const DEFAULT_EXTRACTION_MODEL_CONCURRENCY = 1;
+const MIN_EXTRACTION_MODEL_CONCURRENCY = 1;
+const MAX_EXTRACTION_MODEL_CONCURRENCY = 12;
+
+interface ActiveKnowledgeGraphBuildState {
+  pauseRequested: boolean;
+}
+
+type BackgroundBuildMode = 'fresh' | 'resume' | 'recover';
 
 export class LibraryIntelligenceService {
   readonly #repository: SqliteNovelRepository;
   readonly #preferences: SystemPreferencesService;
   readonly #neo4jGraphStore: Neo4jGraphStore;
-  readonly #activeBuilds = new Set<string>();
+  readonly #activeBuilds = new Map<string, ActiveKnowledgeGraphBuildState>();
 
   constructor(options: LibraryIntelligenceServiceOptions) {
     this.#repository = options.repository;
@@ -282,6 +303,10 @@ export class LibraryIntelligenceService {
       return this.serializeBuild(currentBuild ?? createIdleBuild());
     }
 
+    const storedProfile = this.#repository.getKnowledgeGraphProfile(sourceId, novelId);
+    const llmState = this.#preferences.getLlmState();
+    const extractionModels = resolveExtractionRoutes(llmState, storedProfile);
+
     this.#repository.clearKnowledgeGraphBuildLogs(sourceId, novelId);
     this.#repository.clearKnowledgeGraphBuildCheckpoints(sourceId, novelId);
 
@@ -299,11 +324,78 @@ export class LibraryIntelligenceService {
       syncedToNeo4jAt: currentBuild?.syncedToNeo4jAt ?? null,
       entityCount: currentBuild?.entityCount ?? 0,
       relationCount: currentBuild?.relationCount ?? 0,
+      modelStats: createKnowledgeGraphBuildModelStats(extractionModels),
     });
 
-    this.startBackgroundBuild(snapshot, { resumeExisting: false });
+    this.startBackgroundBuild(snapshot, { mode: 'fresh' });
 
     return this.serializeBuild(queued);
+  }
+
+  pauseNovelKnowledgeGraphBuild(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    if (!snapshot) {
+      return null;
+    }
+
+    const currentBuild = this.reconcileDetachedBuildState(sourceId, novelId);
+    if (!currentBuild || (currentBuild.status !== 'queued' && currentBuild.status !== 'running')) {
+      throw new Error('当前没有可暂停的图谱任务。');
+    }
+
+    if (currentBuild.stage !== 'idle' && currentBuild.stage !== 'extracting') {
+      throw new Error('当前图谱已经进入归并或同步阶段，暂时不能暂停。');
+    }
+
+    const buildKey = createNovelKey(sourceId, novelId);
+    const activeBuild = this.#activeBuilds.get(buildKey);
+    if (!activeBuild) {
+      throw new Error('当前图谱任务未在本进程中运行，无法暂停。');
+    }
+
+    activeBuild.pauseRequested = true;
+    this.writeBuildLog(sourceId, novelId, 'extracting', 'warn', '已收到暂停请求，等待当前片段处理完成后停止。');
+
+    return this.serializeBuild(this.#repository.getKnowledgeGraphBuild(sourceId, novelId) ?? currentBuild);
+  }
+
+  resumeNovelKnowledgeGraphBuild(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    if (!snapshot) {
+      return null;
+    }
+
+    const buildKey = createNovelKey(sourceId, novelId);
+    const currentBuild = this.reconcileDetachedBuildState(sourceId, novelId);
+    if (this.#activeBuilds.has(buildKey) || currentBuild?.status === 'queued' || currentBuild?.status === 'running') {
+      return this.serializeBuild(currentBuild ?? createIdleBuild());
+    }
+
+    if (currentBuild?.status !== 'paused') {
+      throw new Error('当前图谱不在暂停状态，不能继续。');
+    }
+
+    const resumed = this.#repository.saveKnowledgeGraphBuild({
+      sourceId,
+      novelId,
+      status: 'queued',
+      stage: 'idle',
+      progressPercent: currentBuild.progressPercent,
+      message: '已继续构建，正在按最新配置接续未完成片段。',
+      errorMessage: null,
+      startedAt: currentBuild.startedAt,
+      completedAt: null,
+      lastBuiltAt: currentBuild.lastBuiltAt,
+      syncedToNeo4jAt: currentBuild.syncedToNeo4jAt,
+      entityCount: currentBuild.entityCount,
+      relationCount: currentBuild.relationCount,
+      modelStats: currentBuild.modelStats,
+    });
+
+    this.writeBuildLog(sourceId, novelId, 'extracting', 'info', '继续图谱构建：将按当前已保存配置接续剩余片段。');
+    this.startBackgroundBuild(snapshot, { mode: 'resume' });
+
+    return this.serializeBuild(resumed);
   }
 
   async clearNovelKnowledgeGraph(sourceId: string, novelId: string): Promise<LibraryKnowledgeGraphState | null> {
@@ -358,6 +450,7 @@ export class LibraryIntelligenceService {
       syncedToNeo4jAt: null,
       entityCount: 0,
       relationCount: 0,
+      modelStats: [],
     });
     this.writeBuildLog(sourceId, novelId, 'idle', 'info', clearedNeo4j ? '已手动清空本地图谱和 Neo4j 子图。' : '已手动清空本地图谱。');
 
@@ -461,13 +554,19 @@ export class LibraryIntelligenceService {
     const llmState = this.#preferences.getLlmState();
     const neo4jState = this.#preferences.getNeo4jState();
     const chatModel = resolveCapabilityRoute(llmState, 'chat', profile ? routeFromProfile(profile.chatProviderId, profile.chatModelId) : null);
+    const extractionModels = resolveExtractionRoutes(llmState, profile);
     const embeddingModel = resolveCapabilityRoute(llmState, 'embedding', profile ? routeFromProfile(profile.embeddingProviderId, profile.embeddingModelId) : null);
     const rerankModel = resolveCapabilityRoute(llmState, 'rerank', profile ? routeFromProfile(profile.rerankProviderId, profile.rerankModelId) : null);
 
     return {
       chatModel: chatModel ? serializeCapabilityRoute(chatModel.provider, chatModel.model, chatModel.source) : null,
+      extractionModels: extractionModels.map((route) => ({
+        ...serializeCapabilityRoute(route.provider, route.model, route.source),
+        maxConcurrency: route.maxConcurrency,
+      })),
       embeddingModel: embeddingModel ? serializeCapabilityRoute(embeddingModel.provider, embeddingModel.model, embeddingModel.source) : null,
       rerankModel: rerankModel ? serializeCapabilityRoute(rerankModel.provider, rerankModel.model, rerankModel.source) : null,
+      extractionConcurrency: normalizeExtractionConcurrency(profile?.extractionConcurrency),
       neo4j: resolveNeo4jTarget(profile, neo4jState),
       configLocked: profile?.configLocked ?? false,
       lockedAt: profile?.lockedAt ?? null,
@@ -488,6 +587,7 @@ export class LibraryIntelligenceService {
       syncedToNeo4jAt: build.syncedToNeo4jAt,
       entityCount: build.entityCount,
       relationCount: build.relationCount,
+      modelStats: build.modelStats,
       updatedAt: build.updatedAt,
     };
   }
@@ -518,6 +618,7 @@ export class LibraryIntelligenceService {
       syncedToNeo4jAt: currentBuild.syncedToNeo4jAt,
       entityCount: currentBuild.entityCount,
       relationCount: currentBuild.relationCount,
+      modelStats: resetVolatileModelStats(currentBuild.modelStats),
     });
 
     this.writeBuildLog(
@@ -545,8 +646,13 @@ export class LibraryIntelligenceService {
     syncedToNeo4jAt: string | null;
     entityCount: number;
     relationCount: number;
+    modelStats?: KnowledgeGraphBuildModelStat[];
   }): void {
-    this.#repository.saveKnowledgeGraphBuild(input);
+    const currentBuild = this.#repository.getKnowledgeGraphBuild(input.sourceId, input.novelId);
+    this.#repository.saveKnowledgeGraphBuild({
+      ...input,
+      modelStats: input.modelStats ?? currentBuild?.modelStats ?? [],
+    });
   }
 
   private writeBuildLog(
@@ -579,7 +685,7 @@ export class LibraryIntelligenceService {
   }
 
   private async runBuild(snapshot: StoredNovelSnapshot): Promise<void> {
-    return this.runBuildInternal(snapshot, { resumeExisting: false });
+    return this.runBuildInternal(snapshot, { mode: 'fresh' }, { pauseRequested: false });
   }
 
   private restoreResumableBuilds(): void {
@@ -594,43 +700,49 @@ export class LibraryIntelligenceService {
         continue;
       }
 
-      this.startBackgroundBuild(snapshot, { resumeExisting: true });
+      this.startBackgroundBuild(snapshot, { mode: 'recover' });
     }
   }
 
-  private startBackgroundBuild(snapshot: StoredNovelSnapshot, options: { resumeExisting: boolean }): void {
+  private startBackgroundBuild(snapshot: StoredNovelSnapshot, options: { mode: BackgroundBuildMode }): void {
     const buildKey = createNovelKey(snapshot.sourceId, snapshot.metadata.novelId);
     if (this.#activeBuilds.has(buildKey)) {
       return;
     }
 
-    this.#activeBuilds.add(buildKey);
+    const runtimeState: ActiveKnowledgeGraphBuildState = {
+      pauseRequested: false,
+    };
+    this.#activeBuilds.set(buildKey, runtimeState);
     queueMicrotask(() => {
-      void this.runBuildInternal(snapshot, options).finally(() => {
+      void this.runBuildInternal(snapshot, options, runtimeState).finally(() => {
         this.#activeBuilds.delete(buildKey);
       });
     });
   }
 
-  private async runBuildInternal(snapshot: StoredNovelSnapshot, options: { resumeExisting: boolean }): Promise<void> {
+  private async runBuildInternal(
+    snapshot: StoredNovelSnapshot,
+    options: { mode: BackgroundBuildMode },
+    runtimeState: ActiveKnowledgeGraphBuildState,
+  ): Promise<void> {
     const sourceId = snapshot.sourceId;
     const novelId = snapshot.metadata.novelId;
     const existingBuild = this.#repository.getKnowledgeGraphBuild(sourceId, novelId);
-    const startedAt = options.resumeExisting ? existingBuild?.startedAt ?? new Date().toISOString() : new Date().toISOString();
+    const startedAt = options.mode === 'fresh' ? new Date().toISOString() : existingBuild?.startedAt ?? new Date().toISOString();
     const previousBuild = this.#repository.getKnowledgeGraphBuild(sourceId, novelId);
     const storedProfile = this.#repository.getKnowledgeGraphProfile(sourceId, novelId);
     const llmState = this.#preferences.getLlmState();
-    const extractionModel = resolveCapabilityRoute(
-      llmState,
-      'chat',
-      storedProfile ? routeFromProfile(storedProfile.chatProviderId, storedProfile.chatModelId) : null,
-    );
+    const extractionModels = resolveExtractionRoutes(llmState, storedProfile);
     const embeddingModel = resolveCapabilityRoute(
       llmState,
       'embedding',
       storedProfile ? routeFromProfile(storedProfile.embeddingProviderId, storedProfile.embeddingModelId) : null,
     );
     const checkpoints = this.#repository.listKnowledgeGraphBuildCheckpoints(sourceId, novelId);
+    const extractionConcurrency = normalizeExtractionConcurrency(storedProfile?.extractionConcurrency);
+    const initialModelStats = createKnowledgeGraphBuildModelStats(extractionModels);
+    const resumedModelStats = existingBuild?.modelStats.length ? resetVolatileModelStats(existingBuild.modelStats) : initialModelStats;
 
     const totalDownloadedChapters = snapshot.chapters.filter((chapter) => chapter.status === 'downloaded' && chapter.content).length;
 
@@ -640,12 +752,16 @@ export class LibraryIntelligenceService {
       status: 'running',
       stage: 'extracting',
       progressPercent: 10,
-      message: options.resumeExisting
+      message: options.mode === 'recover'
         ? checkpoints.length > 0
           ? `正在恢复上次中断的图谱构建，已接续 ${checkpoints.length} 个片段。`
           : '正在恢复上次中断的图谱构建，并重新接管抽取任务。'
-        : extractionModel
-          ? '正在使用结构化抽取模型解析章节片段。'
+        : options.mode === 'resume'
+          ? checkpoints.length > 0
+            ? `正在继续上次暂停的图谱构建，已接续 ${checkpoints.length} 个片段，并按最新配置处理剩余内容。`
+            : '正在继续上次暂停的图谱构建，并按最新配置重新接管抽取任务。'
+          : extractionModels.length > 0
+          ? `正在使用 ${extractionModels.length} 个结构化抽取模型解析章节片段，当前全局并发 ${extractionConcurrency}。`
           : '未配置抽取模型，正在使用本地规则构建基础图谱。',
       errorMessage: null,
       startedAt,
@@ -654,8 +770,9 @@ export class LibraryIntelligenceService {
       syncedToNeo4jAt: null,
       entityCount: 0,
       relationCount: 0,
+      modelStats: resumedModelStats,
     });
-    if (options.resumeExisting) {
+    if (options.mode === 'recover') {
       this.writeBuildLog(
         sourceId,
         novelId,
@@ -665,14 +782,24 @@ export class LibraryIntelligenceService {
           ? `检测到服务重启或任务中断，已自动恢复图谱构建，并从 ${checkpoints.length} 个已完成片段继续。`
           : '检测到服务重启或任务中断，已自动恢复图谱构建，并从头重新接管抽取任务。',
       );
+    } else if (options.mode === 'resume') {
+      this.writeBuildLog(
+        sourceId,
+        novelId,
+        'extracting',
+        'info',
+        checkpoints.length > 0
+          ? `继续图谱构建：已从 ${checkpoints.length} 个已完成片段接续，并按当前配置处理剩余片段。`
+          : '继续图谱构建：将按当前配置重新接管剩余抽取任务。',
+      );
     } else {
       this.writeBuildLog(
         sourceId,
         novelId,
         'extracting',
         'info',
-        extractionModel
-          ? `构建开始：准备解析 ${totalDownloadedChapters} 个已下载章节，优先走结构化抽取。`
+        extractionModels.length > 0
+          ? `构建开始：准备解析 ${totalDownloadedChapters} 个已下载章节，优先走结构化抽取，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
           : `构建开始：准备解析 ${totalDownloadedChapters} 个已下载章节，当前只使用本地规则。`,
       );
     }
@@ -680,9 +807,13 @@ export class LibraryIntelligenceService {
     try {
       const extracted = await buildKnowledgeGraphArtifacts({
         snapshot,
-        extractionModel,
+        extractionModels,
         embeddingModel,
         checkpoints,
+        extractionConcurrency,
+        startedAt,
+        ...(existingBuild?.modelStats ? { modelStatsSeed: existingBuild.modelStats } : {}),
+        shouldPause: () => runtimeState.pauseRequested,
         onCheckpoint: async (checkpoint) => {
           this.#repository.saveKnowledgeGraphBuildCheckpoint({
             sourceId,
@@ -717,6 +848,7 @@ export class LibraryIntelligenceService {
         syncedToNeo4jAt: null,
         entityCount: extracted.entities.length,
         relationCount: extracted.relations.length,
+        modelStats: extracted.diagnostics.modelStats,
       });
       this.writeBuildLog(
         sourceId,
@@ -758,6 +890,7 @@ export class LibraryIntelligenceService {
           syncedToNeo4jAt: null,
           entityCount: extracted.entities.length,
           relationCount: extracted.relations.length,
+          modelStats: extracted.diagnostics.modelStats,
         });
         this.writeBuildLog(
           sourceId,
@@ -787,6 +920,7 @@ export class LibraryIntelligenceService {
           syncedToNeo4jAt: null,
           entityCount: extracted.entities.length,
           relationCount: extracted.relations.length,
+          modelStats: extracted.diagnostics.modelStats,
         });
         this.writeBuildLog(sourceId, novelId, 'syncing', 'info', '正在同步 Neo4j 子图。');
 
@@ -824,6 +958,7 @@ export class LibraryIntelligenceService {
         syncedToNeo4jAt,
         entityCount: extracted.entities.length,
         relationCount: extracted.relations.length,
+        modelStats: extracted.diagnostics.modelStats,
       });
       this.writeBuildLog(sourceId, novelId, 'completed', 'info', `图谱构建完成：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系。`);
 
@@ -836,6 +971,29 @@ export class LibraryIntelligenceService {
         ),
       );
     } catch (error) {
+      if (error instanceof KnowledgeGraphBuildPausedError) {
+        const currentBuild = this.#repository.getKnowledgeGraphBuild(sourceId, novelId);
+        const completedAt = new Date().toISOString();
+        this.saveBuildState({
+          sourceId,
+          novelId,
+          status: 'paused',
+          stage: currentBuild?.stage === 'idle' ? 'extracting' : currentBuild?.stage ?? 'extracting',
+          progressPercent: currentBuild?.progressPercent ?? 10,
+          message: '图谱构建已暂停，可先调整配置，再继续当前任务。',
+          errorMessage: null,
+          startedAt,
+          completedAt,
+          lastBuiltAt: previousBuild?.lastBuiltAt ?? null,
+          syncedToNeo4jAt: previousBuild?.syncedToNeo4jAt ?? null,
+          entityCount: currentBuild?.entityCount ?? 0,
+          relationCount: currentBuild?.relationCount ?? 0,
+          modelStats: currentBuild?.modelStats ?? resumedModelStats,
+        });
+        this.writeBuildLog(sourceId, novelId, 'extracting', 'warn', '图谱构建已暂停，已完成的片段会保留，后续可按最新配置继续。');
+        return;
+      }
+
       const message = error instanceof Error ? error.message : 'Knowledge graph build failed.';
       this.saveBuildState({
         sourceId,
@@ -851,6 +1009,7 @@ export class LibraryIntelligenceService {
         syncedToNeo4jAt: null,
         entityCount: 0,
         relationCount: 0,
+        modelStats: resumedModelStats,
       });
       this.writeBuildLog(sourceId, novelId, 'failed', 'error', `图谱构建失败：${message}`);
     }
@@ -885,6 +1044,7 @@ export class LibraryIntelligenceService {
         syncedToNeo4jAt: null,
         entityCount: 0,
         relationCount: 0,
+        modelStats: event.modelStats,
       });
 
       this.writeBuildLog(
@@ -917,6 +1077,7 @@ export class LibraryIntelligenceService {
       syncedToNeo4jAt: null,
       entityCount: 0,
       relationCount: 0,
+      modelStats: event.modelStats,
     });
 
     const shouldLogCheckpoint = event.processedChunks === 1 || event.processedChunks === event.totalChunks || event.processedChunks % 5 === 0;
@@ -982,8 +1143,24 @@ function createIdleBuild(): StoredKnowledgeGraphBuildRow {
     syncedToNeo4jAt: null,
     entityCount: 0,
     relationCount: 0,
+    modelStats: [],
     updatedAt: null,
   };
+}
+
+function resetVolatileModelStats(stats: KnowledgeGraphBuildModelStat[]): KnowledgeGraphBuildModelStat[] {
+  return stats.map((entry) => ({
+    ...entry,
+    inFlightCount: 0,
+    consecutiveFailures: 0,
+    circuitState: 'closed',
+    cooldownUntil: null,
+    firstAttemptAt: null,
+    lastStartedAt: null,
+    lastCompletedAt: null,
+    recentSuccessAt: [],
+    throughputPerMinute: 0,
+  }));
 }
 
 function mergeProfileInput(
@@ -993,10 +1170,12 @@ function mergeProfileInput(
   return {
     chatProviderId: input.chatModel?.providerId?.trim() ?? current?.chatProviderId ?? '',
     chatModelId: input.chatModel?.modelId?.trim() ?? current?.chatModelId ?? '',
+    extractionModels: normalizeExtractionModelPool(input.extractionModels ?? current?.extractionModels),
     embeddingProviderId: input.embeddingModel?.providerId?.trim() ?? current?.embeddingProviderId ?? '',
     embeddingModelId: input.embeddingModel?.modelId?.trim() ?? current?.embeddingModelId ?? '',
     rerankProviderId: input.rerankModel?.providerId?.trim() ?? current?.rerankProviderId ?? '',
     rerankModelId: input.rerankModel?.modelId?.trim() ?? current?.rerankModelId ?? '',
+    extractionConcurrency: normalizeExtractionConcurrency(input.extractionConcurrency ?? current?.extractionConcurrency),
     neo4jEnabled: input.neo4j?.enabled ?? current?.neo4jEnabled ?? false,
     neo4jUri: input.neo4j?.uri?.trim() ?? current?.neo4jUri ?? '',
     neo4jUsername: input.neo4j?.username?.trim() ?? current?.neo4jUsername ?? '',
@@ -1012,10 +1191,12 @@ function hasProfileChange(
   return (
     current.chatProviderId !== next.chatProviderId ||
     current.chatModelId !== next.chatModelId ||
+    !isExtractionModelPoolEqual(current.extractionModels, next.extractionModels) ||
     current.embeddingProviderId !== next.embeddingProviderId ||
     current.embeddingModelId !== next.embeddingModelId ||
     current.rerankProviderId !== next.rerankProviderId ||
     current.rerankModelId !== next.rerankModelId ||
+    current.extractionConcurrency !== next.extractionConcurrency ||
     current.neo4jEnabled !== next.neo4jEnabled ||
     current.neo4jUri !== next.neo4jUri ||
     current.neo4jUsername !== next.neo4jUsername ||
@@ -1919,6 +2100,7 @@ function freezeProfile(
   neo4jState: Neo4jPreferencesState,
 ): StoredKnowledgeGraphProfileInput {
   const chat = resolveCapabilityRoute(llmState, 'chat', current ? routeFromProfile(current.chatProviderId, current.chatModelId) : null);
+  const extractionModels = resolveExtractionRoutes(llmState, current);
   const embedding = resolveCapabilityRoute(llmState, 'embedding', current ? routeFromProfile(current.embeddingProviderId, current.embeddingModelId) : null);
   const rerank = resolveCapabilityRoute(llmState, 'rerank', current ? routeFromProfile(current.rerankProviderId, current.rerankModelId) : null);
   const neo4j = resolveNeo4jConfig(current, neo4jState);
@@ -1928,10 +2110,16 @@ function freezeProfile(
     novelId: snapshot.metadata.novelId,
     chatProviderId: chat?.provider.id ?? current?.chatProviderId ?? '',
     chatModelId: chat?.model.id ?? current?.chatModelId ?? '',
+    extractionModels: extractionModels.map((route) => ({
+      providerId: route.provider.id,
+      modelId: route.model.id,
+      maxConcurrency: route.maxConcurrency,
+    })),
     embeddingProviderId: embedding?.provider.id ?? current?.embeddingProviderId ?? '',
     embeddingModelId: embedding?.model.id ?? current?.embeddingModelId ?? '',
     rerankProviderId: rerank?.provider.id ?? current?.rerankProviderId ?? '',
     rerankModelId: rerank?.model.id ?? current?.rerankModelId ?? '',
+    extractionConcurrency: normalizeExtractionConcurrency(current?.extractionConcurrency),
     neo4jEnabled: neo4j?.enabled ?? false,
     neo4jUri: neo4j?.uri ?? current?.neo4jUri ?? '',
     neo4jUsername: neo4j?.username ?? current?.neo4jUsername ?? '',
@@ -1950,4 +2138,86 @@ function serializeBuildLog(log: StoredKnowledgeGraphBuildLogRow): LibraryKnowled
     message: log.message,
     createdAt: log.createdAt,
   };
+}
+
+function normalizeExtractionConcurrency(value: number | null | undefined): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_EXTRACTION_CONCURRENCY;
+  }
+
+  return Math.max(
+    MIN_EXTRACTION_CONCURRENCY,
+    Math.min(MAX_EXTRACTION_CONCURRENCY, Math.trunc(value ?? DEFAULT_EXTRACTION_CONCURRENCY)),
+  );
+}
+
+function normalizeExtractionModelConcurrency(value: number | null | undefined): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_EXTRACTION_MODEL_CONCURRENCY;
+  }
+
+  return Math.max(
+    MIN_EXTRACTION_MODEL_CONCURRENCY,
+    Math.min(MAX_EXTRACTION_MODEL_CONCURRENCY, Math.trunc(value ?? DEFAULT_EXTRACTION_MODEL_CONCURRENCY)),
+  );
+}
+
+function normalizeExtractionModelPool(
+  value: Array<{ providerId?: string; modelId?: string; maxConcurrency?: number }> | null | undefined,
+): Array<{ providerId: string; modelId: string; maxConcurrency: number }> {
+  const uniqueModels = new Map<string, { providerId: string; modelId: string; maxConcurrency: number }>();
+
+  for (const entry of value ?? []) {
+    const providerId = entry.providerId?.trim();
+    const modelId = entry.modelId?.trim();
+    if (!providerId || !modelId) {
+      continue;
+    }
+
+    uniqueModels.set(`${providerId}::${modelId}`, {
+      providerId,
+      modelId,
+      maxConcurrency: normalizeExtractionModelConcurrency(entry.maxConcurrency),
+    });
+  }
+
+  return [...uniqueModels.values()];
+}
+
+function isExtractionModelPoolEqual(
+  left: Array<{ providerId: string; modelId: string; maxConcurrency: number }>,
+  right: Array<{ providerId: string; modelId: string; maxConcurrency: number }>,
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((entry, index) => (
+    entry.providerId === right[index]?.providerId
+    && entry.modelId === right[index]?.modelId
+    && entry.maxConcurrency === right[index]?.maxConcurrency
+  ));
+}
+
+function resolveExtractionRoutes(
+  state: LlmPreferencesState,
+  profile: StoredKnowledgeGraphProfileRow | null,
+): Array<ResolvedCapabilityRoute & { maxConcurrency: number }> {
+  const configured = normalizeExtractionModelPool(profile?.extractionModels).flatMap((entry) => {
+    const resolved = resolveCapabilityRoute(state, 'chat', routeFromProfile(entry.providerId, entry.modelId));
+    return resolved ? [{ ...resolved, maxConcurrency: normalizeExtractionModelConcurrency(entry.maxConcurrency) }] : [];
+  });
+
+  if (configured.length > 0) {
+    return configured;
+  }
+
+  const fallback = resolveCapabilityRoute(
+    state,
+    'chat',
+    profile ? routeFromProfile(profile.chatProviderId, profile.chatModelId) : null,
+  );
+  return fallback
+    ? [{ ...fallback, maxConcurrency: normalizeExtractionConcurrency(profile?.extractionConcurrency) }]
+    : [];
 }

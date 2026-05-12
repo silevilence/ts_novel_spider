@@ -80,8 +80,10 @@ export interface UpdateNeo4jInput {
 
 export interface UpdateKnowledgeGraphProfileInput {
   chatModel?: { providerId?: string; modelId?: string } | null;
+  extractionModels?: Array<{ providerId?: string; modelId?: string; maxConcurrency?: number }> | null;
   embeddingModel?: { providerId?: string; modelId?: string } | null;
   rerankModel?: { providerId?: string; modelId?: string } | null;
+  extractionConcurrency?: number;
   neo4j?: {
     enabled?: boolean;
     uri?: string;
@@ -333,6 +335,30 @@ export async function buildLibraryKnowledgeGraph(
 ): Promise<LibraryKnowledgeGraphBuildPayload> {
   return requestJson<LibraryKnowledgeGraphBuildPayload>(
     `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph/build`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+export async function pauseLibraryKnowledgeGraph(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryKnowledgeGraphBuildPayload> {
+  return requestJson<LibraryKnowledgeGraphBuildPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph/pause`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+export async function resumeLibraryKnowledgeGraph(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryKnowledgeGraphBuildPayload> {
+  return requestJson<LibraryKnowledgeGraphBuildPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph/resume`,
     {
       method: 'POST',
     },

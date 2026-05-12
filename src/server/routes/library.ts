@@ -91,8 +91,10 @@ export interface LibraryRouterOptions {
 
 interface UpdateKnowledgeGraphProfileRequestBody {
   chatModel?: unknown;
+  extractionModels?: unknown;
   embeddingModel?: unknown;
   rerankModel?: unknown;
+  extractionConcurrency?: unknown;
   neo4j?: unknown;
 }
 
@@ -201,6 +203,54 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     };
 
     response.status(202).json(payload);
+  });
+
+  router.post('/novels/:sourceId/:novelId/graph/pause', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const build = service.pauseLibraryKnowledgeGraph(sourceId, novelId);
+
+      if (!build) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      const payload: LibraryKnowledgeGraphBuildPayload = {
+        build,
+      };
+
+      response.status(202).json(payload);
+    } catch (error) {
+      response.status(409).json({
+        message: error instanceof Error ? error.message : 'Knowledge graph pause failed.',
+      });
+    }
+  });
+
+  router.post('/novels/:sourceId/:novelId/graph/resume', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const build = service.resumeLibraryKnowledgeGraph(sourceId, novelId);
+
+      if (!build) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      const payload: LibraryKnowledgeGraphBuildPayload = {
+        build,
+      };
+
+      response.status(202).json(payload);
+    } catch (error) {
+      response.status(409).json({
+        message: error instanceof Error ? error.message : 'Knowledge graph resume failed.',
+      });
+    }
   });
 
   router.delete('/novels/:sourceId/:novelId/graph', async (request, response) => {
@@ -525,10 +575,41 @@ function readOptionalStringField(body: unknown, field: string): string {
 function parseKnowledgeGraphProfileBody(body: UpdateKnowledgeGraphProfileRequestBody): LibraryKnowledgeGraphProfileInput {
   return {
     ...(body.chatModel !== undefined ? { chatModel: parseModelRoute(body.chatModel, 'chatModel') } : {}),
+    ...(body.extractionModels !== undefined ? { extractionModels: parseExtractionModels(body.extractionModels) } : {}),
     ...(body.embeddingModel !== undefined ? { embeddingModel: parseModelRoute(body.embeddingModel, 'embeddingModel') } : {}),
     ...(body.rerankModel !== undefined ? { rerankModel: parseModelRoute(body.rerankModel, 'rerankModel') } : {}),
+    ...(body.extractionConcurrency !== undefined ? { extractionConcurrency: parseExtractionConcurrency(body.extractionConcurrency) } : {}),
     ...(body.neo4j !== undefined ? { neo4j: parseNeo4jRoute(body.neo4j) } : {}),
   };
+}
+
+function parseExtractionModels(value: unknown): Array<{ providerId?: string; modelId?: string; maxConcurrency?: number }> {
+  if (!Array.isArray(value)) {
+    throw new Error('extractionModels must be an array.');
+  }
+
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`extractionModels[${index}] must be an object.`);
+    }
+
+    const record = entry as Record<string, unknown>;
+    return {
+      ...(typeof record.providerId === 'string' ? { providerId: record.providerId.trim() } : {}),
+      ...(typeof record.modelId === 'string' ? { modelId: record.modelId.trim() } : {}),
+      ...(typeof record.maxConcurrency === 'number' && Number.isFinite(record.maxConcurrency)
+        ? { maxConcurrency: Math.trunc(record.maxConcurrency) }
+        : {}),
+    };
+  });
+}
+
+function parseExtractionConcurrency(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('extractionConcurrency must be a finite number.');
+  }
+
+  return Math.trunc(value);
 }
 
 function parseModelRoute(

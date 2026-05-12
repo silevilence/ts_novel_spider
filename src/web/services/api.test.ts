@@ -13,6 +13,8 @@ import {
   discoverLlmProviderModels,
   fetchLibraryKnowledgeGraph,
   fetchLibraryNovels,
+  pauseLibraryKnowledgeGraph,
+  resumeLibraryKnowledgeGraph,
   updateLibraryKnowledgeGraphProfile,
   updateLibraryReadingProgress,
   updateNeo4jPreferences,
@@ -87,7 +89,7 @@ test('knowledge graph APIs target the expected endpoints', async () => {
         });
       }
 
-      if (String(input).endsWith('/graph/build')) {
+      if (String(input).endsWith('/graph/build') || String(input).endsWith('/graph/pause') || String(input).endsWith('/graph/resume')) {
         return new Response(JSON.stringify({
           build: {
             status: 'queued',
@@ -101,6 +103,7 @@ test('knowledge graph APIs target the expected endpoints', async () => {
             syncedToNeo4jAt: null,
             entityCount: 0,
             relationCount: 0,
+            modelStats: [],
             updatedAt: null,
           },
         }), {
@@ -140,6 +143,7 @@ test('knowledge graph APIs target the expected endpoints', async () => {
               syncedToNeo4jAt: null,
               entityCount: 0,
               relationCount: 0,
+              modelStats: [],
               updatedAt: null,
             },
             buildLogs: [],
@@ -207,6 +211,7 @@ test('knowledge graph APIs target the expected endpoints', async () => {
             syncedToNeo4jAt: null,
             entityCount: 0,
             relationCount: 0,
+            modelStats: [],
             updatedAt: null,
           },
           buildLogs: [],
@@ -228,6 +233,8 @@ test('knowledge graph APIs target the expected endpoints', async () => {
       },
     });
     await buildLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
+    await pauseLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
+    await resumeLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
     await deleteLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
     await askLibraryAssistant('syosetu 18', 'n1000/lib', '现在发生了什么？', 'chapter/1');
 
@@ -242,11 +249,15 @@ test('knowledge graph APIs target the expected endpoints', async () => {
     });
     assert.equal(calls[2]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/build');
     assert.equal(calls[2]?.init?.method, 'POST');
-    assert.equal(calls[3]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph');
-    assert.equal(calls[3]?.init?.method, 'DELETE');
-    assert.equal(calls[4]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/assistant/chat');
+    assert.equal(calls[3]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/pause');
+    assert.equal(calls[3]?.init?.method, 'POST');
+    assert.equal(calls[4]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/resume');
     assert.equal(calls[4]?.init?.method, 'POST');
-    assert.deepEqual(JSON.parse(String(calls[4]?.init?.body)), {
+    assert.equal(calls[5]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph');
+    assert.equal(calls[5]?.init?.method, 'DELETE');
+    assert.equal(calls[6]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/assistant/chat');
+    assert.equal(calls[6]?.init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(calls[6]?.init?.body)), {
       message: '现在发生了什么？',
       chapterId: 'chapter/1',
     });

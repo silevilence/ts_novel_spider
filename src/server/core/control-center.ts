@@ -454,6 +454,14 @@ export class ControlCenterService {
     return this.#libraryIntelligence.startNovelKnowledgeGraphBuild(sourceId, novelId);
   }
 
+  pauseLibraryKnowledgeGraph(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {
+    return this.#libraryIntelligence.pauseNovelKnowledgeGraphBuild(sourceId, novelId);
+  }
+
+  resumeLibraryKnowledgeGraph(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {
+    return this.#libraryIntelligence.resumeNovelKnowledgeGraphBuild(sourceId, novelId);
+  }
+
   clearLibraryKnowledgeGraph(sourceId: string, novelId: string): Promise<LibraryKnowledgeGraphState | null> {
     return this.#libraryIntelligence.clearNovelKnowledgeGraph(sourceId, novelId);
   }

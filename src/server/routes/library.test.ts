@@ -226,6 +226,30 @@ test('library routes recover stale running graph builds when no active task exis
     syncedToNeo4jAt: null,
     entityCount: 0,
     relationCount: 0,
+    modelStats: [{
+      providerId: 'fake-openai',
+      modelId: 'fake-chat-a',
+      source: 'novel',
+      maxConcurrency: 2,
+      attemptCount: 10,
+      llmSuccessCount: 8,
+      failureCount: 2,
+      fallbackCount: 0,
+      handoffInCount: 1,
+      handoffOutCount: 1,
+      inFlightCount: 2,
+      consecutiveFailures: 1,
+      circuitState: 'open',
+      circuitOpenedCount: 1,
+      cooldownUntil: '2026-05-11T06:55:17.734Z',
+      firstAttemptAt: '2026-05-11T06:54:17.734Z',
+      lastError: 'Temporary upstream overload',
+      lastStartedAt: '2026-05-11T06:54:57.734Z',
+      lastCompletedAt: '2026-05-11T06:55:01.734Z',
+      recentSuccessAt: ['2026-05-11T06:54:45.734Z', '2026-05-11T06:55:01.734Z'],
+      failureRate: 0.2,
+      throughputPerMinute: 120,
+    }],
   });
 
   const server = app.listen(0, '127.0.0.1');
@@ -244,7 +268,13 @@ test('library routes recover stale running graph builds when no active task exis
     const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
     const graphPayload = (await graphResponse.json()) as {
       knowledgeGraph: {
-        build: { status: string; stage: string; message: string; errorMessage: string | null };
+        build: {
+          status: string;
+          stage: string;
+          message: string;
+          errorMessage: string | null;
+          modelStats: Array<{ inFlightCount: number; throughputPerMinute: number; circuitState: string }>;
+        };
         buildLogs: Array<{ level: string; message: string }>;
       };
     };
@@ -254,6 +284,9 @@ test('library routes recover stale running graph builds when no active task exis
     assert.equal(graphPayload.knowledgeGraph.build.stage, 'failed');
     assert.match(graphPayload.knowledgeGraph.build.message, /已中断|恢复/);
     assert.match(graphPayload.knowledgeGraph.build.errorMessage ?? '', /服务重启|异常退出|当前服务进程/);
+    assert.equal(graphPayload.knowledgeGraph.build.modelStats[0]?.inFlightCount, 0);
+    assert.equal(graphPayload.knowledgeGraph.build.modelStats[0]?.throughputPerMinute, 0);
+    assert.equal(graphPayload.knowledgeGraph.build.modelStats[0]?.circuitState, 'closed');
     assert.ok(graphPayload.knowledgeGraph.buildLogs.some((entry) => /自动恢复为失败状态/.test(entry.message)));
   } finally {
     await new Promise<void>((resolve, reject) => {
@@ -287,6 +320,7 @@ test('library routes resume interrupted graph builds when checkpoints exist', as
         syncedToNeo4jAt: null,
         entityCount: 0,
         relationCount: 0,
+        modelStats: [],
       });
       repository.saveKnowledgeGraphBuildCheckpoint({
         sourceId: 'syosetu',
@@ -352,7 +386,7 @@ test('library routes resume interrupted graph builds when checkpoints exist', as
       };
     } | null = null;
 
-    for (let attempt = 0; attempt < 80; attempt += 1) {
+    for (let attempt = 0; attempt < 160; attempt += 1) {
       const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
       graphPayload = (await graphResponse.json()) as typeof graphPayload;
 
@@ -383,31 +417,269 @@ test('library routes resume interrupted graph builds when checkpoints exist', as
   }
 });
 
+test('library routes pause a running graph build and resume with the latest saved config', async () => {
+  const fakeProvider = await createFakeOpenAiProviderServer({
+    extractionDelayMs: 180,
+  });
+  const preferences = new SystemPreferencesService();
+  preferences.updateLlmProviders([
+    {
+      id: 'fake-openai',
+      label: 'Fake OpenAI',
+      type: 'openai-compatible',
+      enabled: true,
+      baseUrl: fakeProvider.baseUrl,
+      apiKey: 'test-key',
+      models: [
+        {
+          id: 'fake-chat-a',
+          label: 'Fake Chat A',
+          modelId: 'fake-chat-a',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: ['chat'],
+        },
+        {
+          id: 'fake-chat-b',
+          label: 'Fake Chat B',
+          modelId: 'fake-chat-b',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: [],
+        },
+      ],
+    },
+  ]);
+
+  const { app, repository, cleanup } = createLibraryServer({
+    systemPreferences: preferences,
+    beforeControlCenter: (repo) => {
+      repo.saveChapterContent('syosetu', 'n1000lib', {
+        chapterId: 'chapter-3',
+        index: 3,
+        title: '第三章',
+        volumeTitle: '第二卷',
+        url: 'https://example.com/n1000lib/3',
+        content: '艾琳和莱昂继续追查黑塔，在塔下找到新的星图线索。',
+      });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const initialProfileResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/profile`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        extractionConcurrency: 1,
+        extractionModels: [
+          {
+            providerId: 'fake-openai',
+            modelId: 'fake-chat-a',
+            maxConcurrency: 1,
+          },
+        ],
+      }),
+    });
+    assert.equal(initialProfileResponse.status, 200);
+
+    const buildResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/build`, {
+      method: 'POST',
+    });
+    assert.equal(buildResponse.status, 202);
+
+    let graphPayload: {
+      knowledgeGraph: {
+        profile: {
+          extractionConcurrency: number;
+          extractionModels: Array<{ modelId: string; maxConcurrency: number }>;
+        };
+        build: {
+          status: string;
+          progressPercent: number;
+        };
+        buildLogs: Array<{ message: string }>;
+      };
+    } | null = null;
+
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
+      graphPayload = (await graphResponse.json()) as typeof graphPayload;
+
+      if (graphPayload?.knowledgeGraph.build.status === 'running') {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.equal(graphPayload?.knowledgeGraph.build.status, 'running');
+
+    const pauseResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/pause`, {
+      method: 'POST',
+    });
+    assert.equal(pauseResponse.status, 202);
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
+      graphPayload = (await graphResponse.json()) as typeof graphPayload;
+
+      if (graphPayload?.knowledgeGraph.build.status === 'paused') {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    const pausedCheckpointCount = repository.listKnowledgeGraphBuildCheckpoints('syosetu', 'n1000lib').length;
+    assert.equal(graphPayload?.knowledgeGraph.build.status, 'paused');
+    assert.ok(pausedCheckpointCount >= 1);
+    assert.ok(pausedCheckpointCount < 3);
+
+    const updatedProfileResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/profile`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        extractionConcurrency: 2,
+        extractionModels: [
+          {
+            providerId: 'fake-openai',
+            modelId: 'fake-chat-a',
+            maxConcurrency: 1,
+          },
+          {
+            providerId: 'fake-openai',
+            modelId: 'fake-chat-b',
+            maxConcurrency: 1,
+          },
+        ],
+      }),
+    });
+    assert.equal(updatedProfileResponse.status, 200);
+
+    const resumeResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/resume`, {
+      method: 'POST',
+    });
+    assert.equal(resumeResponse.status, 202);
+
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
+      graphPayload = (await graphResponse.json()) as typeof graphPayload;
+
+      if (graphPayload?.knowledgeGraph.build.status === 'completed') {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.ok(graphPayload);
+    assert.equal(graphPayload?.knowledgeGraph.build.status, 'completed');
+    assert.equal(graphPayload?.knowledgeGraph.profile.extractionConcurrency, 2);
+    assert.deepEqual(
+      graphPayload?.knowledgeGraph.profile.extractionModels.map((entry) => [entry.modelId, entry.maxConcurrency]),
+      [['fake-chat-a', 1], ['fake-chat-b', 1]],
+    );
+    assert.ok(graphPayload?.knowledgeGraph.buildLogs.some((entry) => /图谱构建已暂停/.test(entry.message)));
+    assert.ok(graphPayload?.knowledgeGraph.buildLogs.some((entry) => /继续图谱构建/.test(entry.message)));
+    assert.deepEqual(fakeProvider.getSeenExtractionModels().sort(), ['fake-chat-a', 'fake-chat-b']);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+    await fakeProvider.close();
+  }
+});
+
 async function createFakeOpenAiProviderServer(): Promise<{
   baseUrl: string;
   close: () => Promise<void>;
+  getSeenExtractionModels: () => string[];
+  getExtractionChaptersByModel: () => Record<string, string[]>;
 }>;
 async function createFakeOpenAiProviderServer(options: {
   rejectJsonSchema?: boolean;
   failExtractionAttempts?: number;
+  failExtractionAttemptsByModel?: Record<string, number>;
+  extractionDelayMs?: number;
   malformedPromptedJson?: boolean;
   loosePromptedJsonTypes?: boolean;
 } = {}): Promise<{
   baseUrl: string;
   close: () => Promise<void>;
+  getSeenExtractionModels: () => string[];
+  getExtractionRequestCounts: () => Record<string, number>;
+  getExtractionChaptersByModel: () => Record<string, string[]>;
 }> {
   let remainingExtractionFailures = options.failExtractionAttempts ?? 0;
+  const remainingExtractionFailuresByModel = new Map(Object.entries(options.failExtractionAttemptsByModel ?? {}));
+  const seenExtractionModels = new Set<string>();
+  const extractionRequestCounts = new Map<string, number>();
+  const extractionChaptersByModel = new Map<string, Set<string>>();
   const server = http.createServer(async (request, response) => {
     const payload = request.method === 'POST' ? await readJsonBody(request) : null;
     const bodyText = extractTextPayload(payload);
 
     if (request.url === '/v1/chat/completions') {
+      const requestedModel = typeof (payload as { model?: unknown })?.model === 'string'
+        ? (payload as { model: string }).model
+        : '';
+      if (bodyText.includes('你是小说知识图谱抽取器') && requestedModel) {
+        seenExtractionModels.add(requestedModel);
+        extractionRequestCounts.set(requestedModel, (extractionRequestCounts.get(requestedModel) ?? 0) + 1);
+        const chapterMatch = bodyText.match(/章节：([^\n\r]+)/);
+        const chapterTitle = chapterMatch?.[1]?.trim();
+        if (chapterTitle) {
+          const chapters = extractionChaptersByModel.get(requestedModel) ?? new Set<string>();
+          chapters.add(chapterTitle);
+          extractionChaptersByModel.set(requestedModel, chapters);
+        }
+      }
+
       if (remainingExtractionFailures > 0 && bodyText.includes('你是小说知识图谱抽取器')) {
         remainingExtractionFailures -= 1;
         response.writeHead(503, { 'content-type': 'application/json' });
         response.end(JSON.stringify({
           error: {
             message: 'Temporary upstream overload',
+            type: 'server_error',
+            code: 'server_error',
+          },
+        }));
+        return;
+      }
+
+      const remainingModelFailures = requestedModel ? remainingExtractionFailuresByModel.get(requestedModel) ?? 0 : 0;
+      if (remainingModelFailures > 0 && bodyText.includes('你是小说知识图谱抽取器')) {
+        remainingExtractionFailuresByModel.set(requestedModel, remainingModelFailures - 1);
+        response.writeHead(503, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          error: {
+            message: `Temporary upstream overload for ${requestedModel}`,
             type: 'server_error',
             code: 'server_error',
           },
@@ -437,6 +709,9 @@ async function createFakeOpenAiProviderServer(options: {
             looseTypes: Boolean(options.loosePromptedJsonTypes && bodyText.includes('请只输出一个 JSON 对象')),
           })
         : '根据图谱与正文片段，艾琳后来成了莱昂在调查黑塔时的搭档，并与他保持协作关系。';
+      if (options.extractionDelayMs && bodyText.includes('你是小说知识图谱抽取器')) {
+        await new Promise((resolve) => setTimeout(resolve, options.extractionDelayMs));
+      }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({
         id: 'chatcmpl-fake',
@@ -513,6 +788,11 @@ async function createFakeOpenAiProviderServer(options: {
 
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    getSeenExtractionModels: () => [...seenExtractionModels],
+    getExtractionRequestCounts: () => Object.fromEntries(extractionRequestCounts),
+    getExtractionChaptersByModel: () => Object.fromEntries(
+      [...extractionChaptersByModel.entries()].map(([modelId, chapters]) => [modelId, [...chapters].sort()]),
+    ),
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -939,7 +1219,7 @@ test('library routes repair prompted JSON leaf type mismatches before local fall
       };
     } | null = null;
 
-    for (let attempt = 0; attempt < 80; attempt += 1) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
       graphPayload = (await graphResponse.json()) as typeof graphPayload;
 
@@ -957,6 +1237,272 @@ test('library routes repair prompted JSON leaf type mismatches before local fall
     assert.ok(graphPayload?.knowledgeGraph.entities.some((entity) => entity.name === '艾琳' && entity.aliases.includes('女伴')));
     assert.ok(graphPayload?.knowledgeGraph.entities.some((entity) => entity.name === '莱昂' && entity.aliases.includes('男主')));
     assert.ok(graphPayload?.knowledgeGraph.buildLogs.some((entry) => /回退 0 个/.test(entry.message)));
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+    await fakeProvider.close();
+  }
+});
+
+test('library routes distribute extraction work across the configured model pool', async () => {
+  const fakeProvider = await createFakeOpenAiProviderServer();
+  const preferences = new SystemPreferencesService();
+  preferences.updateLlmProviders([
+    {
+      id: 'fake-openai',
+      label: 'Fake OpenAI',
+      type: 'openai-compatible',
+      enabled: true,
+      baseUrl: fakeProvider.baseUrl,
+      apiKey: 'test-key',
+      models: [
+        {
+          id: 'fake-chat-a',
+          label: 'Fake Chat A',
+          modelId: 'fake-chat-a',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: ['chat'],
+        },
+        {
+          id: 'fake-chat-b',
+          label: 'Fake Chat B',
+          modelId: 'fake-chat-b',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: [],
+        },
+      ],
+    },
+  ]);
+
+  const { app, cleanup } = createLibraryServer({ systemPreferences: preferences });
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const profileResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/profile`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        extractionConcurrency: 2,
+        extractionModels: [
+          {
+            providerId: 'fake-openai',
+            modelId: 'fake-chat-a',
+            maxConcurrency: 1,
+          },
+          {
+            providerId: 'fake-openai',
+            modelId: 'fake-chat-b',
+            maxConcurrency: 1,
+          },
+        ],
+      }),
+    });
+
+    assert.equal(profileResponse.status, 200);
+
+    const buildResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/build`, {
+      method: 'POST',
+    });
+    assert.equal(buildResponse.status, 202);
+
+    let graphPayload: {
+      knowledgeGraph: {
+        build: { status: string };
+        profile: { extractionModels: Array<{ modelId: string; maxConcurrency: number }> };
+      };
+    } | null = null;
+
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
+      graphPayload = (await graphResponse.json()) as typeof graphPayload;
+
+      if (graphPayload?.knowledgeGraph.build.status === 'completed') {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.ok(graphPayload);
+    assert.equal(graphPayload?.knowledgeGraph.build.status, 'completed');
+    assert.deepEqual(
+      graphPayload?.knowledgeGraph.profile.extractionModels.map((entry) => [entry.modelId, entry.maxConcurrency]),
+      [['fake-chat-a', 1], ['fake-chat-b', 1]],
+    );
+    assert.deepEqual(fakeProvider.getSeenExtractionModels().sort(), ['fake-chat-a', 'fake-chat-b']);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+    await fakeProvider.close();
+  }
+});
+
+test('library routes requeue failed chunks onto another extraction model before local fallback', async () => {
+  const fakeProvider = await createFakeOpenAiProviderServer({
+    failExtractionAttemptsByModel: {
+      'fake-chat-a': 5,
+    },
+  });
+  const preferences = new SystemPreferencesService();
+  preferences.updateLlmProviders([
+    {
+      id: 'fake-openai',
+      label: 'Fake OpenAI',
+      type: 'openai-compatible',
+      enabled: true,
+      baseUrl: fakeProvider.baseUrl,
+      apiKey: 'test-key',
+      models: [
+        {
+          id: 'fake-chat-a',
+          label: 'Fake Chat A',
+          modelId: 'fake-chat-a',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: ['chat'],
+        },
+        {
+          id: 'fake-chat-b',
+          label: 'Fake Chat B',
+          modelId: 'fake-chat-b',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: [],
+        },
+      ],
+    },
+  ]);
+
+  const { app, cleanup } = createLibraryServer({ systemPreferences: preferences });
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const profileResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/profile`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        extractionConcurrency: 2,
+        extractionModels: [
+          {
+            providerId: 'fake-openai',
+            modelId: 'fake-chat-a',
+            maxConcurrency: 1,
+          },
+          {
+            providerId: 'fake-openai',
+            modelId: 'fake-chat-b',
+            maxConcurrency: 1,
+          },
+        ],
+      }),
+    });
+
+    assert.equal(profileResponse.status, 200);
+
+    const buildResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/build`, {
+      method: 'POST',
+    });
+    assert.equal(buildResponse.status, 202);
+
+    let graphPayload: {
+      knowledgeGraph: {
+        build: {
+          status: string;
+          modelStats: Array<{
+            modelId: string;
+            attemptCount: number;
+            failureCount: number;
+            handoffInCount: number;
+            handoffOutCount: number;
+            circuitOpenedCount: number;
+            cooldownUntil: string | null;
+            throughputPerMinute: number;
+          }>;
+        };
+        buildLogs: Array<{ message: string }>;
+      };
+    } | null = null;
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const graphResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
+      graphPayload = (await graphResponse.json()) as typeof graphPayload;
+
+      if (graphPayload?.knowledgeGraph.build.status === 'completed') {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.ok(graphPayload);
+    assert.equal(graphPayload?.knowledgeGraph.build.status, 'completed');
+    assert.ok(graphPayload?.knowledgeGraph.buildLogs.some((entry) => /回退 0 个/.test(entry.message)));
+    assert.deepEqual(fakeProvider.getSeenExtractionModels().sort(), ['fake-chat-a', 'fake-chat-b']);
+
+    const requestCounts = fakeProvider.getExtractionRequestCounts();
+    assert.ok((requestCounts['fake-chat-a'] ?? 0) >= 1);
+    assert.ok((requestCounts['fake-chat-b'] ?? 0) >= 1);
+
+    const chaptersByModel = fakeProvider.getExtractionChaptersByModel();
+    assert.deepEqual(chaptersByModel['fake-chat-b'], ['第一章', '第二章']);
+
+    const modelStats = new Map(graphPayload.knowledgeGraph.build.modelStats.map((entry) => [entry.modelId, entry]));
+    assert.equal(modelStats.get('fake-chat-a')?.attemptCount, 1);
+    assert.ok((modelStats.get('fake-chat-a')?.failureCount ?? 0) >= 1);
+    assert.ok((modelStats.get('fake-chat-a')?.handoffOutCount ?? 0) >= 1);
+    assert.ok((modelStats.get('fake-chat-a')?.circuitOpenedCount ?? 0) >= 1);
+    assert.ok(Boolean(modelStats.get('fake-chat-a')?.cooldownUntil));
+    assert.ok((modelStats.get('fake-chat-b')?.handoffInCount ?? 0) >= 1);
+    assert.ok((modelStats.get('fake-chat-b')?.attemptCount ?? 0) >= 2);
+    assert.ok((modelStats.get('fake-chat-b')?.throughputPerMinute ?? 0) > 0);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
@@ -1110,18 +1656,20 @@ test('library routes build a knowledge graph, lock config and answer assistant c
         'content-type': 'application/json',
       },
       body: JSON.stringify({
+        extractionConcurrency: 4,
         neo4j: {
           enabled: false,
         },
       }),
     });
     const profilePayload = (await profileResponse.json()) as {
-      profile: { configLocked: boolean; neo4j: { enabled: boolean } };
+      profile: { configLocked: boolean; neo4j: { enabled: boolean }; extractionConcurrency: number };
     };
 
     assert.equal(profileResponse.status, 200);
     assert.equal(profilePayload.profile.configLocked, false);
     assert.equal(profilePayload.profile.neo4j.enabled, false);
+    assert.equal(profilePayload.profile.extractionConcurrency, 4);
 
     const buildResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/build`, {
       method: 'POST',
@@ -1136,7 +1684,7 @@ test('library routes build a knowledge graph, lock config and answer assistant c
     let graphPayload: {
       knowledgeGraph: {
         build: { status: string; entityCount: number; relationCount: number };
-        profile: { configLocked: boolean };
+        profile: { configLocked: boolean; extractionConcurrency: number };
         entities: Array<{ name: string }>;
         relations: Array<{ summary: string }>;
       };
@@ -1160,6 +1708,7 @@ test('library routes build a knowledge graph, lock config and answer assistant c
     assert.ok(graphPayload?.knowledgeGraph.entities.some((entity) => entity.name === '艾琳'));
     assert.ok(graphPayload?.knowledgeGraph.relations[0]?.summary.length);
     assert.equal(graphPayload?.knowledgeGraph.profile.configLocked, true);
+    assert.equal(graphPayload?.knowledgeGraph.profile.extractionConcurrency, 4);
 
     const lockedResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/profile`, {
       method: 'PUT',
