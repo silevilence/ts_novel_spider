@@ -10,12 +10,16 @@ import neo4j from 'neo4j-driver';
 import {
   buildKnowledgeGraphArtifacts,
   collectAssistantSources as collectAssistantSourcesForRag,
+  countKnowledgeGraphChunkPlans,
+  countReusableKnowledgeGraphCheckpoints,
   type AssistantGraphTraceHit,
   type AssistantRetrievalTrace,
+  type KnowledgeGraphBuildExecutionMode,
   createKnowledgeGraphBuildModelStats,
   KnowledgeGraphBuildPausedError,
   type KnowledgeGraphBuildModelStat,
   type KnowledgeGraphBuildProgressEvent,
+  type KnowledgeGraphBuildStageEvent,
   type ResolvedCapabilityRoute,
 } from './library-intelligence-rag';
 
@@ -43,6 +47,7 @@ export type KnowledgeGraphBuildStatus = 'idle' | 'queued' | 'running' | 'paused'
 export type KnowledgeGraphBuildStage = 'idle' | 'extracting' | 'relating' | 'syncing' | 'completed' | 'failed';
 export type KnowledgeGraphEntityType = 'character' | 'location' | 'organization' | 'concept' | 'author';
 export type KnowledgeGraphRelationType = 'co_occurs' | 'alliance' | 'conflict' | 'family';
+export type KnowledgeGraphBuildMode = KnowledgeGraphBuildExecutionMode;
 
 export interface KnowledgeGraphModelRoute {
   providerId: string;
@@ -225,8 +230,8 @@ const STOP_TOKENS = new Set([
   '那个',
 ]);
 const TOKEN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z][\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z0-9]{1,11}/gu;
-const MAX_GRAPH_ENTITIES = 18;
-const MAX_GRAPH_RELATIONS = 24;
+const MAX_GRAPH_ENTITIES = 128;
+const MAX_GRAPH_RELATIONS = 384;
 const MAX_ASSISTANT_SOURCES = 6;
 const DEFAULT_EXTRACTION_CONCURRENCY = 2;
 const MIN_EXTRACTION_CONCURRENCY = 1;
@@ -291,12 +296,17 @@ export class LibraryIntelligenceService {
     return this.serializeProfile(stored);
   }
 
-  startNovelKnowledgeGraphBuild(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {
+  startNovelKnowledgeGraphBuild(
+    sourceId: string,
+    novelId: string,
+    options: { mode?: KnowledgeGraphBuildMode } = {},
+  ): LibraryKnowledgeGraphBuild | null {
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
     if (!snapshot) {
       return null;
     }
 
+    const buildMode = normalizeBuildMode(options.mode);
     const buildKey = createNovelKey(sourceId, novelId);
     const currentBuild = this.reconcileDetachedBuildState(sourceId, novelId);
     if (this.#activeBuilds.has(buildKey) || currentBuild?.status === 'queued' || currentBuild?.status === 'running') {
@@ -308,7 +318,9 @@ export class LibraryIntelligenceService {
     const extractionModels = resolveExtractionRoutes(llmState, storedProfile);
 
     this.#repository.clearKnowledgeGraphBuildLogs(sourceId, novelId);
-    this.#repository.clearKnowledgeGraphBuildCheckpoints(sourceId, novelId);
+    if (buildMode === 'full') {
+      this.#repository.clearKnowledgeGraphBuildCheckpoints(sourceId, novelId);
+    }
 
     const queued = this.#repository.saveKnowledgeGraphBuild({
       sourceId,
@@ -316,7 +328,11 @@ export class LibraryIntelligenceService {
       status: 'queued',
       stage: 'idle',
       progressPercent: 0,
-      message: '已进入队列，准备分析章节内容。',
+      message: buildMode === 'rebuild'
+        ? '已进入队列，准备基于已缓存结构重新归并实体和关系。'
+        : buildMode === 'full'
+          ? '已进入队列，准备全量重建图谱。'
+          : '已进入队列，准备增量更新图谱。',
       errorMessage: null,
       startedAt: null,
       completedAt: null,
@@ -327,7 +343,7 @@ export class LibraryIntelligenceService {
       modelStats: createKnowledgeGraphBuildModelStats(extractionModels),
     });
 
-    this.startBackgroundBuild(snapshot, { mode: 'fresh' });
+    this.startBackgroundBuild(snapshot, { mode: 'fresh', buildMode });
 
     return this.serializeBuild(queued);
   }
@@ -393,7 +409,7 @@ export class LibraryIntelligenceService {
     });
 
     this.writeBuildLog(sourceId, novelId, 'extracting', 'info', '继续图谱构建：将按当前已保存配置接续剩余片段。');
-    this.startBackgroundBuild(snapshot, { mode: 'resume' });
+    this.startBackgroundBuild(snapshot, { mode: 'resume', buildMode: 'incremental' });
 
     return this.serializeBuild(resumed);
   }
@@ -685,7 +701,7 @@ export class LibraryIntelligenceService {
   }
 
   private async runBuild(snapshot: StoredNovelSnapshot): Promise<void> {
-    return this.runBuildInternal(snapshot, { mode: 'fresh' }, { pauseRequested: false });
+    return this.runBuildInternal(snapshot, { mode: 'fresh', buildMode: 'incremental' }, { pauseRequested: false });
   }
 
   private restoreResumableBuilds(): void {
@@ -700,11 +716,11 @@ export class LibraryIntelligenceService {
         continue;
       }
 
-      this.startBackgroundBuild(snapshot, { mode: 'recover' });
+      this.startBackgroundBuild(snapshot, { mode: 'recover', buildMode: 'incremental' });
     }
   }
 
-  private startBackgroundBuild(snapshot: StoredNovelSnapshot, options: { mode: BackgroundBuildMode }): void {
+  private startBackgroundBuild(snapshot: StoredNovelSnapshot, options: { mode: BackgroundBuildMode; buildMode: KnowledgeGraphBuildMode }): void {
     const buildKey = createNovelKey(snapshot.sourceId, snapshot.metadata.novelId);
     if (this.#activeBuilds.has(buildKey)) {
       return;
@@ -723,7 +739,7 @@ export class LibraryIntelligenceService {
 
   private async runBuildInternal(
     snapshot: StoredNovelSnapshot,
-    options: { mode: BackgroundBuildMode },
+    options: { mode: BackgroundBuildMode; buildMode: KnowledgeGraphBuildMode },
     runtimeState: ActiveKnowledgeGraphBuildState,
   ): Promise<void> {
     const sourceId = snapshot.sourceId;
@@ -740,9 +756,15 @@ export class LibraryIntelligenceService {
       storedProfile ? routeFromProfile(storedProfile.embeddingProviderId, storedProfile.embeddingModelId) : null,
     );
     const checkpoints = this.#repository.listKnowledgeGraphBuildCheckpoints(sourceId, novelId);
+    const totalChunkCount = countKnowledgeGraphChunkPlans(snapshot);
+    const reusableCheckpointCount = options.buildMode === 'full'
+      ? 0
+      : countReusableKnowledgeGraphCheckpoints(snapshot, checkpoints);
+    const hasFullCheckpointCoverage = totalChunkCount > 0 && reusableCheckpointCount >= totalChunkCount;
     const extractionConcurrency = normalizeExtractionConcurrency(storedProfile?.extractionConcurrency);
     const initialModelStats = createKnowledgeGraphBuildModelStats(extractionModels);
     const resumedModelStats = existingBuild?.modelStats.length ? resetVolatileModelStats(existingBuild.modelStats) : initialModelStats;
+    const pendingChunkCount = Math.max(totalChunkCount - reusableCheckpointCount, 0);
 
     const totalDownloadedChapters = snapshot.chapters.filter((chapter) => chapter.status === 'downloaded' && chapter.content).length;
 
@@ -750,19 +772,31 @@ export class LibraryIntelligenceService {
       sourceId,
       novelId,
       status: 'running',
-      stage: 'extracting',
-      progressPercent: 10,
-      message: options.mode === 'recover'
-        ? checkpoints.length > 0
-          ? `正在恢复上次中断的图谱构建，已接续 ${checkpoints.length} 个片段。`
-          : '正在恢复上次中断的图谱构建，并重新接管抽取任务。'
-        : options.mode === 'resume'
-          ? checkpoints.length > 0
-            ? `正在继续上次暂停的图谱构建，已接续 ${checkpoints.length} 个片段，并按最新配置处理剩余内容。`
-            : '正在继续上次暂停的图谱构建，并按最新配置重新接管抽取任务。'
-          : extractionModels.length > 0
-          ? `正在使用 ${extractionModels.length} 个结构化抽取模型解析章节片段，当前全局并发 ${extractionConcurrency}。`
-          : '未配置抽取模型，正在使用本地规则构建基础图谱。',
+      stage: hasFullCheckpointCoverage ? 'relating' : 'extracting',
+      progressPercent: hasFullCheckpointCoverage ? 62 : 10,
+      message: hasFullCheckpointCoverage
+        ? embeddingModel
+          ? `已复用 ${reusableCheckpointCount} 个片段缓存，正在归并关系并写入向量索引。`
+          : `已复用 ${reusableCheckpointCount} 个片段缓存，正在归并关系与证据。`
+        : options.mode === 'recover'
+          ? reusableCheckpointCount > 0
+            ? `正在恢复上次中断的图谱构建，已接续 ${reusableCheckpointCount} 个片段。`
+            : '正在恢复上次中断的图谱构建，并重新接管抽取任务。'
+          : options.mode === 'resume'
+            ? reusableCheckpointCount > 0
+              ? `正在继续上次暂停的图谱构建，已接续 ${reusableCheckpointCount} 个片段，并按最新配置处理剩余内容。`
+              : '正在继续上次暂停的图谱构建，并按最新配置重新接管抽取任务。'
+            : options.buildMode === 'rebuild'
+              ? '正在基于已缓存结构重新归并实体关系，无需重新抽取章节片段。'
+              : options.buildMode === 'full'
+                ? extractionModels.length > 0
+                  ? `正在全量重建图谱：重新解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
+                  : '正在全量重建图谱，当前只使用本地规则。'
+                : reusableCheckpointCount > 0
+                  ? `正在增量更新图谱：复用 ${reusableCheckpointCount} 个片段缓存，仅补处理 ${pendingChunkCount} 个片段。`
+                  : extractionModels.length > 0
+                    ? `正在增量更新图谱：当前没有可复用缓存，将解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
+                    : '正在增量更新图谱，当前只使用本地规则。',
       errorMessage: null,
       startedAt,
       completedAt: null,
@@ -772,14 +806,24 @@ export class LibraryIntelligenceService {
       relationCount: 0,
       modelStats: resumedModelStats,
     });
-    if (options.mode === 'recover') {
+    if (hasFullCheckpointCoverage) {
+      this.writeBuildLog(
+        sourceId,
+        novelId,
+        'relating',
+        options.mode === 'recover' ? 'warn' : 'info',
+        options.mode === 'recover'
+          ? `检测到全部 ${reusableCheckpointCount} 个片段缓存已齐，已直接恢复到关系归并阶段。`
+          : `继续图谱构建：全部 ${reusableCheckpointCount} 个片段已完成抽取，当前直接进入关系归并阶段。`,
+      );
+    } else if (options.mode === 'recover') {
       this.writeBuildLog(
         sourceId,
         novelId,
         'extracting',
         'warn',
-        checkpoints.length > 0
-          ? `检测到服务重启或任务中断，已自动恢复图谱构建，并从 ${checkpoints.length} 个已完成片段继续。`
+        reusableCheckpointCount > 0
+          ? `检测到服务重启或任务中断，已自动恢复图谱构建，并从 ${reusableCheckpointCount} 个已完成片段继续。`
           : '检测到服务重启或任务中断，已自动恢复图谱构建，并从头重新接管抽取任务。',
       );
     } else if (options.mode === 'resume') {
@@ -788,8 +832,8 @@ export class LibraryIntelligenceService {
         novelId,
         'extracting',
         'info',
-        checkpoints.length > 0
-          ? `继续图谱构建：已从 ${checkpoints.length} 个已完成片段接续，并按当前配置处理剩余片段。`
+        reusableCheckpointCount > 0
+          ? `继续图谱构建：已从 ${reusableCheckpointCount} 个已完成片段接续，并按当前配置处理剩余片段。`
           : '继续图谱构建：将按当前配置重新接管剩余抽取任务。',
       );
     } else {
@@ -798,9 +842,17 @@ export class LibraryIntelligenceService {
         novelId,
         'extracting',
         'info',
-        extractionModels.length > 0
-          ? `构建开始：准备解析 ${totalDownloadedChapters} 个已下载章节，优先走结构化抽取，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
-          : `构建开始：准备解析 ${totalDownloadedChapters} 个已下载章节，当前只使用本地规则。`,
+        options.buildMode === 'rebuild'
+          ? `重建开始：已复用 ${reusableCheckpointCount} 个片段缓存，准备重新归并实体关系。`
+          : options.buildMode === 'full'
+            ? extractionModels.length > 0
+              ? `全量重建开始：准备重新解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
+              : `全量重建开始：准备重新解析 ${totalDownloadedChapters} 个已下载章节，当前只使用本地规则。`
+            : reusableCheckpointCount > 0
+              ? `增量更新开始：复用 ${reusableCheckpointCount} 个片段缓存，仅补处理 ${pendingChunkCount} 个片段。`
+              : extractionModels.length > 0
+                ? `增量更新开始：暂无可复用缓存，准备解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
+                : `增量更新开始：暂无可复用缓存，当前只使用本地规则。`,
       );
     }
 
@@ -810,6 +862,7 @@ export class LibraryIntelligenceService {
         extractionModels,
         embeddingModel,
         checkpoints,
+        mode: options.buildMode,
         extractionConcurrency,
         startedAt,
         ...(existingBuild?.modelStats ? { modelStatsSeed: existingBuild.modelStats } : {}),
@@ -829,6 +882,9 @@ export class LibraryIntelligenceService {
         },
         onProgress: async (event) => {
           await this.handleBuildExtractionProgress(sourceId, novelId, startedAt, event);
+        },
+        onStageProgress: async (event) => {
+          await this.handleBuildStageProgress(sourceId, novelId, startedAt, event, resumedModelStats);
         },
       });
 
@@ -858,12 +914,43 @@ export class LibraryIntelligenceService {
         `抽取结束：共处理 ${extracted.diagnostics.totalChunks} 个片段，结构化成功 ${extracted.diagnostics.llmSuccessCount} 个，回退 ${extracted.diagnostics.fallbackCount} 个。`,
       );
 
+      this.saveBuildState({
+        sourceId,
+        novelId,
+        status: 'running',
+        stage: 'relating',
+        progressPercent: 78,
+        message: `关系归并完成，正在写入本地图谱与 ${extracted.chunks.length} 个片段索引。`,
+        errorMessage: null,
+        startedAt,
+        completedAt: null,
+        lastBuiltAt: null,
+        syncedToNeo4jAt: null,
+        entityCount: extracted.entities.length,
+        relationCount: extracted.relations.length,
+        modelStats: extracted.diagnostics.modelStats,
+      });
+      this.writeBuildLog(
+        sourceId,
+        novelId,
+        'relating',
+        'info',
+        `开始写入本地图谱：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系，${extracted.chunks.length} 个片段索引。`,
+      );
+
       this.#repository.replaceKnowledgeGraph(sourceId, novelId, extracted.entities, extracted.relations, extracted.chunks);
-      this.#repository.clearKnowledgeGraphBuildCheckpoints(sourceId, novelId);
-      this.writeBuildLog(sourceId, novelId, 'relating', 'info', `本地图谱已写入：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系，${extracted.chunks.length} 个片段索引。`);
+      this.#repository.replaceKnowledgeGraphBuildCheckpoints(sourceId, novelId, extracted.checkpoints);
+      this.writeBuildLog(
+        sourceId,
+        novelId,
+        'relating',
+        'info',
+        `本地图谱已写入：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系，${extracted.chunks.length} 个片段索引；已刷新 ${extracted.checkpoints.length} 个结构缓存。`,
+      );
 
       let syncedToNeo4jAt: string | null = null;
       let staleNeo4jGraphCleared = false;
+      const namespace = createGraphNamespace(snapshot.sourceId, snapshot.metadata.novelId);
       const resolvedNeo4j = resolveNeo4jConfig(
         this.#repository.getKnowledgeGraphProfile(sourceId, novelId),
         this.#preferences.getNeo4jState(),
@@ -897,11 +984,22 @@ export class LibraryIntelligenceService {
           novelId,
           'syncing',
           'info',
-          resolvedNeo4j?.enabled ? '开始清理旧版 Neo4j 子图，随后写入新结果。' : '开始清理 Neo4j 中的旧版图谱。',
+          resolvedNeo4j?.enabled
+            ? `开始清理旧版 Neo4j 子图，命名空间 ${namespace}，随后写入新结果。`
+            : `开始清理 Neo4j 中的旧版图谱，命名空间 ${namespace}。`,
         );
         staleNeo4jGraphCleared = await this.#neo4jGraphStore.clearNamespaceGraph(
-          createGraphNamespace(snapshot.sourceId, snapshot.metadata.novelId),
+          namespace,
           cleanupNeo4j,
+        );
+        this.writeBuildLog(
+          sourceId,
+          novelId,
+          'syncing',
+          'info',
+          staleNeo4jGraphCleared
+            ? `旧版 Neo4j 子图清理完成：命名空间 ${namespace}。`
+            : `Neo4j 中未发现需要清理的旧子图：命名空间 ${namespace}。`,
         );
       }
 
@@ -922,11 +1020,23 @@ export class LibraryIntelligenceService {
           relationCount: extracted.relations.length,
           modelStats: extracted.diagnostics.modelStats,
         });
-        this.writeBuildLog(sourceId, novelId, 'syncing', 'info', '正在同步 Neo4j 子图。');
+        this.writeBuildLog(
+          sourceId,
+          novelId,
+          'syncing',
+          'info',
+          `开始同步 Neo4j 子图：命名空间 ${namespace}，${extracted.entities.length} 个实体，${extracted.relations.length} 条关系。`,
+        );
 
         await this.#neo4jGraphStore.replaceNamespaceGraph(snapshot, extracted.entities, extracted.relations, resolvedNeo4j);
         syncedToNeo4jAt = new Date().toISOString();
-        this.writeBuildLog(sourceId, novelId, 'syncing', 'info', 'Neo4j 子图同步完成。');
+        this.writeBuildLog(
+          sourceId,
+          novelId,
+          'syncing',
+          'info',
+          `Neo4j 子图同步完成：命名空间 ${namespace}，可按 sourceId=${snapshot.sourceId}、novelId=${snapshot.metadata.novelId} 过滤查看。`,
+        );
       }
 
       const completedAt = new Date().toISOString();
@@ -970,6 +1080,7 @@ export class LibraryIntelligenceService {
           this.#preferences.getNeo4jState(),
         ),
       );
+      this.writeBuildLog(sourceId, novelId, 'completed', 'info', '本次图谱配置已冻结；后续若需调整，请先暂停或重新发起构建。');
     } catch (error) {
       if (error instanceof KnowledgeGraphBuildPausedError) {
         const currentBuild = this.#repository.getKnowledgeGraphBuild(sourceId, novelId);
@@ -1101,6 +1212,33 @@ export class LibraryIntelligenceService {
         `已完成 ${event.processedChunks}/${event.totalChunks} 个片段；结构化成功 ${event.llmSuccessCount} 个，回退 ${event.fallbackCount} 个。`,
       );
     }
+  }
+
+  private async handleBuildStageProgress(
+    sourceId: string,
+    novelId: string,
+    startedAt: string,
+    event: KnowledgeGraphBuildStageEvent,
+    modelStats: KnowledgeGraphBuildModelStat[],
+  ): Promise<void> {
+    const currentBuild = this.#repository.getKnowledgeGraphBuild(sourceId, novelId);
+    this.saveBuildState({
+      sourceId,
+      novelId,
+      status: 'running',
+      stage: event.stage,
+      progressPercent: event.progressPercent,
+      message: event.message,
+      errorMessage: null,
+      startedAt,
+      completedAt: null,
+      lastBuiltAt: null,
+      syncedToNeo4jAt: null,
+      entityCount: currentBuild?.entityCount ?? 0,
+      relationCount: currentBuild?.relationCount ?? 0,
+      modelStats,
+    });
+    this.writeBuildLog(sourceId, novelId, event.stage, 'info', event.message);
   }
 
   private async queryNeo4jGraph(
@@ -1907,7 +2045,10 @@ class DriverNeo4jGraphStore implements Neo4jGraphStore {
           `
             UNWIND $entities AS entity
             MERGE (node:NovelGraphEntity {namespace: $namespace, entityId: entity.id})
-            SET node.name = entity.name,
+            SET node.namespace = $namespace,
+                node.sourceId = $sourceId,
+                node.novelId = $novelId,
+                node.name = entity.name,
                 node.entityType = entity.entityType,
                 node.summary = entity.summary,
                 node.prominence = entity.prominence,
@@ -1917,7 +2058,12 @@ class DriverNeo4jGraphStore implements Neo4jGraphStore {
                 node.lastChapterId = entity.lastChapterId,
                 node.aliases = entity.aliases
           `,
-          { namespace, entities },
+          {
+            namespace,
+            sourceId: snapshot.sourceId,
+            novelId: snapshot.metadata.novelId,
+            entities,
+          },
         );
 
         await transaction.run(
@@ -1935,13 +2081,21 @@ class DriverNeo4jGraphStore implements Neo4jGraphStore {
             MATCH (from:NovelGraphEntity {namespace: $namespace, entityId: relation.fromEntityId})
             MATCH (to:NovelGraphEntity {namespace: $namespace, entityId: relation.toEntityId})
             MERGE (from)-[edge:NOVEL_RELATED {namespace: $namespace, relationId: relation.id}]->(to)
-            SET edge.relationType = relation.relationType,
+            SET edge.namespace = $namespace,
+                edge.sourceId = $sourceId,
+                edge.novelId = $novelId,
+                edge.relationType = relation.relationType,
                 edge.summary = relation.summary,
                 edge.weight = relation.weight,
                 edge.chapterIds = relation.chapterIds,
                 edge.evidence = relation.evidence
           `,
-          { namespace, relations },
+          {
+            namespace,
+            sourceId: snapshot.sourceId,
+            novelId: snapshot.metadata.novelId,
+            relations,
+          },
         );
       });
     } finally {
@@ -2160,6 +2314,14 @@ function normalizeExtractionModelConcurrency(value: number | null | undefined): 
     MIN_EXTRACTION_MODEL_CONCURRENCY,
     Math.min(MAX_EXTRACTION_MODEL_CONCURRENCY, Math.trunc(value ?? DEFAULT_EXTRACTION_MODEL_CONCURRENCY)),
   );
+}
+
+function normalizeBuildMode(mode: KnowledgeGraphBuildMode | undefined): KnowledgeGraphBuildMode {
+  if (mode === 'full' || mode === 'rebuild') {
+    return mode;
+  }
+
+  return 'incremental';
 }
 
 function normalizeExtractionModelPool(

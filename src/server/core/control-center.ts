@@ -36,6 +36,7 @@ import {
   type AskLibraryAssistantInput,
   type LibraryAssistantResponse,
   type LibraryKnowledgeGraphBuild,
+  type KnowledgeGraphBuildMode,
   type Neo4jGraphStore,
   type LibraryKnowledgeGraphProfile,
   type LibraryKnowledgeGraphProfileInput,
@@ -450,8 +451,12 @@ export class ControlCenterService {
     return this.#libraryIntelligence.updateNovelKnowledgeGraphProfile(sourceId, novelId, input);
   }
 
-  buildLibraryKnowledgeGraph(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {
-    return this.#libraryIntelligence.startNovelKnowledgeGraphBuild(sourceId, novelId);
+  buildLibraryKnowledgeGraph(
+    sourceId: string,
+    novelId: string,
+    options?: { mode?: KnowledgeGraphBuildMode },
+  ): LibraryKnowledgeGraphBuild | null {
+    return this.#libraryIntelligence.startNovelKnowledgeGraphBuild(sourceId, novelId, options);
   }
 
   pauseLibraryKnowledgeGraph(sourceId: string, novelId: string): LibraryKnowledgeGraphBuild | null {

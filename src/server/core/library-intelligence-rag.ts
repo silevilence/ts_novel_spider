@@ -32,10 +32,21 @@ export interface KnowledgeGraphBuildArtifacts {
   entities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>>;
   relations: Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>>;
   chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>;
+  checkpoints: Array<{
+    chunkId: string;
+    chapterId: string;
+    chapterIndex: number;
+    chunkIndex: number;
+    chapterTitle: string;
+    extractionJson: string;
+    warningMessage: string | null;
+  }>;
   usedLlmExtraction: boolean;
   usedEmbeddingIndex: boolean;
   diagnostics: KnowledgeGraphBuildDiagnostics;
 }
+
+export type KnowledgeGraphBuildExecutionMode = 'full' | 'incremental' | 'rebuild';
 
 export interface KnowledgeGraphBuildProgressEvent {
   phase: 'started' | 'completed';
@@ -51,6 +62,12 @@ export interface KnowledgeGraphBuildProgressEvent {
   mode: 'llm' | 'fallback';
   warning: string | null;
   modelStats: KnowledgeGraphBuildModelStat[];
+}
+
+export interface KnowledgeGraphBuildStageEvent {
+  stage: 'relating';
+  progressPercent: number;
+  message: string;
 }
 
 export type KnowledgeGraphModelCircuitState = 'closed' | 'open' | 'half-open';
@@ -194,6 +211,13 @@ interface ChunkExtraction {
   }>;
   keywordHints: string[];
   usedLlm: boolean;
+  sourceFingerprint?: string;
+}
+
+interface ResolvedCheckpointEntry {
+  checkpoint: StoredKnowledgeGraphBuildCheckpointRow;
+  extraction: ChunkExtraction;
+  warning: string | null;
 }
 
 interface AggregateEntity {
@@ -251,8 +275,8 @@ const STOP_TOKENS = new Set([
   '那个',
 ]);
 const TOKEN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z][\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z0-9]{1,16}/gu;
-const MAX_GRAPH_ENTITIES = 18;
-const MAX_GRAPH_RELATIONS = 24;
+const MAX_GRAPH_ENTITIES = 128;
+const MAX_GRAPH_RELATIONS = 384;
 const MAX_ASSISTANT_SOURCES = 6;
 const MAX_CHUNK_CHARACTERS = 620;
 const MAX_CHUNK_PARAGRAPHS = 2;
@@ -266,6 +290,7 @@ const MODEL_CIRCUIT_BREAKER_BASE_COOLDOWN_MS = 4000;
 const MODEL_CIRCUIT_BREAKER_MAX_COOLDOWN_MS = 20000;
 const MODEL_THROUGHPUT_WINDOW_SIZE = 12;
 const MODEL_THROUGHPUT_MIN_WINDOW_MS = 10000;
+const EMBEDDING_BATCH_SIZE = 64;
 
 const chunkEventSchema = z.object({
   summary: z.string().min(1).max(160),
@@ -303,6 +328,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
   extractionModels: ResolvedExtractionRoute[];
   embeddingModel: ResolvedCapabilityRoute | null;
   checkpoints?: StoredKnowledgeGraphBuildCheckpointRow[];
+  mode?: KnowledgeGraphBuildExecutionMode;
   extractionConcurrency?: number;
   startedAt?: string | null;
   modelStatsSeed?: KnowledgeGraphBuildModelStat[];
@@ -317,8 +343,10 @@ export async function buildKnowledgeGraphArtifacts(options: {
     warningMessage: string | null;
   }) => void | Promise<void>;
   onProgress?: (event: KnowledgeGraphBuildProgressEvent) => void | Promise<void>;
+  onStageProgress?: (event: KnowledgeGraphBuildStageEvent) => void | Promise<void>;
 }): Promise<KnowledgeGraphBuildArtifacts> {
   const chunkPlans = createChunkPlans(options.snapshot.chapters);
+  const buildMode = options.mode ?? 'incremental';
   const extractionModels = options.extractionModels.filter((route) => route.maxConcurrency > 0);
   const buildStartedAtMs = parseTimestampMs(options.startedAt) ?? Date.now();
   const modelStates = createExtractionModelRuntimeStates(extractionModels, options.modelStatsSeed);
@@ -327,7 +355,9 @@ export async function buildKnowledgeGraphArtifacts(options: {
   const relationMap = new Map<string, AggregateRelation>();
   const chunkRows: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>> = [];
 
-  const checkpointMap = new Map((options.checkpoints ?? []).map((checkpoint) => [checkpoint.chunkId, checkpoint]));
+  const checkpointMap = buildMode === 'full'
+    ? new Map<string, ResolvedCheckpointEntry>()
+    : createReusableCheckpointMap(chunkPlans, options.checkpoints ?? []);
   const extractionByChunkId = new Map<string, { extraction: ChunkExtraction; warning: string | null }>();
   let usedLlmExtraction = false;
   let llmSuccessCount = 0;
@@ -336,20 +366,19 @@ export async function buildKnowledgeGraphArtifacts(options: {
   const failureSamples: string[] = [];
 
   for (const checkpoint of checkpointMap.values()) {
-    const extraction = parseCheckpointExtraction(checkpoint.extractionJson);
-    extractionByChunkId.set(checkpoint.chunkId, {
-      extraction,
-      warning: checkpoint.warningMessage,
+    extractionByChunkId.set(checkpoint.checkpoint.chunkId, {
+      extraction: checkpoint.extraction,
+      warning: checkpoint.warning,
     });
 
-    if (extraction.usedLlm) {
+    if (checkpoint.extraction.usedLlm) {
       usedLlmExtraction = true;
       llmSuccessCount += 1;
     } else {
       fallbackCount += 1;
-      if (checkpoint.warningMessage) {
+      if (checkpoint.warning) {
         llmFailureCount += 1;
-        pushUnique(failureSamples, checkpoint.warningMessage, 4);
+        pushUnique(failureSamples, checkpoint.warning, 4);
       }
     }
   }
@@ -361,6 +390,9 @@ export async function buildKnowledgeGraphArtifacts(options: {
       chunk,
       attemptedModelKeys: new Set<string>(),
     } satisfies PendingChunkState));
+  if (buildMode === 'rebuild' && pendingQueue.length > 0) {
+    throw new Error('当前缺少完整的结构缓存，暂时不能只重建实体和关系。请先执行一次增量更新或全量重建。');
+  }
   const candidateModelKeys = new Set(
     extractionModels.flatMap((route) => {
       const modelKey = getExtractionRouteModelKey(route);
@@ -509,7 +541,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
       chapterIndex: settled.pending.chunk.chapterIndex,
       chunkIndex: settled.pending.chunk.chunkIndex,
       chapterTitle: settled.pending.chunk.chapterTitle,
-      extractionJson: JSON.stringify(settled.extraction),
+      extractionJson: serializeCheckpointExtraction(settled.pending.chunk, settled.extraction),
       warningMessage: settled.warning,
     });
 
@@ -552,26 +584,64 @@ export async function buildKnowledgeGraphArtifacts(options: {
     throw new Error(`已配置图谱抽取模型，但所有结构化抽取请求都失败了。最近错误：${failureSamples[0] ?? '未返回具体错误。'}`);
   }
 
-  const finalizedEntities = finalizeEntities(entityMap, options.snapshot);
+  await options.onStageProgress?.({
+    stage: 'relating',
+    progressPercent: 60,
+    message: `开始归并 ${entityMap.size} 个候选实体与 ${relationMap.size} 组候选关系。`,
+  });
+
+  const mergeResult = mergeEquivalentAggregateEntities(entityMap, aliasMap);
+  const remappedRelations = remapAggregateRelations(relationMap, mergeResult.keyRemap);
+  const remappedChunks = remapChunkEntityNames(chunkRows, mergeResult.entityMap, mergeResult.aliasMap);
+
+  await options.onStageProgress?.({
+    stage: 'relating',
+    progressPercent: 62,
+    message: mergeResult.mergedEntityCount > 0
+      ? `已合并 ${mergeResult.mergedEntityCount} 个同义实体，当前保留 ${mergeResult.entityMap.size} 个实体候选，关系候选 ${remappedRelations.size} 组。`
+      : `实体归并完成，当前保留 ${mergeResult.entityMap.size} 个实体候选，关系候选 ${remappedRelations.size} 组。`,
+  });
+
+  const finalizedEntities = finalizeEntities(mergeResult.entityMap, options.snapshot);
   const retainedEntityKeys = new Set(finalizedEntities.map((entity) => normalizeEntityKey(entity.name)));
   const entityIdsByKey = new Map(finalizedEntities.map((entity) => [normalizeEntityKey(entity.name), entity.id]));
 
-  const finalizedRelations = finalizeRelations(relationMap, entityMap, retainedEntityKeys, entityIdsByKey);
-  const finalizedChunks = chunkRows.map((chunk) => ({
+  const finalizedRelations = finalizeRelations(remappedRelations, mergeResult.entityMap, retainedEntityKeys, entityIdsByKey);
+  const finalizedChunks = remappedChunks.map((chunk) => ({
     ...chunk,
     entityNames: chunk.entityNames.filter((name) => retainedEntityKeys.has(normalizeEntityKey(name))),
   }));
 
+  await options.onStageProgress?.({
+    stage: 'relating',
+    progressPercent: options.embeddingModel ? 66 : 72,
+    message: `关系归并完成：保留 ${finalizedEntities.length} 个实体、${finalizedRelations.length} 条关系、${finalizedChunks.length} 个片段索引。`,
+  });
+
   if (finalizedEntities.length === 0) {
     const fallback = buildFallbackGraph(options.snapshot, finalizedChunks);
     if (options.embeddingModel && finalizedChunks.length > 0) {
-      await assignChunkEmbeddings(finalizedChunks, options.embeddingModel);
+      await assignChunkEmbeddings(finalizedChunks, options.embeddingModel, options.onStageProgress);
     }
 
     return {
       entities: fallback.entities,
       relations: fallback.relations,
       chunks: finalizedChunks,
+      checkpoints: chunkPlans.flatMap((chunk) => {
+        const resolved = extractionByChunkId.get(chunk.id);
+        return resolved
+          ? [{
+              chunkId: chunk.id,
+              chapterId: chunk.chapterId,
+              chapterIndex: chunk.chapterIndex,
+              chunkIndex: chunk.chunkIndex,
+              chapterTitle: chunk.chapterTitle,
+              extractionJson: serializeCheckpointExtraction(chunk, resolved.extraction),
+              warningMessage: resolved.warning,
+            }]
+          : [];
+      }),
       usedLlmExtraction,
       usedEmbeddingIndex: Boolean(options.embeddingModel && finalizedChunks.some((chunk) => chunk.embedding)),
       diagnostics: {
@@ -587,8 +657,8 @@ export async function buildKnowledgeGraphArtifacts(options: {
 
   let usedEmbeddingIndex = false;
   if (options.embeddingModel) {
-    await assignEntityEmbeddings(finalizedEntities, options.embeddingModel);
-    await assignChunkEmbeddings(finalizedChunks, options.embeddingModel);
+    await assignEntityEmbeddings(finalizedEntities, options.embeddingModel, options.onStageProgress);
+    await assignChunkEmbeddings(finalizedChunks, options.embeddingModel, options.onStageProgress);
     usedEmbeddingIndex = finalizedEntities.some((entity) => entity.embedding) || finalizedChunks.some((chunk) => chunk.embedding);
   }
 
@@ -596,6 +666,20 @@ export async function buildKnowledgeGraphArtifacts(options: {
     entities: finalizedEntities,
     relations: finalizedRelations,
     chunks: finalizedChunks,
+    checkpoints: chunkPlans.flatMap((chunk) => {
+      const resolved = extractionByChunkId.get(chunk.id);
+      return resolved
+        ? [{
+            chunkId: chunk.id,
+            chapterId: chunk.chapterId,
+            chapterIndex: chunk.chapterIndex,
+            chunkIndex: chunk.chunkIndex,
+            chapterTitle: chunk.chapterTitle,
+            extractionJson: serializeCheckpointExtraction(chunk, resolved.extraction),
+            warningMessage: resolved.warning,
+          }]
+        : [];
+    }),
     usedLlmExtraction,
     usedEmbeddingIndex,
     diagnostics: {
@@ -613,6 +697,17 @@ export function createKnowledgeGraphBuildModelStats(
   routes: ResolvedExtractionRoute[],
 ): KnowledgeGraphBuildModelStat[] {
   return snapshotModelStats(createExtractionModelRuntimeStates(routes), Date.now());
+}
+
+export function countKnowledgeGraphChunkPlans(snapshot: StoredNovelSnapshot): number {
+  return createChunkPlans(snapshot.chapters).length;
+}
+
+export function countReusableKnowledgeGraphCheckpoints(
+  snapshot: StoredNovelSnapshot,
+  checkpoints: StoredKnowledgeGraphBuildCheckpointRow[],
+): number {
+  return createReusableCheckpointMap(createChunkPlans(snapshot.chapters), checkpoints).size;
 }
 
 export async function collectAssistantSources(options: {
@@ -860,6 +955,59 @@ function applyChunkExtraction(options: {
 
 function parseCheckpointExtraction(extractionJson: string): ChunkExtraction {
   return JSON.parse(extractionJson) as ChunkExtraction;
+}
+
+function createReusableCheckpointMap(
+  chunkPlans: ChunkPlan[],
+  checkpoints: StoredKnowledgeGraphBuildCheckpointRow[],
+): Map<string, ResolvedCheckpointEntry> {
+  const rawMap = new Map(checkpoints.map((checkpoint) => [checkpoint.chunkId, checkpoint]));
+  const reusable = new Map<string, ResolvedCheckpointEntry>();
+
+  for (const chunk of chunkPlans) {
+    const checkpoint = rawMap.get(chunk.id);
+    if (!checkpoint) {
+      continue;
+    }
+
+    const extraction = parseCheckpointExtraction(checkpoint.extractionJson);
+    if (!isCheckpointReusable(chunk, extraction)) {
+      continue;
+    }
+
+    reusable.set(chunk.id, {
+      checkpoint,
+      extraction,
+      warning: checkpoint.warningMessage,
+    });
+  }
+
+  return reusable;
+}
+
+function isCheckpointReusable(chunk: ChunkPlan, extraction: ChunkExtraction): boolean {
+  if (!extraction.sourceFingerprint) {
+    return true;
+  }
+
+  return extraction.sourceFingerprint === createChunkSourceFingerprint(chunk.content);
+}
+
+function serializeCheckpointExtraction(chunk: ChunkPlan, extraction: ChunkExtraction): string {
+  return JSON.stringify({
+    ...extraction,
+    sourceFingerprint: createChunkSourceFingerprint(chunk.content),
+  });
+}
+
+function createChunkSourceFingerprint(content: string): string {
+  let hash = 0;
+
+  for (let index = 0; index < content.length; index += 1) {
+    hash = ((hash << 5) - hash + content.charCodeAt(index)) | 0;
+  }
+
+  return `${content.length}:${Math.abs(hash)}`;
 }
 
 function createExtractionModelRuntimeStates(
@@ -1790,6 +1938,399 @@ function ensureAggregateEntity(options: {
   return resolved;
 }
 
+function mergeEquivalentAggregateEntities(
+  entityMap: Map<string, AggregateEntity>,
+  aliasMap: Map<string, string>,
+): {
+  entityMap: Map<string, AggregateEntity>;
+  aliasMap: Map<string, string>;
+  keyRemap: Map<string, string>;
+  mergedEntityCount: number;
+} {
+  const entries = [...entityMap.entries()].map(([key, entity]) => ({
+    key,
+    entity,
+    profile: buildEntityIdentityProfile(entity),
+    resolvedType: chooseWinner(entity.typeVotes),
+  }));
+  const parent = entries.map((_, index) => index);
+
+  const find = (index: number): number => {
+    let current = index;
+    while (parent[current] !== current) {
+      current = parent[current] ?? current;
+    }
+
+    let walker = index;
+    while (parent[walker] !== current) {
+      const next = parent[walker] ?? walker;
+      parent[walker] = current;
+      walker = next;
+    }
+
+    return current;
+  };
+
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      parent[rightRoot] = leftRoot;
+    }
+  };
+
+  for (let leftIndex = 0; leftIndex < entries.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < entries.length; rightIndex += 1) {
+      const left = entries[leftIndex];
+      const right = entries[rightIndex];
+      if (!left || !right) {
+        continue;
+      }
+
+      if (!areAggregateEntityTypesCompatible(left.resolvedType, right.resolvedType)) {
+        continue;
+      }
+
+      if (shouldMergeAggregateEntities(left.profile, right.profile)) {
+        union(leftIndex, rightIndex);
+      }
+    }
+  }
+
+  const groupedEntries = new Map<number, typeof entries>();
+  entries.forEach((entry, index) => {
+    const root = find(index);
+    const group = groupedEntries.get(root) ?? [];
+    group.push(entry);
+    groupedEntries.set(root, group);
+  });
+
+  const mergedEntities = new Map<string, AggregateEntity>();
+  const mergedAliasMap = new Map<string, string>();
+  const keyRemap = new Map<string, string>();
+  let mergedEntityCount = 0;
+
+  for (const group of groupedEntries.values()) {
+    const merged = mergeAggregateEntityGroup(group);
+    mergedEntities.set(merged.key, merged.entity);
+
+    for (const alias of merged.variants) {
+      const normalized = normalizeEntityKey(alias);
+      if (normalized) {
+        mergedAliasMap.set(normalized, merged.key);
+      }
+    }
+
+    for (const entry of group) {
+      keyRemap.set(entry.key, merged.key);
+    }
+
+    mergedEntityCount += Math.max(0, group.length - 1);
+  }
+
+  for (const [aliasKey, resolvedKey] of aliasMap.entries()) {
+    const nextKey = keyRemap.get(resolvedKey) ?? resolvedKey;
+    if (mergedEntities.has(nextKey)) {
+      mergedAliasMap.set(aliasKey, nextKey);
+    }
+  }
+
+  return {
+    entityMap: mergedEntities,
+    aliasMap: mergedAliasMap,
+    keyRemap,
+    mergedEntityCount,
+  };
+}
+
+function remapAggregateRelations(
+  relationMap: Map<string, AggregateRelation>,
+  keyRemap: Map<string, string>,
+): Map<string, AggregateRelation> {
+  const remapped = new Map<string, AggregateRelation>();
+
+  for (const relation of relationMap.values()) {
+    const fromKey = keyRemap.get(relation.fromKey) ?? relation.fromKey;
+    const toKey = keyRemap.get(relation.toKey) ?? relation.toKey;
+    if (fromKey === toKey) {
+      continue;
+    }
+
+    const ordered = [fromKey, toKey].sort((left, right) => left.localeCompare(right, 'zh-CN'));
+    const relationKey = `${ordered[0]}::${ordered[1]}`;
+    const existing = remapped.get(relationKey) ?? {
+      fromKey: ordered[0] ?? fromKey,
+      toKey: ordered[1] ?? toKey,
+      typeVotes: new Map<KnowledgeGraphRelationType, number>(),
+      summaries: [],
+      chapterIds: new Set<string>(),
+      evidences: [],
+      weight: 0,
+    };
+
+    for (const [type, votes] of relation.typeVotes.entries()) {
+      existing.typeVotes.set(type, (existing.typeVotes.get(type) ?? 0) + votes);
+    }
+
+    existing.weight += relation.weight;
+    relation.chapterIds.forEach((chapterId) => existing.chapterIds.add(chapterId));
+    relation.summaries.forEach((summary) => pushUnique(existing.summaries, summary, 4));
+    relation.evidences.forEach((evidence) => pushUnique(existing.evidences, evidence, 4));
+    remapped.set(relationKey, existing);
+  }
+
+  return remapped;
+}
+
+function remapChunkEntityNames(
+  chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>,
+  entityMap: Map<string, AggregateEntity>,
+  aliasMap: Map<string, string>,
+): Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>> {
+  return chunks.map((chunk) => ({
+    ...chunk,
+    entityNames: [...new Set(chunk.entityNames.map((name) => {
+      const resolvedKey = resolveEntityKey(name, aliasMap) ?? normalizeEntityKey(name);
+      return entityMap.get(resolvedKey)?.displayName ?? name.trim();
+    }).filter(Boolean))].slice(0, 8),
+  }));
+}
+
+function mergeAggregateEntityGroup(
+  group: Array<{ key: string; entity: AggregateEntity }>,
+): {
+  key: string;
+  entity: AggregateEntity;
+  variants: string[];
+} {
+  const allVariants = [...new Set(group.flatMap(({ entity }) => collectAggregateEntityVariants(entity)))];
+  const canonicalName = chooseCanonicalEntityVariant(allVariants);
+  const canonicalKey = normalizeEntityKey(canonicalName) || group[0]?.key || '';
+  const mergedEntity: AggregateEntity = {
+    displayName: canonicalName || group[0]?.entity.displayName || '',
+    aliases: new Set<string>(),
+    typeVotes: new Map<KnowledgeGraphEntityType, number>(),
+    summaries: [],
+    chapterIds: new Set<string>(),
+    mentionCount: 0,
+    firstChapterIndex: Number.POSITIVE_INFINITY,
+    lastChapterIndex: Number.NEGATIVE_INFINITY,
+    embedding: null,
+  };
+
+  for (const { entity } of group) {
+    for (const [type, votes] of entity.typeVotes.entries()) {
+      mergedEntity.typeVotes.set(type, (mergedEntity.typeVotes.get(type) ?? 0) + votes);
+    }
+    entity.summaries.forEach((summary) => pushUnique(mergedEntity.summaries, summary, 4));
+    entity.chapterIds.forEach((chapterId) => mergedEntity.chapterIds.add(chapterId));
+    mergedEntity.mentionCount += entity.mentionCount;
+    mergedEntity.firstChapterIndex = Math.min(mergedEntity.firstChapterIndex, entity.firstChapterIndex);
+    mergedEntity.lastChapterIndex = Math.max(mergedEntity.lastChapterIndex, entity.lastChapterIndex);
+    collectAggregateEntityVariants(entity).forEach((variant) => {
+      if (variant && variant !== mergedEntity.displayName) {
+        mergedEntity.aliases.add(variant);
+      }
+    });
+  }
+
+  if (!Number.isFinite(mergedEntity.firstChapterIndex)) {
+    mergedEntity.firstChapterIndex = 0;
+  }
+  if (!Number.isFinite(mergedEntity.lastChapterIndex)) {
+    mergedEntity.lastChapterIndex = mergedEntity.firstChapterIndex;
+  }
+
+  return {
+    key: canonicalKey,
+    entity: mergedEntity,
+    variants: [mergedEntity.displayName, ...mergedEntity.aliases],
+  };
+}
+
+function collectAggregateEntityVariants(entity: AggregateEntity): string[] {
+  return [...new Set([entity.displayName, ...entity.aliases].flatMap((value) => expandEntityVariants(value)))];
+}
+
+function buildEntityIdentityProfile(entity: AggregateEntity): {
+  exactKeys: Set<string>;
+  mergeablePartKeys: Set<string>;
+  signatureKeys: Set<string>;
+} {
+  const exactKeys = new Set<string>();
+  const mergeablePartKeys = new Set<string>();
+  const signatureKeys = new Set<string>();
+
+  for (const variant of [entity.displayName, ...entity.aliases]) {
+    const normalizedVariant = normalizeEntityKey(variant);
+    if (normalizedVariant) {
+      exactKeys.add(normalizedVariant);
+      if (isMergeableStandaloneEntityVariant(variant)) {
+        mergeablePartKeys.add(canonicalizeEntityVariant(variant));
+      }
+    }
+
+    const parts = splitStructuredEntityParts(variant);
+    for (const part of parts) {
+      if (isMergeableStandaloneEntityVariant(part)) {
+        mergeablePartKeys.add(canonicalizeEntityVariant(part));
+      }
+    }
+
+    const signature = buildStructuredEntitySignature(variant);
+    if (signature) {
+      signatureKeys.add(signature);
+    }
+  }
+
+  return { exactKeys, mergeablePartKeys, signatureKeys };
+}
+
+function shouldMergeAggregateEntities(
+  left: { exactKeys: Set<string>; mergeablePartKeys: Set<string>; signatureKeys: Set<string> },
+  right: { exactKeys: Set<string>; mergeablePartKeys: Set<string>; signatureKeys: Set<string> },
+): boolean {
+  return hasIntersection(left.exactKeys, right.exactKeys)
+    || hasIntersection(left.signatureKeys, right.signatureKeys)
+    || hasIntersection(left.mergeablePartKeys, right.mergeablePartKeys);
+}
+
+function areAggregateEntityTypesCompatible(
+  left: KnowledgeGraphEntityType | null,
+  right: KnowledgeGraphEntityType | null,
+): boolean {
+  return left === null || right === null || left === right;
+}
+
+function hasIntersection(left: Set<string>, right: Set<string>): boolean {
+  for (const value of left) {
+    if (right.has(value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function expandEntityVariants(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  return [...new Set([trimmed, ...splitStructuredEntityParts(trimmed)])];
+}
+
+function splitStructuredEntityParts(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const parts = trimmed
+    .split(/[()（）\[\]【】「」『』<>〈〉《》]/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return [...new Set(parts.length > 1 ? parts : [trimmed])];
+}
+
+function buildStructuredEntitySignature(value: string): string | null {
+  const canonicalParts = [...new Set(splitStructuredEntityParts(value).map((part) => canonicalizeEntityVariant(part)).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right, 'zh-CN'));
+  return canonicalParts.length >= 2 ? canonicalParts.join('::') : null;
+}
+
+function canonicalizeEntityVariant(value: string): string {
+  const normalized = normalizeEntityKey(value);
+  if (!normalized) {
+    return '';
+  }
+
+  if (['主角', '主人公'].includes(normalized)) {
+    return 'protagonist';
+  }
+
+  if (['我', '私', '俺', '咱', '吾', '余', '在下', '本人', '自己'].includes(normalized)) {
+    return 'self';
+  }
+
+  if (['男主角', '男主'].includes(normalized)) {
+    return 'male-protagonist';
+  }
+
+  if (['女主角', '女主'].includes(normalized)) {
+    return 'female-protagonist';
+  }
+
+  return normalized;
+}
+
+function isMergeableStandaloneEntityVariant(value: string): boolean {
+  const canonical = canonicalizeEntityVariant(value);
+  if (!canonical) {
+    return false;
+  }
+
+  if (canonical === 'self') {
+    return true;
+  }
+
+  return !isDescriptorLikeEntityVariant(canonical);
+}
+
+function isDescriptorLikeEntityVariant(value: string): boolean {
+  return new Set([
+    'protagonist',
+    'male-protagonist',
+    'female-protagonist',
+    '老师',
+    '导师',
+    '队长',
+    '同伴',
+    '伙伴',
+    '搭档',
+    '守卫',
+    '骑士',
+    '公主',
+    '王子',
+    '国王',
+    '皇帝',
+    '会长',
+    '部长',
+    '店长',
+    '医生',
+    '护士',
+  ]).has(value);
+}
+
+function chooseCanonicalEntityVariant(candidates: string[]): string {
+  return [...candidates]
+    .filter(Boolean)
+    .sort((left, right) => scoreCanonicalEntityVariant(right) - scoreCanonicalEntityVariant(left) || left.localeCompare(right, 'zh-CN'))[0] ?? '';
+}
+
+function scoreCanonicalEntityVariant(value: string): number {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const canonical = canonicalizeEntityVariant(trimmed);
+  let score = 0;
+  if (!/[()（）\[\]【】「」『』<>〈〉《》]/u.test(trimmed)) {
+    score += 40;
+  }
+  if (canonical === 'self') {
+    score += 24;
+  }
+  if (!isDescriptorLikeEntityVariant(canonical)) {
+    score += 18;
+  }
+  score += Math.max(0, 12 - Math.abs(trimmed.length - 3));
+  return score;
+}
+
 function finalizeEntities(
   entityMap: Map<string, AggregateEntity>,
   snapshot: StoredNovelSnapshot,
@@ -1862,6 +2403,7 @@ function finalizeRelations(
 async function assignEntityEmbeddings(
   entities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>>,
   route: ResolvedCapabilityRoute,
+  onStageProgress?: (event: KnowledgeGraphBuildStageEvent) => void | Promise<void>,
 ): Promise<void> {
   if (entities.length === 0) {
     return;
@@ -1873,7 +2415,19 @@ async function assignEntityEmbeddings(
     `摘要：${entity.summary}`,
     entity.aliases.length > 0 ? `别名：${entity.aliases.join('、')}` : '',
   ].filter(Boolean).join('\n'));
-  const embeddings = await embedValues(texts, route);
+  const totalBatches = Math.max(1, Math.ceil(texts.length / EMBEDDING_BATCH_SIZE));
+  await onStageProgress?.({
+    stage: 'relating',
+    progressPercent: 68,
+    message: `开始为 ${entities.length} 个实体生成向量，共 ${totalBatches} 批。`,
+  });
+  const embeddings = await embedValues(texts, route, async ({ batchIndex, batchCount, size }) => {
+    await onStageProgress?.({
+      stage: 'relating',
+      progressPercent: 68 + Number(((batchIndex / Math.max(batchCount, 1)) * 4).toFixed(2)),
+      message: `实体向量批次 ${batchIndex}/${batchCount} 已完成，本批 ${size} 个实体。`,
+    });
+  });
 
   embeddings.forEach((embedding, index) => {
     const entity = entities[index];
@@ -1886,6 +2440,7 @@ async function assignEntityEmbeddings(
 async function assignChunkEmbeddings(
   chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>,
   route: ResolvedCapabilityRoute,
+  onStageProgress?: (event: KnowledgeGraphBuildStageEvent) => void | Promise<void>,
 ): Promise<void> {
   if (chunks.length === 0) {
     return;
@@ -1897,7 +2452,19 @@ async function assignChunkEmbeddings(
     chunk.eventSummary ? `事件：${chunk.eventSummary}` : '',
     `正文：${chunk.content.slice(0, 360)}`,
   ].filter(Boolean).join('\n'));
-  const embeddings = await embedValues(texts, route);
+  const totalBatches = Math.max(1, Math.ceil(texts.length / EMBEDDING_BATCH_SIZE));
+  await onStageProgress?.({
+    stage: 'relating',
+    progressPercent: 72,
+    message: `开始为 ${chunks.length} 个片段生成向量，共 ${totalBatches} 批。`,
+  });
+  const embeddings = await embedValues(texts, route, async ({ batchIndex, batchCount, size }) => {
+    await onStageProgress?.({
+      stage: 'relating',
+      progressPercent: 72 + Number(((batchIndex / Math.max(batchCount, 1)) * 6).toFixed(2)),
+      message: `片段向量批次 ${batchIndex}/${batchCount} 已完成，本批 ${size} 个片段。`,
+    });
+  });
 
   embeddings.forEach((embedding, index) => {
     const chunk = chunks[index];
@@ -2194,7 +2761,36 @@ async function rerankDocuments(
   throw new Error('Current rerank path only supports openai-compatible and ollama providers.');
 }
 
-async function embedValues(values: string[], route: ResolvedCapabilityRoute): Promise<number[][]> {
+async function embedValues(
+  values: string[],
+  route: ResolvedCapabilityRoute,
+  onBatchComplete?: (event: { batchIndex: number; batchCount: number; size: number }) => void | Promise<void>,
+): Promise<number[][]> {
+  if (values.length === 0) {
+    return [];
+  }
+
+  if (values.length <= EMBEDDING_BATCH_SIZE) {
+    const embeddings = await embedValueBatch(values, route);
+    await onBatchComplete?.({ batchIndex: 1, batchCount: 1, size: values.length });
+    return embeddings;
+  }
+
+  const embeddings: number[][] = [];
+  const batchCount = Math.ceil(values.length / EMBEDDING_BATCH_SIZE);
+  let batchIndex = 0;
+  for (let start = 0; start < values.length; start += EMBEDDING_BATCH_SIZE) {
+    batchIndex += 1;
+    const batch = values.slice(start, start + EMBEDDING_BATCH_SIZE);
+    const batchEmbeddings = await embedValueBatch(batch, route);
+    embeddings.push(...batchEmbeddings);
+    await onBatchComplete?.({ batchIndex, batchCount, size: batch.length });
+  }
+
+  return embeddings;
+}
+
+async function embedValueBatch(values: string[], route: ResolvedCapabilityRoute): Promise<number[][]> {
   switch (route.provider.type) {
     case 'openai-compatible': {
       const provider = createOpenAI({

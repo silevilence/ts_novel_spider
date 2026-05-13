@@ -12,6 +12,8 @@
     "build:web": "vite build --config src/web/vite.config.ts",
     "test": "npm run test:server && npm run test:web && npm run test:ci",
     "test:ci": "node --test scripts/ci/prepare-release.test.mjs",
+    "test:server:library": "tsx --test src/server/routes/library.test.ts",
+    "test:server:library:graph": "tsx --test src/server/routes/library-graph.test.ts",
     "test:server": "tsx --test src/server/**/*.test.ts",
     "test:web": "tsx --test src/web/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p src/web/tsconfig.json --noEmit",

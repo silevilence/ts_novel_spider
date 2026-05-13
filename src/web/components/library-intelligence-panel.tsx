@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useDeferredValue, useEffect, useRef, useState } from 'react';
 
 import type { AppLocation } from '../services/app-routes';
 import {
@@ -10,6 +10,7 @@ import {
   pauseLibraryKnowledgeGraph,
   resumeLibraryKnowledgeGraph,
   updateLibraryKnowledgeGraphProfile,
+  type LibraryKnowledgeGraphBuildMode,
   type UpdateKnowledgeGraphProfileInput,
 } from '../services/api';
 import type { NoticeInput } from '../services/control-center-model';
@@ -73,6 +74,69 @@ interface GraphModelOption {
   label: string;
 }
 
+interface GraphPreviewDialogState {
+  title: string;
+  subtitle: string;
+  body: string[];
+}
+
+type GraphEntity = LibraryNovelDetailPayload['knowledgeGraph']['entities'][number];
+type GraphRelation = LibraryNovelDetailPayload['knowledgeGraph']['relations'][number];
+
+interface GraphExplorerNode {
+  entity: GraphEntity;
+  x: number;
+  y: number;
+  size: number;
+  matched: boolean;
+  focused: boolean;
+}
+
+interface GraphExplorerEdge {
+  relation: GraphRelation;
+  fromNode: GraphExplorerNode;
+  toNode: GraphExplorerNode;
+  matched: boolean;
+  primary: boolean;
+}
+
+interface GraphExplorerState {
+  nodes: GraphExplorerNode[];
+  edges: GraphExplorerEdge[];
+  focusEntity: GraphEntity | null;
+  focusRelations: GraphRelation[];
+  spotlightEntities: GraphEntity[];
+  spotlightRelations: GraphRelation[];
+  spotlightChapters: string[];
+  emptyMessage: string;
+  summaryMessage: string;
+}
+
+interface GraphViewportState {
+  zoom: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+type GraphDragState =
+  | {
+      kind: 'pan';
+      pointerId: number;
+      startClientX: number;
+      startClientY: number;
+      originOffsetX: number;
+      originOffsetY: number;
+    }
+  | {
+      kind: 'node';
+      pointerId: number;
+      nodeId: string;
+      startClientX: number;
+      startClientY: number;
+      originNodeX: number;
+      originNodeY: number;
+    };
+
 export function LibraryIntelligencePanel({
   detailPayload,
   location,
@@ -91,6 +155,11 @@ export function LibraryIntelligencePanel({
   const [graphPausing, setGraphPausing] = useState(false);
   const [graphResuming, setGraphResuming] = useState(false);
   const [graphDeleting, setGraphDeleting] = useState(false);
+  const [graphProgressExpanded, setGraphProgressExpanded] = useState(() => shouldExpandBuildProgress(detailPayload.knowledgeGraph.build.status));
+  const [graphPreview, setGraphPreview] = useState<GraphPreviewDialogState | null>(null);
+  const [graphSearchInput, setGraphSearchInput] = useState('');
+  const deferredGraphSearchInput = useDeferredValue(graphSearchInput);
+  const [graphFocusEntityId, setGraphFocusEntityId] = useState<string | null>(null);
 
   const detail = detailPayload.novel;
   const knowledgeGraph = detailPayload.knowledgeGraph;
@@ -108,6 +177,7 @@ export function LibraryIntelligencePanel({
   const currentChapterTitle = location.chapterId
     ? detail.chapters.find((chapter) => chapter.id === location.chapterId)?.title ?? null
     : null;
+  const graphExplorer = buildGraphExplorerState(knowledgeGraph, deferredGraphSearchInput, graphFocusEntityId);
 
   useEffect(() => {
     setGraphDraft(createDraft(detailPayload));
@@ -118,6 +188,25 @@ export function LibraryIntelligencePanel({
     setAssistantInput('');
     setAssistantOpen(false);
   }, [detail.sourceId, detail.metadata.novelId]);
+
+  useEffect(() => {
+    setGraphPreview(null);
+  }, [detail.sourceId, detail.metadata.novelId]);
+
+  useEffect(() => {
+    setGraphSearchInput('');
+    setGraphFocusEntityId(null);
+  }, [detail.sourceId, detail.metadata.novelId]);
+
+  useEffect(() => {
+    if (graphFocusEntityId && !knowledgeGraph.entities.some((entity) => entity.id === graphFocusEntityId)) {
+      setGraphFocusEntityId(null);
+    }
+  }, [graphFocusEntityId, knowledgeGraph.entities]);
+
+  useEffect(() => {
+    setGraphProgressExpanded(shouldExpandBuildProgress(build.status));
+  }, [build.status]);
 
   useEffect(() => {
     void Promise.all([fetchLlmProvidersPreferences(), fetchNeo4jPreferences()])
@@ -165,21 +254,22 @@ export function LibraryIntelligencePanel({
     }
   }
 
-  async function handleBuildGraph() {
+  async function handleBuildGraph(mode: LibraryKnowledgeGraphBuildMode) {
     setGraphBuilding(true);
 
     try {
-      await buildLibraryKnowledgeGraph(detail.sourceId, detail.metadata.novelId);
+      await buildLibraryKnowledgeGraph(detail.sourceId, detail.metadata.novelId, mode);
       onNotify({
         tone: 'info',
-        title: '图谱构建已启动',
-        message: '后台正在分析章节内容，面板会自动刷新进度。',
+        title: formatBuildActionTitle(mode),
+        message: formatBuildActionMessage(mode),
       });
+      setGraphProgressExpanded(true);
       await onRefresh();
     } catch (error) {
       onNotify({
         tone: 'error',
-        title: '图谱构建启动失败',
+        title: formatBuildActionFailureTitle(mode),
         message: error instanceof Error ? error.message : 'Knowledge graph build failed.',
       });
     } finally {
@@ -318,139 +408,342 @@ export function LibraryIntelligencePanel({
     }
   }
 
+  function handlePreviewEntity(entity: GraphEntity) {
+    setGraphPreview(buildEntityPreview(entity));
+  }
+
+  function handlePreviewRelation(relation: GraphRelation) {
+    setGraphPreview(buildRelationPreview(relation));
+  }
+
+  const buildBusy = graphBuilding || graphPausing || graphResuming;
+  const buildRunning = build.status === 'queued' || build.status === 'running';
+  const buildStartDisabled = buildBusy || buildRunning || build.status === 'paused';
+  const graphNamespace = `${knowledgeGraph.namespace}:${knowledgeGraph.entities.length}:${knowledgeGraph.relations.length}:${build.updatedAt ?? 'idle'}`;
+  const topEntities = sortEntitiesForGraph(knowledgeGraph.entities).slice(0, 5);
+  const topRelations = sortRelationsForGraph(knowledgeGraph.relations, new Set<string>(), graphFocusEntityId).slice(0, 5);
+  const focusEntity = graphExplorer.focusEntity;
+
   return (
     <>
       {location.view === 'detail' ? (
         <section className="panel intelligence-panel">
-          <div className="panel-heading split align-start">
-            <div>
-              <p className="eyebrow">知识图谱</p>
-              <h2>实体关系图谱</h2>
-              <p className="panel-note">
-                这本书可以挂自己的模型链路和 Neo4j 目标。图谱一旦构建完成，配置会自动锁定；如果构建过程中要改并发或模型，先暂停、保存，再继续即可。
-              </p>
-            </div>
-            <div className="badge-row intelligence-status-row">
-              <span className={`status-badge state-${build.status}`}>{formatGraphStatus(build.status)}</span>
-              <span className="status-badge state-downloaded">阶段 {formatGraphStage(build.stage)}</span>
-              {knowledgeGraph.profile.configLocked ? <span className="status-badge ok">配置已锁定</span> : null}
-            </div>
-          </div>
-
-          <div className="route-summary-strip intelligence-summary-strip">
-            <article className="summary-tile">
-              <span className="label">实体</span>
-              <strong>{build.entityCount}</strong>
-            </article>
-            <article className="summary-tile">
-              <span className="label">关系</span>
-              <strong>{build.relationCount}</strong>
-            </article>
-            <article className="summary-tile">
-              <span className="label">Neo4j</span>
-              <strong>{knowledgeGraph.profile.neo4j.source === 'novel' ? '本书专用' : knowledgeGraph.profile.neo4j.source === 'global' ? '沿用全局' : '未启用'}</strong>
-            </article>
-          </div>
-
-          <div className="card intelligence-build-card">
-            <div className="panel-heading compact-heading">
+          <section className="card intelligence-hero">
+            <div className="panel-heading split align-start">
               <div>
-                <p className="label">当前状态</p>
-                <strong>{build.message}</strong>
+                <p className="eyebrow">知识图谱</p>
+                <h2>实体关系图谱</h2>
+                <p className="panel-note">
+                  支持增量更新、关系重建和全量重跑。下方关系图可拖拽、缩放、联动检索，也能放大到弹窗里单独操作。
+                </p>
               </div>
-              <span className="panel-note">进度 {build.progressPercent}%</span>
+              <div className="badge-row intelligence-status-row wrap compact-actions">
+                <span className={`status-badge state-${build.status}`}>{formatGraphStatus(build.status)}</span>
+                <span className="status-badge state-downloaded">阶段 {formatGraphStage(build.stage)}</span>
+                {knowledgeGraph.profile.configLocked ? <span className="status-badge ok">配置已锁定</span> : null}
+                <span className="status-badge state-idle">实体 {knowledgeGraph.entities.length}</span>
+                <span className="status-badge state-indexed">关系 {knowledgeGraph.relations.length}</span>
+              </div>
             </div>
-            <p className="panel-note">
-              {build.errorMessage
-                ? build.errorMessage
-                : build.lastBuiltAt
-                  ? `最近完成于 ${new Date(build.lastBuiltAt).toLocaleString('zh-CN')}`
-                  : '还没有生成过图谱。'}
-            </p>
-            <div className="badge-row intelligence-build-meta">
-              {build.startedAt ? <span className="status-badge state-indexed">开始于 {new Date(build.startedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span> : null}
-              {build.updatedAt ? <span className="status-badge state-idle">最近更新 {new Date(build.updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span> : null}
-              {build.errorMessage ? <span className="status-badge danger">已记录失败原因</span> : null}
-            </div>
-            <div className="progress-track" aria-hidden="true">
-              <div className="progress-fill" style={{ width: `${build.progressPercent}%` }} />
-            </div>
-            {build.modelStats.length > 0 ? (
-              <div className="intelligence-log-panel">
-                <div className="assistant-trace-heading split">
-                  <span className="label">抽取模型表现</span>
-                  <span className="panel-note">看每个模型当前跑得快不快、稳不稳，哪些片段是它接过去的。</span>
+
+            <div className="intelligence-progress-overview">
+              <div className="intelligence-progress-summary-grid">
+                <article className="summary-tile">
+                  <span className="label">进度</span>
+                  <strong>{build.progressPercent}%</strong>
+                  <p>{build.message || '等待任务启动'}</p>
+                </article>
+                <article className="summary-tile">
+                  <span className="label">最近更新</span>
+                  <strong>{build.updatedAt ? new Date(build.updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '未开始'}</strong>
+                  <p>{build.startedAt ? `开始于 ${new Date(build.startedAt).toLocaleString('zh-CN')}` : '还没有生成记录。'}</p>
+                </article>
+                <article className="summary-tile">
+                  <span className="label">当前阶段</span>
+                  <strong>{formatGraphStage(build.stage)}</strong>
+                  <p>{build.lastBuiltAt ? `最近完成于 ${new Date(build.lastBuiltAt).toLocaleString('zh-CN')}` : '等待首次构建。'}</p>
+                </article>
+                <article className="summary-tile">
+                  <span className="label">Neo4j</span>
+                  <strong>
+                    {knowledgeGraph.profile.neo4j.source === 'novel'
+                      ? '本书专用'
+                      : knowledgeGraph.profile.neo4j.source === 'global'
+                        ? '沿用全局'
+                        : '未启用'}
+                  </strong>
+                  <p>
+                    {knowledgeGraph.profile.neo4j.source === 'novel'
+                      ? knowledgeGraph.profile.neo4j.uri
+                      : knowledgeGraph.profile.neo4j.source === 'global'
+                        ? '使用系统里的 Neo4j 配置。'
+                        : '当前未单独指定图库连接。'}
+                  </p>
+                </article>
+              </div>
+
+              <div className="progress-track" aria-hidden="true">
+                <div className="progress-fill" style={{ width: `${build.progressPercent}%` }} />
+              </div>
+
+              <div className="action-row wrap compact-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setGraphProgressExpanded((current) => !current)}
+                >
+                  {graphProgressExpanded ? '收起进度详情' : '展开进度详情'}
+                </button>
+                {buildRunning ? (
+                  <button type="button" className="ghost-button" onClick={() => void handlePauseGraph()} disabled={graphPausing}>
+                    {graphPausing ? '暂停中...' : '暂停构建'}
+                  </button>
+                ) : null}
+                {build.status === 'paused' ? (
+                  <button type="button" className="primary-button" onClick={() => void handleResumeGraph()} disabled={graphResuming}>
+                    {graphResuming ? '继续中...' : '继续构建'}
+                  </button>
+                ) : null}
+              </div>
+
+              {graphProgressExpanded ? (
+                <div className="intelligence-progress-drawer">
+                  {build.modelStats.length > 0 ? (
+                    <div className="intelligence-log-panel">
+                      <div className="assistant-trace-heading split">
+                        <span className="label">抽取模型表现</span>
+                        <span className="panel-note">看每个模型当前跑得快不快、稳不稳。</span>
+                      </div>
+                      <div className="intelligence-model-grid">
+                        {build.modelStats.map((stat) => (
+                          <article key={`${stat.providerId}::${stat.modelId}`} className="intelligence-model-card">
+                            <div className="intelligence-log-head">
+                              <strong>{formatBuildModelLabel(buildModelLabels, stat.providerId, stat.modelId)}</strong>
+                              <div className="badge-row wrap compact-actions">
+                                <span className={`status-badge ${stat.circuitState === 'open' ? 'danger' : stat.circuitState === 'half-open' ? 'state-queued' : 'ok'}`}>
+                                  {formatGraphCircuitState(stat.circuitState)}
+                                </span>
+                                <span className="status-badge state-idle">{formatModelSource(stat.source)}</span>
+                              </div>
+                            </div>
+                            <div className="assistant-score-grid intelligence-model-metrics">
+                              <span>吞吐 {formatThroughputPerMinute(stat.throughputPerMinute)}</span>
+                              <span>失败率 {formatFailureRate(stat.failureRate)}</span>
+                              <span>进行中 {stat.inFlightCount}</span>
+                            </div>
+                            <div className="assistant-score-grid intelligence-model-metrics">
+                              <span>成功 {stat.llmSuccessCount}</span>
+                              <span>失败 {stat.failureCount}</span>
+                              <span>接盘 {stat.handoffInCount}</span>
+                              <span>转派 {stat.handoffOutCount}</span>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="intelligence-log-panel">
+                    <div className="assistant-trace-heading split">
+                      <span className="label">构建日志</span>
+                      <span className="panel-note">自动刷新最近步骤和失败原因</span>
+                    </div>
+                    {knowledgeGraph.buildLogs.length === 0 ? (
+                      <p className="panel-note">还没有构建日志。启动生成后，这里会显示每个阶段的进展。</p>
+                    ) : (
+                      <div className="intelligence-log-list intelligence-build-log-list">
+                        {knowledgeGraph.buildLogs.slice(-10).map((log) => (
+                          <article key={log.id} className={`intelligence-log-item ${log.level}`}>
+                            <div className="intelligence-log-head">
+                              <span className={`status-badge ${log.level === 'error' ? 'danger' : log.level === 'warn' ? 'state-queued' : 'state-indexed'}`}>
+                                {formatBuildLogLevel(log.level)}
+                              </span>
+                              <span className="panel-note">{formatGraphStage(log.stage)} · {new Date(log.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                            </div>
+                            <p>{log.message}</p>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                    {build.errorMessage ? <p className="panel-note">失败原因：{build.errorMessage}</p> : null}
+                  </div>
                 </div>
-                <div className="intelligence-model-grid">
-                  {build.modelStats.map((stat) => (
-                    <article key={`${stat.providerId}::${stat.modelId}`} className="intelligence-model-card">
-                      <div className="intelligence-log-head">
-                        <strong>{formatBuildModelLabel(buildModelLabels, stat.providerId, stat.modelId)}</strong>
-                        <div className="badge-row wrap compact-actions">
-                          <span className={`status-badge ${stat.circuitState === 'open' ? 'danger' : stat.circuitState === 'half-open' ? 'state-queued' : 'ok'}`}>
-                            {formatGraphCircuitState(stat.circuitState)}
-                          </span>
-                          <span className="status-badge state-idle">{formatModelSource(stat.source)}</span>
+              ) : null}
+            </div>
+          </section>
+
+          <div className="intelligence-grid">
+            <section className="card intelligence-graph-card">
+              <div className="panel-heading compact-heading split align-start">
+                <div>
+                  <p className="label">图谱浏览</p>
+                  <h3>关系图与检索</h3>
+                  <p className="panel-note">按人物、地点、别名、关系证据或章节线索搜索。点节点可聚焦，双击可展开详情。</p>
+                </div>
+                <div className="badge-row wrap compact-actions graph-stat-row">
+                  <span className="status-badge state-indexed">实体 {knowledgeGraph.entities.length}</span>
+                  <span className="status-badge ok">关系 {knowledgeGraph.relations.length}</span>
+                  <span className="status-badge state-idle">当前可见 {graphExplorer.nodes.length}/{graphExplorer.edges.length}</span>
+                </div>
+              </div>
+
+              <div className="graph-build-actions">
+                <article className="graph-action-tile">
+                  <p className="label">增量更新</p>
+                  <strong className="graph-action-title">只补新增或已改章节</strong>
+                  <p className="graph-action-note">优先复用现有结构缓存，不用把整本书重新抽一遍。</p>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void handleBuildGraph('incremental')}
+                    disabled={buildStartDisabled}
+                  >
+                    {graphBuilding || buildRunning
+                      ? '处理中...'
+                      : build.status === 'paused'
+                        ? '请先继续当前任务'
+                        : build.lastBuiltAt
+                          ? '开始增量更新'
+                          : '开始生成图谱'}
+                  </button>
+                </article>
+                <article className="graph-action-tile">
+                  <p className="label">关系重建</p>
+                  <strong className="graph-action-title">重算实体与关系</strong>
+                  <p className="graph-action-note">直接基于已缓存的结构结果归并，不重新跑章节结构抽取。</p>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => void handleBuildGraph('rebuild')}
+                    disabled={buildStartDisabled}
+                  >
+                    重算实体与关系
+                  </button>
+                </article>
+                <article className="graph-action-tile">
+                  <p className="label">全量重跑</p>
+                  <strong className="graph-action-title">从头重新提取</strong>
+                  <p className="graph-action-note">清掉旧缓存和旧结构，重新跑完整抽取链路，适合大改配置后使用。</p>
+                  <button
+                    type="button"
+                    className="ghost-button danger"
+                    onClick={() => void handleBuildGraph('full')}
+                    disabled={buildStartDisabled}
+                  >
+                    全量重做
+                  </button>
+                </article>
+              </div>
+
+              <p className="panel-note graph-status-copy">
+                {build.status === 'paused'
+                  ? '当前任务已经暂停。若想继续当前构建，请先点击“继续构建”；若想换模式，先清空当前图谱。'
+                  : build.message || graphExplorer.summaryMessage}
+              </p>
+
+              <KnowledgeGraphWorkspace
+                namespace={graphNamespace}
+                graphExplorer={graphExplorer}
+                totalEntityCount={knowledgeGraph.entities.length}
+                totalRelationCount={knowledgeGraph.relations.length}
+                searchInput={graphSearchInput}
+                onSearchInputChange={setGraphSearchInput}
+                onClearSearch={() => setGraphSearchInput('')}
+                onClearFocus={() => setGraphFocusEntityId(null)}
+                onFocusEntityIdChange={setGraphFocusEntityId}
+                onPreviewEntity={handlePreviewEntity}
+                onPreviewRelation={handlePreviewRelation}
+              />
+            </section>
+
+            <section className="card intelligence-list-card intelligence-side-card">
+              <div className="panel-heading compact-heading split">
+                <div>
+                  <p className="label">图谱实体</p>
+                  <h3>高频实体</h3>
+                </div>
+                {knowledgeGraph.entities.length > 5 ? (
+                  <button
+                    type="button"
+                    className="ghost-button intelligence-inline-button"
+                    onClick={() => setGraphPreview(buildEntityListPreview(knowledgeGraph.entities))}
+                  >
+                    查看更多
+                  </button>
+                ) : null}
+              </div>
+              {topEntities.length === 0 ? (
+                <p className="panel-note">当前还没有实体，先生成一次图谱。</p>
+              ) : (
+                <div className="intelligence-list">
+                  {topEntities.map((entity) => (
+                    <article key={entity.id} className="intelligence-list-item">
+                      <div className="intelligence-list-copy">
+                        <strong>{entity.name}</strong>
+                        <p className="intelligence-preview-text">{entity.summary}</p>
+                        <div className="action-row wrap compact-actions">
+                          <button type="button" className="ghost-button intelligence-inline-button" onClick={() => setGraphFocusEntityId(entity.id)}>
+                            在图中查看
+                          </button>
+                          {shouldUseGraphPreview(entity.summary) ? (
+                            <button type="button" className="ghost-button intelligence-inline-button" onClick={() => handlePreviewEntity(entity)}>
+                              浮窗查看
+                            </button>
+                          ) : null}
                         </div>
                       </div>
-                      <div className="assistant-score-grid intelligence-model-metrics">
-                        <span>吞吐 {formatThroughputPerMinute(stat.throughputPerMinute)}</span>
-                        <span>失败率 {formatFailureRate(stat.failureRate)}</span>
-                        <span>进行中 {stat.inFlightCount}</span>
-                      </div>
-                      <div className="assistant-score-grid intelligence-model-metrics">
-                        <span>成功 {stat.llmSuccessCount}</span>
-                        <span>失败 {stat.failureCount}</span>
-                        <span>接盘 {stat.handoffInCount}</span>
-                        <span>转派 {stat.handoffOutCount}</span>
-                      </div>
-                      <p className="panel-note intelligence-model-footnote">
-                        {stat.circuitState === 'open' && stat.cooldownUntil
-                          ? `已进入冷却，预计 ${new Date(stat.cooldownUntil).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} 后再试。`
-                          : stat.lastError
-                            ? `最近一次失败：${stat.lastError}`
-                            : stat.attemptCount > 0
-                              ? `已尝试 ${stat.attemptCount} 次，单模型并发上限 ${stat.maxConcurrency}。`
-                              : `等待派发，单模型并发上限 ${stat.maxConcurrency}。`}
-                      </p>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            <div className="intelligence-log-panel">
-              <div className="assistant-trace-heading split">
-                <span className="label">构建日志</span>
-                <span className="panel-note">自动刷新最近步骤和失败原因</span>
-              </div>
-              {knowledgeGraph.buildLogs.length === 0 ? (
-                <p className="panel-note">还没有构建日志。启动生成后，这里会显示每个阶段的进展。</p>
-              ) : (
-                <div className="intelligence-log-list intelligence-build-log-list">
-                  {knowledgeGraph.buildLogs.slice(-10).map((log) => (
-                    <article key={log.id} className={`intelligence-log-item ${log.level}`}>
-                      <div className="intelligence-log-head">
-                        <span className={`status-badge ${log.level === 'error' ? 'danger' : log.level === 'warn' ? 'state-queued' : 'state-indexed'}`}>
-                          {formatBuildLogLevel(log.level)}
-                        </span>
-                        <span className="panel-note">{formatGraphStage(log.stage)} · {new Date(log.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                      </div>
-                      <p>{log.message}</p>
+                      <span className="status-badge state-indexed">{entity.mentionCount} 次</span>
                     </article>
                   ))}
                 </div>
               )}
-            </div>
-          </div>
+            </section>
 
-          <div className="intelligence-grid">
-            <section className="card intelligence-config-card">
+            <section className="card intelligence-list-card intelligence-side-card">
+              <div className="panel-heading compact-heading split">
+                <div>
+                  <p className="label">图谱关系</p>
+                  <h3>主要关系</h3>
+                </div>
+                {knowledgeGraph.relations.length > 5 ? (
+                  <button
+                    type="button"
+                    className="ghost-button intelligence-inline-button"
+                    onClick={() => setGraphPreview(buildRelationListPreview(knowledgeGraph.relations))}
+                  >
+                    查看更多
+                  </button>
+                ) : null}
+              </div>
+              {topRelations.length === 0 ? (
+                <p className="panel-note">当前还没有关系，生成后会按证据强度排序展示。</p>
+              ) : (
+                <div className="intelligence-list">
+                  {topRelations.map((relation) => (
+                    <article key={relation.id} className="intelligence-list-item">
+                      <div className="intelligence-list-copy">
+                        <strong className="intelligence-preview-text">{relation.summary}</strong>
+                        <p className="intelligence-preview-text">{relation.evidence[0] ?? '暂无证据摘要。'}</p>
+                        <div className="action-row wrap compact-actions">
+                          <button type="button" className="ghost-button intelligence-inline-button" onClick={() => handlePreviewRelation(relation)}>
+                            查看证据
+                          </button>
+                        </div>
+                      </div>
+                      <span className="status-badge ok">权重 {relation.weight}</span>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="card intelligence-config-card intelligence-config-span">
               <div className="panel-heading split align-start compact-heading">
                 <div>
                   <p className="label">单书配置</p>
                   <h3>模型与图库路由</h3>
                 </div>
-                <span className="panel-note">空着就沿用全局默认</span>
+                <span className="panel-note">空着就沿用全局默认；上方关系图卡片负责发起增量、重建和全量任务。</span>
               </div>
 
               <div className="intelligence-config-grid">
@@ -643,77 +936,15 @@ export function LibraryIntelligencePanel({
                 <button type="button" className="ghost-button" onClick={() => void handleSaveGraphProfile()} disabled={graphSaving || knowledgeGraph.profile.configLocked}>
                   {graphSaving ? '保存中...' : knowledgeGraph.profile.configLocked ? '配置已锁定' : '保存单书配置'}
                 </button>
-                {build.status === 'queued' || build.status === 'running' ? (
-                  <button type="button" className="ghost-button" onClick={() => void handlePauseGraph()} disabled={graphPausing}>
-                    {graphPausing ? '暂停中...' : '暂停构建'}
-                  </button>
-                ) : null}
                 {build.status === 'paused' ? (
                   <button type="button" className="primary-button" onClick={() => void handleResumeGraph()} disabled={graphResuming}>
                     {graphResuming ? '继续中...' : '继续构建'}
                   </button>
                 ) : null}
-                <button type="button" className="primary-button" onClick={() => void handleBuildGraph()} disabled={graphBuilding || graphPausing || graphResuming || build.status === 'queued' || build.status === 'running' || build.status === 'paused'}>
-                  {graphBuilding || build.status === 'queued' || build.status === 'running'
-                    ? '构建中...'
-                    : build.status === 'paused'
-                      ? '请先继续当前任务'
-                      : build.lastBuiltAt
-                        ? '重新生成图谱'
-                        : '开始生成图谱'}
-                </button>
-                <button type="button" className="ghost-button danger" onClick={() => void handleDeleteGraph()} disabled={graphDeleting || build.status === 'queued' || build.status === 'running'}>
+                <button type="button" className="ghost-button danger" onClick={() => void handleDeleteGraph()} disabled={graphDeleting || buildRunning}>
                   {graphDeleting ? '清空中...' : '清空图谱'}
                 </button>
               </div>
-            </section>
-
-            <section className="card intelligence-list-card">
-              <div className="panel-heading compact-heading">
-                <div>
-                  <p className="label">图谱实体</p>
-                  <h3>高频实体</h3>
-                </div>
-              </div>
-              {knowledgeGraph.entities.length === 0 ? (
-                <p className="panel-note">当前还没有实体，先生成一次图谱。</p>
-              ) : (
-                <div className="intelligence-list">
-                  {knowledgeGraph.entities.slice(0, 8).map((entity) => (
-                    <article key={entity.id} className="intelligence-list-item">
-                      <div>
-                        <strong>{entity.name}</strong>
-                        <p>{entity.summary}</p>
-                      </div>
-                      <span className="status-badge state-indexed">{entity.mentionCount} 次</span>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="card intelligence-list-card">
-              <div className="panel-heading compact-heading">
-                <div>
-                  <p className="label">图谱关系</p>
-                  <h3>主要关系</h3>
-                </div>
-              </div>
-              {knowledgeGraph.relations.length === 0 ? (
-                <p className="panel-note">当前还没有关系，生成后会按证据强度排序展示。</p>
-              ) : (
-                <div className="intelligence-list">
-                  {knowledgeGraph.relations.slice(0, 8).map((relation) => (
-                    <article key={relation.id} className="intelligence-list-item">
-                      <div>
-                        <strong>{relation.summary}</strong>
-                        <p>{relation.evidence[0] ?? '暂无证据摘要。'}</p>
-                      </div>
-                      <span className="status-badge ok">权重 {relation.weight}</span>
-                    </article>
-                  ))}
-                </div>
-              )}
             </section>
           </div>
         </section>
@@ -852,8 +1083,1137 @@ export function LibraryIntelligencePanel({
           </aside>
         </div>
       ) : null}
+
+      {graphPreview ? (
+        <div className="reader-directory-overlay graph-preview-overlay" role="presentation" onClick={() => setGraphPreview(null)}>
+          <div className="graph-preview-dialog" role="dialog" aria-modal="true" aria-label={graphPreview.title} onClick={(event) => event.stopPropagation()}>
+            <div className="reader-directory-drawer-header graph-preview-header">
+              <div>
+                <p className="eyebrow">图谱详情</p>
+                <h3>{graphPreview.title}</h3>
+                <p className="panel-note">{graphPreview.subtitle}</p>
+              </div>
+              <button type="button" className="ghost-button reader-directory-close" onClick={() => setGraphPreview(null)}>
+                关闭
+              </button>
+            </div>
+            <div className="graph-preview-body">
+              {graphPreview.body.map((paragraph, index) => (
+                <p key={`${graphPreview.title}-${index}`}>{paragraph}</p>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
+}
+
+interface KnowledgeGraphWorkspaceProps {
+  namespace: string;
+  graphExplorer: GraphExplorerState;
+  totalEntityCount: number;
+  totalRelationCount: number;
+  searchInput: string;
+  onSearchInputChange: (value: string) => void;
+  onClearSearch: () => void;
+  onClearFocus: () => void;
+  onFocusEntityIdChange: (entityId: string | null) => void;
+  onPreviewEntity: (entity: GraphEntity) => void;
+  onPreviewRelation: (relation: GraphRelation) => void;
+}
+
+const GRAPH_WORLD_WIDTH = 1440;
+const GRAPH_WORLD_HEIGHT = 920;
+const GRAPH_MIN_ZOOM = 0.45;
+const GRAPH_MAX_ZOOM = 2.4;
+
+function KnowledgeGraphWorkspace({
+  namespace,
+  graphExplorer,
+  totalEntityCount,
+  totalRelationCount,
+  searchInput,
+  onSearchInputChange,
+  onClearSearch,
+  onClearFocus,
+  onFocusEntityIdChange,
+  onPreviewEntity,
+  onPreviewRelation,
+}: KnowledgeGraphWorkspaceProps) {
+  const inlineCanvasRef = useRef<HTMLDivElement | null>(null);
+  const modalCanvasRef = useRef<HTMLDivElement | null>(null);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [viewport, setViewport] = useState<GraphViewportState>({ zoom: 0.72, offsetX: 82, offsetY: 56 });
+  const [dragState, setDragState] = useState<GraphDragState | null>(null);
+  const [nodePositions, setNodePositions] = useState<Record<string, { x: number; y: number }>>(() => createGraphNodePositionMap(graphExplorer.nodes));
+
+  useEffect(() => {
+    setNodePositions(createGraphNodePositionMap(graphExplorer.nodes));
+    setViewport({ zoom: 0.72, offsetX: 82, offsetY: 56 });
+    setFullscreenOpen(false);
+  }, [namespace]);
+
+  useEffect(() => {
+    setNodePositions((current) => mergeGraphNodePositionMap(current, graphExplorer.nodes));
+  }, [graphExplorer.nodes]);
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      if (inlineCanvasRef.current) {
+        setViewport(fitGraphViewport(graphExplorer.nodes, createGraphNodePositionMap(graphExplorer.nodes), inlineCanvasRef.current));
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [namespace, searchInput, graphExplorer.focusEntity?.id, graphExplorer.nodes]);
+
+  useEffect(() => {
+    if (!fullscreenOpen) {
+      return;
+    }
+
+    const bodyStyle = document.body.style;
+    const htmlStyle = document.documentElement.style;
+    const previousBodyOverflow = bodyStyle.overflow;
+    const previousBodyOverscrollBehavior = bodyStyle.overscrollBehavior;
+    const previousHtmlOverflow = htmlStyle.overflow;
+    const previousHtmlOverscrollBehavior = htmlStyle.overscrollBehavior;
+
+    bodyStyle.overflow = 'hidden';
+    bodyStyle.overscrollBehavior = 'none';
+    htmlStyle.overflow = 'hidden';
+    htmlStyle.overscrollBehavior = 'none';
+
+    const frameId = window.requestAnimationFrame(() => {
+      if (modalCanvasRef.current) {
+        setViewport(fitGraphViewport(graphExplorer.nodes, nodePositions, modalCanvasRef.current));
+      }
+
+      const modalDialog = modalCanvasRef.current?.closest('.graph-modal-dialog');
+      if (modalDialog instanceof HTMLElement) {
+        modalDialog.scrollTop = 0;
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      bodyStyle.overflow = previousBodyOverflow;
+      bodyStyle.overscrollBehavior = previousBodyOverscrollBehavior;
+      htmlStyle.overflow = previousHtmlOverflow;
+      htmlStyle.overscrollBehavior = previousHtmlOverscrollBehavior;
+    };
+  }, [fullscreenOpen, graphExplorer.nodes, nodePositions]);
+
+  useEffect(() => {
+    const containers = [inlineCanvasRef.current, fullscreenOpen ? modalCanvasRef.current : null]
+      .filter((container): container is HTMLDivElement => container !== null);
+
+    if (containers.length === 0) {
+      return;
+    }
+
+    function handleNativeWheel(event: WheelEvent) {
+      const container = event.currentTarget;
+      if (!(container instanceof HTMLDivElement)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const rect = container.getBoundingClientRect();
+      const anchorX = event.clientX - rect.left;
+      const anchorY = event.clientY - rect.top;
+
+      setViewport((current) => {
+        const nextZoom = clampGraphZoom(current.zoom * (event.deltaY < 0 ? 1.12 : 0.9));
+        return zoomGraphViewport(current, nextZoom, anchorX, anchorY);
+      });
+    }
+
+    containers.forEach((container) => {
+      container.addEventListener('wheel', handleNativeWheel, { passive: false });
+    });
+
+    return () => {
+      containers.forEach((container) => {
+        container.removeEventListener('wheel', handleNativeWheel);
+      });
+    };
+  }, [fullscreenOpen]);
+
+  useEffect(() => {
+    if (!dragState) {
+      return;
+    }
+
+    const activeDragState = dragState;
+
+    function handlePointerMove(event: PointerEvent) {
+      if (event.pointerId !== activeDragState.pointerId) {
+        return;
+      }
+
+      if (activeDragState.kind === 'pan') {
+        setViewport((current) => ({
+          ...current,
+          offsetX: activeDragState.originOffsetX + (event.clientX - activeDragState.startClientX),
+          offsetY: activeDragState.originOffsetY + (event.clientY - activeDragState.startClientY),
+        }));
+        return;
+      }
+
+      setNodePositions((current) => ({
+        ...current,
+        [activeDragState.nodeId]: {
+          x: activeDragState.originNodeX + (event.clientX - activeDragState.startClientX) / viewport.zoom,
+          y: activeDragState.originNodeY + (event.clientY - activeDragState.startClientY) / viewport.zoom,
+        },
+      }));
+    }
+
+    function handlePointerUp(event: PointerEvent) {
+      if (event.pointerId === activeDragState.pointerId) {
+        setDragState(null);
+      }
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [dragState, viewport.zoom]);
+
+  const renderedNodes = graphExplorer.nodes.map((node) => {
+    const position = nodePositions[node.entity.id] ?? createGraphNodePositionMap([node])[node.entity.id] ?? { x: GRAPH_WORLD_WIDTH / 2, y: GRAPH_WORLD_HEIGHT / 2 };
+    return {
+      ...node,
+      canvasX: position.x,
+      canvasY: position.y,
+    };
+  });
+
+  const renderedNodeById = new Map(renderedNodes.map((node) => [node.entity.id, node] as const));
+  const renderedEdges = graphExplorer.edges.flatMap((edge) => {
+    const fromNode = renderedNodeById.get(edge.fromNode.entity.id);
+    const toNode = renderedNodeById.get(edge.toNode.entity.id);
+    return fromNode && toNode
+      ? [{
+          ...edge,
+          fromNode,
+          toNode,
+        }]
+      : [];
+  });
+  const focusEntity = graphExplorer.focusEntity;
+
+  function beginCanvasPan(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    setDragState({
+      kind: 'pan',
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originOffsetX: viewport.offsetX,
+      originOffsetY: viewport.offsetY,
+    });
+  }
+
+  function beginNodeDrag(event: React.PointerEvent<HTMLButtonElement>, nodeId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    const currentPosition = nodePositions[nodeId];
+    if (!currentPosition) {
+      return;
+    }
+
+    setDragState({
+      kind: 'node',
+      pointerId: event.pointerId,
+      nodeId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originNodeX: currentPosition.x,
+      originNodeY: currentPosition.y,
+    });
+  }
+
+  function zoomByStep(multiplier: number, container: HTMLDivElement | null) {
+    if (!container) {
+      return;
+    }
+
+    setViewport((current) => {
+      const nextZoom = clampGraphZoom(current.zoom * multiplier);
+      return zoomGraphViewport(current, nextZoom, container.clientWidth / 2, container.clientHeight / 2);
+    });
+  }
+
+  function fitView(container: HTMLDivElement | null) {
+    if (!container) {
+      return;
+    }
+
+    setViewport(fitGraphViewport(graphExplorer.nodes, nodePositions, container));
+  }
+
+  function resetView(container: HTMLDivElement | null) {
+    const nextPositions = createGraphNodePositionMap(graphExplorer.nodes);
+    setNodePositions(nextPositions);
+    if (!container) {
+      setViewport({ zoom: 0.72, offsetX: 82, offsetY: 56 });
+      return;
+    }
+
+    setViewport(fitGraphViewport(graphExplorer.nodes, nextPositions, container));
+  }
+
+  function renderGraphCanvasElement(containerRef: React.RefObject<HTMLDivElement | null>, enlarged = false) {
+    return (
+      <div
+        ref={containerRef}
+        className={`graph-browser-canvas interactive${dragState?.kind === 'pan' ? ' panning' : ''}${enlarged ? ' enlarged' : ''}`}
+        role="img"
+        aria-label={enlarged ? '知识图谱放大操作区' : '知识图谱浏览区域'}
+        onPointerDown={beginCanvasPan}
+      >
+        {renderedNodes.length === 0 ? (
+          <div className="empty-state compact graph-browser-empty">
+            <p>{graphExplorer.emptyMessage}</p>
+          </div>
+        ) : (
+          <div
+            className="graph-scene"
+            style={{
+              width: `${GRAPH_WORLD_WIDTH}px`,
+              height: `${GRAPH_WORLD_HEIGHT}px`,
+              transform: `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.zoom})`,
+            }}
+          >
+            <svg className="graph-browser-svg" viewBox={`0 0 ${GRAPH_WORLD_WIDTH} ${GRAPH_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-hidden="true">
+              {renderedEdges.map((edge) => (
+                <line
+                  key={edge.relation.id}
+                  className={`graph-edge${edge.primary ? ' primary' : ''}${edge.matched ? ' matched' : ''}`}
+                  x1={edge.fromNode.canvasX}
+                  y1={edge.fromNode.canvasY}
+                  x2={edge.toNode.canvasX}
+                  y2={edge.toNode.canvasY}
+                />
+              ))}
+            </svg>
+
+            {renderedNodes.map((node) => (
+              <button
+                key={node.entity.id}
+                type="button"
+                className={`graph-node${node.focused ? ' focused' : ''}${node.matched ? ' matched' : ''}`}
+                style={{
+                  left: `${node.canvasX}px`,
+                  top: `${node.canvasY}px`,
+                  width: `${buildGraphNodeWidth(node)}px`,
+                  minHeight: `${node.size}px`,
+                }}
+                onPointerDown={(event) => beginNodeDrag(event, node.entity.id)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFocusEntityIdChange(node.focused ? null : node.entity.id);
+                }}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  onPreviewEntity(node.entity);
+                }}
+              >
+                <strong>{node.entity.name}</strong>
+                <span>{formatGraphEntityType(node.entity.entityType)} · {node.entity.mentionCount} 次</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderCanvas(containerRef: React.RefObject<HTMLDivElement | null>, enlarged = false) {
+    const canvasElement = renderGraphCanvasElement(containerRef, enlarged);
+
+    if (enlarged) {
+      return (
+        <div className="graph-browser-stage enlarged">
+          <div className="graph-canvas-shell enlarged">
+            <div className="graph-floating-toolbar">
+              <div className="graph-toolbar graph-toolbar-floating">
+                <label className="graph-search-field graph-search-field-floating">
+                  <span>搜索图谱</span>
+                  <input
+                    value={searchInput}
+                    onChange={(event) => onSearchInputChange(event.target.value)}
+                    placeholder="试试角色名、别名、关系摘要、证据内容或章节关键词"
+                  />
+                </label>
+                <div className="action-row wrap compact-actions graph-toolbar-actions">
+                  <button type="button" className="ghost-button" onClick={onClearSearch} disabled={searchInput.trim().length === 0}>
+                    清空搜索
+                  </button>
+                  <button type="button" className="ghost-button" onClick={onClearFocus} disabled={!graphExplorer.focusEntity}>
+                    取消聚焦
+                  </button>
+                </div>
+                <div className="graph-result-strip graph-result-strip-floating">
+                  <article className="graph-result-stat">
+                    <span className="label">实体</span>
+                    <strong>{graphExplorer.nodes.length}/{totalEntityCount}</strong>
+                  </article>
+                  <article className="graph-result-stat">
+                    <span className="label">关系</span>
+                    <strong>{graphExplorer.edges.length}/{totalRelationCount}</strong>
+                  </article>
+                  <article className="graph-result-stat">
+                    <span className="label">章节</span>
+                    <strong>{graphExplorer.spotlightChapters.length}</strong>
+                  </article>
+                </div>
+              </div>
+            </div>
+
+            <div className="graph-control-rail graph-control-rail-left" aria-hidden="true">
+              <span className="graph-control-caption">交互</span>
+              <span className="graph-control-pill">拖拽节点</span>
+              <span className="graph-control-pill">空白拖动画布</span>
+              <span className="graph-control-pill">滚轮缩放</span>
+            </div>
+
+            {canvasElement}
+
+            <div className="graph-control-rail graph-control-rail-right">
+              <button type="button" className="graph-control-button" onClick={() => zoomByStep(1.15, containerRef.current)}>放大 +</button>
+              <button type="button" className="graph-control-button" onClick={() => zoomByStep(0.87, containerRef.current)}>缩小 -</button>
+              <button type="button" className="graph-control-button" onClick={() => fitView(containerRef.current)}>适配</button>
+              <button type="button" className="graph-control-button" onClick={() => resetView(containerRef.current)}>重置</button>
+            </div>
+
+            <div className="graph-floating-summary">
+              <div className="assistant-trace-heading split">
+                <span className="label">{focusEntity ? '当前焦点' : '浏览提示'}</span>
+                <span className="panel-note">放大模式下保留最关键的检索和聚焦信息。</span>
+              </div>
+
+              {focusEntity ? (
+                <>
+                  <div className="graph-floating-summary-copy">
+                    <strong>{focusEntity.name}</strong>
+                    <p>{focusEntity.summary}</p>
+                  </div>
+                  <div className="assistant-score-grid">
+                    <span>{formatGraphEntityType(focusEntity.entityType)}</span>
+                    <span>出现 {focusEntity.mentionCount} 次</span>
+                    {focusEntity.firstChapterId ? <span>首次 {focusEntity.firstChapterId}</span> : null}
+                    {focusEntity.lastChapterId ? <span>最近 {focusEntity.lastChapterId}</span> : null}
+                  </div>
+                  {focusEntity.aliases.length > 0 ? (
+                    <div className="graph-chip-list graph-chip-list-compact">
+                      {focusEntity.aliases.slice(0, 6).map((alias) => (
+                        <span key={`${focusEntity.id}-${alias}`} className="graph-chip static">{alias}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {graphExplorer.spotlightRelations.length > 0 ? (
+                    <div className="graph-chip-list relation-list graph-chip-list-compact">
+                      {graphExplorer.spotlightRelations.slice(0, 4).map((relation) => (
+                        <button
+                          key={relation.id}
+                          type="button"
+                          className="graph-chip relation"
+                          onClick={() => onPreviewRelation(relation)}
+                        >
+                          {relation.summary}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <p className="panel-note">{graphExplorer.summaryMessage}</p>
+                  <div className="graph-chip-list graph-chip-list-compact">
+                    {graphExplorer.spotlightEntities.slice(0, 6).map((entity) => (
+                      <button
+                        key={entity.id}
+                        type="button"
+                        className="graph-chip"
+                        onClick={() => onFocusEntityIdChange(entity.id)}
+                      >
+                        {entity.name}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`graph-browser-stage${enlarged ? ' enlarged' : ''}`}>
+        <div className={`graph-canvas-shell${enlarged ? ' enlarged' : ''}`}>
+          <div className="graph-control-rail graph-control-rail-left" aria-hidden="true">
+            <span className="graph-control-caption">交互</span>
+            <span className="graph-control-pill">拖拽节点</span>
+            <span className="graph-control-pill">空白拖动画布</span>
+            <span className="graph-control-pill">滚轮缩放</span>
+          </div>
+
+          {canvasElement}
+
+          <div className="graph-control-rail graph-control-rail-right">
+            <button type="button" className="graph-control-button" onClick={() => zoomByStep(1.15, containerRef.current)}>放大 +</button>
+            <button type="button" className="graph-control-button" onClick={() => zoomByStep(0.87, containerRef.current)}>缩小 -</button>
+            <button type="button" className="graph-control-button" onClick={() => fitView(containerRef.current)}>适配</button>
+            <button type="button" className="graph-control-button" onClick={() => resetView(containerRef.current)}>重置</button>
+          </div>
+        </div>
+
+        <aside className={`graph-inspector${enlarged ? ' enlarged' : ''}`}>
+          <section className="graph-inspector-card">
+            <div className="assistant-trace-heading split">
+              <span className="label">联动检索</span>
+              <span className="panel-note">搜实体、关系和章节证据</span>
+            </div>
+            <div className="graph-toolbar graph-toolbar-inline">
+              <label className="graph-search-field">
+                <span>搜索图谱</span>
+                <input
+                  value={searchInput}
+                  onChange={(event) => onSearchInputChange(event.target.value)}
+                  placeholder="试试角色名、别名、关系摘要、证据内容或章节关键词"
+                />
+              </label>
+              <div className="action-row wrap compact-actions graph-toolbar-actions graph-toolbar-actions-inline">
+                <button type="button" className="ghost-button" onClick={onClearSearch} disabled={searchInput.trim().length === 0}>
+                  清空搜索
+                </button>
+                <button type="button" className="ghost-button" onClick={onClearFocus} disabled={!graphExplorer.focusEntity}>
+                  取消聚焦
+                </button>
+                <button type="button" className="ghost-button" onClick={() => setFullscreenOpen(true)}>
+                  放大查看
+                </button>
+              </div>
+            </div>
+
+            <div className="graph-result-strip">
+              <article className="graph-result-stat">
+                <span className="label">实体</span>
+                <strong>{graphExplorer.nodes.length}/{totalEntityCount}</strong>
+              </article>
+              <article className="graph-result-stat">
+                <span className="label">关系</span>
+                <strong>{graphExplorer.edges.length}/{totalRelationCount}</strong>
+              </article>
+              <article className="graph-result-stat">
+                <span className="label">章节</span>
+                <strong>{graphExplorer.spotlightChapters.length}</strong>
+              </article>
+            </div>
+          </section>
+
+          <section className="graph-inspector-card">
+            <p className="label">{focusEntity ? '当前焦点' : searchInput.trim().length > 0 ? '搜索命中' : '浏览提示'}</p>
+            {focusEntity ? (
+              <>
+                <h4>{focusEntity.name}</h4>
+                <p className="panel-note">{focusEntity.summary}</p>
+                <div className="assistant-score-grid">
+                  <span>{formatGraphEntityType(focusEntity.entityType)}</span>
+                  <span>出现 {focusEntity.mentionCount} 次</span>
+                  {focusEntity.firstChapterId ? <span>首次 {focusEntity.firstChapterId}</span> : null}
+                  {focusEntity.lastChapterId ? <span>最近 {focusEntity.lastChapterId}</span> : null}
+                </div>
+                {focusEntity.aliases.length > 0 ? (
+                  <div className="graph-chip-list">
+                    {focusEntity.aliases.map((alias) => (
+                      <span key={`${focusEntity.id}-${alias}`} className="graph-chip static">{alias}</span>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="action-row wrap compact-actions">
+                  <button type="button" className="ghost-button" onClick={() => onPreviewEntity(focusEntity)}>
+                    查看详情
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="panel-note">{graphExplorer.summaryMessage}</p>
+                {graphExplorer.spotlightEntities.length > 0 ? (
+                  <div className="graph-chip-list">
+                    {graphExplorer.spotlightEntities.map((entity) => (
+                      <button
+                        key={entity.id}
+                        type="button"
+                        className="graph-chip"
+                        onClick={() => onFocusEntityIdChange(entity.id)}
+                      >
+                        {entity.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </section>
+
+          <section className="graph-inspector-card">
+            <div className="assistant-trace-heading split">
+              <span className="label">关系结果</span>
+              <span className="panel-note">点击查看证据</span>
+            </div>
+            {graphExplorer.spotlightRelations.length === 0 ? (
+              <p className="panel-note">还没有可展示的关系，先生成图谱或换个关键词试试。</p>
+            ) : (
+              <div className="graph-chip-list relation-list">
+                {graphExplorer.spotlightRelations.map((relation) => (
+                  <button
+                    key={relation.id}
+                    type="button"
+                    className="graph-chip relation"
+                    onClick={() => onPreviewRelation(relation)}
+                  >
+                    {relation.summary}
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="graph-inspector-card">
+            <div className="assistant-trace-heading split">
+              <span className="label">章节联动</span>
+              <span className="panel-note">展示当前命中的章节范围</span>
+            </div>
+            {graphExplorer.spotlightChapters.length === 0 ? (
+              <p className="panel-note">当前没有关联章节。搜索关系、别名或人物后，这里会同步收窄。</p>
+            ) : (
+              <div className="graph-chip-list">
+                {graphExplorer.spotlightChapters.map((chapterId) => (
+                  <span key={chapterId} className="graph-chip static">{chapterId}</span>
+                ))}
+              </div>
+            )}
+          </section>
+        </aside>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {renderCanvas(inlineCanvasRef)}
+      {fullscreenOpen ? (
+        <div className="reader-directory-overlay graph-preview-overlay graph-modal-overlay" role="presentation" onClick={() => setFullscreenOpen(false)}>
+          <div className="graph-modal-dialog" role="dialog" aria-modal="true" aria-label="知识图谱放大查看" onClick={(event) => event.stopPropagation()}>
+            <div className="reader-directory-drawer-header graph-preview-header">
+              <div>
+                <p className="eyebrow">图谱放大查看</p>
+                <h3>关系图操作区</h3>
+                <p className="panel-note">这里保留拖拽、缩放和联动检索，适合长时间浏览和调整节点位置。</p>
+              </div>
+              <button type="button" className="ghost-button reader-directory-close" onClick={() => setFullscreenOpen(false)}>
+                关闭
+              </button>
+            </div>
+            {renderCanvas(modalCanvasRef, true)}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function createGraphNodePositionMap(nodes: GraphExplorerNode[]): Record<string, { x: number; y: number }> {
+  return Object.fromEntries(nodes.map((node) => [
+    node.entity.id,
+    {
+      x: (node.x / 100) * GRAPH_WORLD_WIDTH,
+      y: (node.y / 100) * GRAPH_WORLD_HEIGHT,
+    },
+  ]));
+}
+
+function mergeGraphNodePositionMap(
+  current: Record<string, { x: number; y: number }>,
+  nodes: GraphExplorerNode[],
+): Record<string, { x: number; y: number }> {
+  const next = createGraphNodePositionMap(nodes);
+  for (const node of nodes) {
+    const existingPosition = current[node.entity.id];
+    if (existingPosition) {
+      next[node.entity.id] = existingPosition;
+    }
+  }
+
+  return next;
+}
+
+function fitGraphViewport(
+  nodes: GraphExplorerNode[],
+  nodePositions: Record<string, { x: number; y: number }>,
+  container: HTMLDivElement,
+): GraphViewportState {
+  if (nodes.length === 0) {
+    return { zoom: 0.72, offsetX: 82, offsetY: 56 };
+  }
+
+  const bounds = computeGraphBounds(nodes, nodePositions);
+  const width = Math.max(container.clientWidth, 1);
+  const height = Math.max(container.clientHeight, 1);
+  const availableWidth = Math.max(width - 120, 180);
+  const availableHeight = Math.max(height - 120, 180);
+  const zoom = clampGraphZoom(Math.min(availableWidth / bounds.width, availableHeight / bounds.height, 1.35));
+
+  return {
+    zoom,
+    offsetX: (width - bounds.width * zoom) / 2 - bounds.minX * zoom,
+    offsetY: (height - bounds.height * zoom) / 2 - bounds.minY * zoom,
+  };
+}
+
+function computeGraphBounds(
+  nodes: GraphExplorerNode[],
+  nodePositions: Record<string, { x: number; y: number }>,
+): { minX: number; minY: number; width: number; height: number } {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const node of nodes) {
+    const position = nodePositions[node.entity.id] ?? { x: GRAPH_WORLD_WIDTH / 2, y: GRAPH_WORLD_HEIGHT / 2 };
+    const halfWidth = buildGraphNodeWidth(node) / 2;
+    const halfHeight = node.size / 2;
+    minX = Math.min(minX, position.x - halfWidth);
+    minY = Math.min(minY, position.y - halfHeight);
+    maxX = Math.max(maxX, position.x + halfWidth);
+    maxY = Math.max(maxY, position.y + halfHeight);
+  }
+
+  return {
+    minX,
+    minY,
+    width: Math.max(maxX - minX, 220),
+    height: Math.max(maxY - minY, 220),
+  };
+}
+
+function clampGraphZoom(value: number): number {
+  return Math.max(GRAPH_MIN_ZOOM, Math.min(GRAPH_MAX_ZOOM, value));
+}
+
+function zoomGraphViewport(
+  viewport: GraphViewportState,
+  nextZoom: number,
+  anchorX: number,
+  anchorY: number,
+): GraphViewportState {
+  const normalizedZoom = clampGraphZoom(nextZoom);
+  const worldX = (anchorX - viewport.offsetX) / viewport.zoom;
+  const worldY = (anchorY - viewport.offsetY) / viewport.zoom;
+  return {
+    zoom: normalizedZoom,
+    offsetX: anchorX - worldX * normalizedZoom,
+    offsetY: anchorY - worldY * normalizedZoom,
+  };
+}
+
+function buildEntityPreview(entity: GraphEntity): GraphPreviewDialogState {
+  return {
+    title: entity.name,
+    subtitle: `实体摘要 · 出现 ${entity.mentionCount} 次`,
+    body: [
+      entity.summary,
+      `类型：${formatGraphEntityType(entity.entityType)}`,
+      entity.aliases.length > 0 ? `别名：${entity.aliases.join('、')}` : '',
+      entity.mentionChapterIds.length > 0 ? `章节：${entity.mentionChapterIds.join('、')}` : '',
+    ].filter(Boolean),
+  };
+}
+
+function buildRelationPreview(relation: GraphRelation): GraphPreviewDialogState {
+  return {
+    title: relation.summary,
+    subtitle: `关系证据 · 权重 ${relation.weight}`,
+    body: [
+      relation.summary,
+      relation.chapterIds.length > 0 ? `涉及章节：${relation.chapterIds.join('、')}` : '',
+      ...relation.evidence,
+    ].filter(Boolean),
+  };
+}
+
+function formatBuildActionTitle(mode: LibraryKnowledgeGraphBuildMode): string {
+  switch (mode) {
+    case 'rebuild':
+      return '关系重建已启动';
+    case 'full':
+      return '全量重建已启动';
+    default:
+      return '增量更新已启动';
+  }
+}
+
+function formatBuildActionFailureTitle(mode: LibraryKnowledgeGraphBuildMode): string {
+  switch (mode) {
+    case 'rebuild':
+      return '关系重建启动失败';
+    case 'full':
+      return '全量重建启动失败';
+    default:
+      return '增量更新启动失败';
+  }
+}
+
+function formatBuildActionMessage(mode: LibraryKnowledgeGraphBuildMode): string {
+  switch (mode) {
+    case 'rebuild':
+      return '后台会直接复用已有结构缓存，重新归并实体和关系。';
+    case 'full':
+      return '后台会清掉旧缓存并重新跑完整抽取链路，面板会自动刷新进度。';
+    default:
+      return '后台会优先复用未变章节的缓存，只补本次新增或变化内容。';
+  }
+}
+
+function buildGraphExplorerState(
+  knowledgeGraph: LibraryNovelDetailPayload['knowledgeGraph'],
+  rawQuery: string,
+  focusEntityId: string | null,
+): GraphExplorerState {
+  const entities = knowledgeGraph.entities;
+  const relations = knowledgeGraph.relations;
+
+  if (entities.length === 0) {
+    return {
+      nodes: [],
+      edges: [],
+      focusEntity: null,
+      focusRelations: [],
+      spotlightEntities: [],
+      spotlightRelations: [],
+      spotlightChapters: [],
+      emptyMessage: '当前还没有可浏览的图谱。先生成一次图谱，关系图就会出现在这里。',
+      summaryMessage: '当前还没有图谱数据。',
+    };
+  }
+
+  const normalizedQuery = rawQuery.trim().toLowerCase();
+  const queryTokens = normalizedQuery.split(/\s+/u).filter(Boolean);
+  const entityById = new Map(entities.map((entity) => [entity.id, entity] as const));
+  const matchedEntityIds = new Set(
+    queryTokens.length === 0
+      ? []
+      : entities
+          .filter((entity) => matchesGraphSearchTokens([
+            entity.name,
+            entity.summary,
+            entity.aliases.join(' '),
+            entity.mentionChapterIds.join(' '),
+          ], queryTokens))
+          .map((entity) => entity.id),
+  );
+  const matchedRelationIds = new Set(
+    queryTokens.length === 0
+      ? []
+      : relations
+          .filter((relation) => matchesGraphSearchTokens([
+            relation.summary,
+            relation.evidence.join(' '),
+            relation.chapterIds.join(' '),
+            entityById.get(relation.fromEntityId)?.name ?? '',
+            entityById.get(relation.toEntityId)?.name ?? '',
+          ], queryTokens))
+          .map((relation) => relation.id),
+  );
+
+  const visibleEntityCap = queryTokens.length > 0 ? 16 : 12;
+  const visibleRelationCap = queryTokens.length > 0 ? 24 : 18;
+  const focusEntity = focusEntityId ? entityById.get(focusEntityId) ?? null : null;
+  const seedEntityIds = new Set<string>();
+
+  if (focusEntity) {
+    seedEntityIds.add(focusEntity.id);
+  }
+
+  for (const entityId of matchedEntityIds) {
+    seedEntityIds.add(entityId);
+  }
+
+  for (const relation of relations) {
+    if (!matchedRelationIds.has(relation.id)) {
+      continue;
+    }
+
+    seedEntityIds.add(relation.fromEntityId);
+    seedEntityIds.add(relation.toEntityId);
+  }
+
+  if (seedEntityIds.size === 0) {
+    for (const entity of sortEntitiesForGraph(entities)) {
+      seedEntityIds.add(entity.id);
+      if (seedEntityIds.size >= visibleEntityCap) {
+        break;
+      }
+    }
+  }
+
+  for (const relation of sortRelationsForGraph(relations, matchedRelationIds, focusEntity?.id ?? null)) {
+    if (!seedEntityIds.has(relation.fromEntityId) && !seedEntityIds.has(relation.toEntityId)) {
+      continue;
+    }
+
+    seedEntityIds.add(relation.fromEntityId);
+    seedEntityIds.add(relation.toEntityId);
+    if (seedEntityIds.size >= visibleEntityCap) {
+      break;
+    }
+  }
+
+  if (seedEntityIds.size < visibleEntityCap) {
+    for (const entity of sortEntitiesForGraph(entities)) {
+      seedEntityIds.add(entity.id);
+      if (seedEntityIds.size >= visibleEntityCap) {
+        break;
+      }
+    }
+  }
+
+  const visibleEntities = sortEntitiesForGraph(entities.filter((entity) => seedEntityIds.has(entity.id))).slice(0, visibleEntityCap);
+  const visibleEntityIds = new Set(visibleEntities.map((entity) => entity.id));
+  const visibleRelations = sortRelationsForGraph(
+    relations.filter((relation) => visibleEntityIds.has(relation.fromEntityId) && visibleEntityIds.has(relation.toEntityId)),
+    matchedRelationIds,
+    focusEntity?.id ?? null,
+  ).slice(0, visibleRelationCap);
+  const layout = buildGraphLayout(visibleEntities, visibleRelations, focusEntity?.id ?? null);
+  const maxMentionCount = Math.max(...visibleEntities.map((entity) => entity.mentionCount), 1);
+  const nodes = visibleEntities.map((entity) => {
+    const position = layout.get(entity.id) ?? { x: 50, y: 50 };
+    return {
+      entity,
+      x: position.x,
+      y: position.y,
+      size: computeGraphNodeSize(entity, maxMentionCount, entity.id === focusEntity?.id),
+      matched: matchedEntityIds.has(entity.id),
+      focused: entity.id === focusEntity?.id,
+    } satisfies GraphExplorerNode;
+  });
+  const nodeById = new Map(nodes.map((node) => [node.entity.id, node] as const));
+  const edges = visibleRelations.flatMap((relation) => {
+    const fromNode = nodeById.get(relation.fromEntityId);
+    const toNode = nodeById.get(relation.toEntityId);
+    if (!fromNode || !toNode) {
+      return [];
+    }
+
+    return [{
+      relation,
+      fromNode,
+      toNode,
+      matched: matchedRelationIds.has(relation.id),
+      primary: relation.fromEntityId === focusEntity?.id || relation.toEntityId === focusEntity?.id,
+    } satisfies GraphExplorerEdge];
+  });
+
+  const focusRelations = focusEntity
+    ? visibleRelations.filter((relation) => relation.fromEntityId === focusEntity.id || relation.toEntityId === focusEntity.id)
+    : [];
+  const spotlightEntities = focusEntity
+    ? sortEntitiesForGraph(
+        visibleEntities.filter((entity) => entity.id !== focusEntity.id).filter((entity) => (
+          focusRelations.some((relation) => relation.fromEntityId === entity.id || relation.toEntityId === entity.id)
+        )),
+      ).slice(0, 6)
+    : sortEntitiesForGraph(visibleEntities.filter((entity) => matchedEntityIds.has(entity.id) || queryTokens.length === 0)).slice(0, 6);
+  const spotlightRelations = (focusEntity ? focusRelations : visibleRelations).slice(0, 8);
+  const spotlightChapters = Array.from(new Set(
+    focusEntity
+      ? [
+          ...focusEntity.mentionChapterIds,
+          ...focusRelations.flatMap((relation) => relation.chapterIds),
+        ]
+      : [
+          ...spotlightEntities.flatMap((entity) => entity.mentionChapterIds),
+          ...spotlightRelations.flatMap((relation) => relation.chapterIds),
+        ],
+  )).slice(0, 10);
+  const summaryMessage = queryTokens.length > 0
+    ? `已命中 ${matchedEntityIds.size} 个实体、${matchedRelationIds.size} 条关系，并自动带出相邻节点。`
+    : focusEntity
+      ? `当前聚焦 ${focusEntity.name}，右侧显示它附近最重要的关系。`
+      : '默认展示当前最重要的实体和关系；搜索后会自动收敛到相关子图。';
+
+  return {
+    nodes,
+    edges,
+    focusEntity,
+    focusRelations,
+    spotlightEntities,
+    spotlightRelations,
+    spotlightChapters,
+    emptyMessage: queryTokens.length > 0 ? '没有找到匹配项，换个角色名、别名或关系关键词再试。' : '当前没有可显示的节点。',
+    summaryMessage,
+  };
+}
+
+function sortEntitiesForGraph(entities: GraphEntity[]): GraphEntity[] {
+  return [...entities].sort((left, right) => {
+    const prominenceDelta = right.prominence - left.prominence;
+    if (prominenceDelta !== 0) {
+      return prominenceDelta;
+    }
+
+    const mentionDelta = right.mentionCount - left.mentionCount;
+    if (mentionDelta !== 0) {
+      return mentionDelta;
+    }
+
+    return left.name.localeCompare(right.name, 'zh-CN');
+  });
+}
+
+function sortRelationsForGraph(
+  relations: GraphRelation[],
+  matchedRelationIds: Set<string>,
+  focusEntityId: string | null,
+): GraphRelation[] {
+  return [...relations].sort((left, right) => {
+    const leftPriority = (matchedRelationIds.has(left.id) ? 4 : 0) + (left.fromEntityId === focusEntityId || left.toEntityId === focusEntityId ? 2 : 0);
+    const rightPriority = (matchedRelationIds.has(right.id) ? 4 : 0) + (right.fromEntityId === focusEntityId || right.toEntityId === focusEntityId ? 2 : 0);
+    if (rightPriority !== leftPriority) {
+      return rightPriority - leftPriority;
+    }
+
+    const weightDelta = right.weight - left.weight;
+    if (weightDelta !== 0) {
+      return weightDelta;
+    }
+
+    return left.summary.localeCompare(right.summary, 'zh-CN');
+  });
+}
+
+function matchesGraphSearchTokens(values: string[], tokens: string[]): boolean {
+  if (tokens.length === 0) {
+    return false;
+  }
+
+  const haystack = values.join(' ').toLowerCase();
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function buildGraphLayout(
+  entities: GraphEntity[],
+  relations: GraphRelation[],
+  focusEntityId: string | null,
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  if (entities.length === 0) {
+    return positions;
+  }
+
+  const centerEntityId = focusEntityId && entities.some((entity) => entity.id === focusEntityId)
+    ? focusEntityId
+    : entities[0]?.id ?? null;
+
+  if (!centerEntityId) {
+    return positions;
+  }
+
+  positions.set(centerEntityId, { x: 50, y: 50 });
+  const others = entities
+    .filter((entity) => entity.id !== centerEntityId)
+    .sort((left, right) => {
+      const leftWeight = strongestRelationWeight(relations, centerEntityId, left.id);
+      const rightWeight = strongestRelationWeight(relations, centerEntityId, right.id);
+      if (rightWeight !== leftWeight) {
+        return rightWeight - leftWeight;
+      }
+
+      return right.prominence - left.prominence;
+    });
+
+  const ringConfigs = [
+    { capacity: 5, radiusX: 17, radiusY: 15, angleOffset: -Math.PI / 2 },
+    { capacity: 7, radiusX: 29, radiusY: 25, angleOffset: -Math.PI / 2 + Math.PI / 7 },
+    { capacity: 10, radiusX: 39, radiusY: 33, angleOffset: -Math.PI / 2 + Math.PI / 11 },
+  ];
+
+  let cursor = 0;
+  for (const ring of ringConfigs) {
+    const slice = others.slice(cursor, cursor + ring.capacity);
+    slice.forEach((entity, index) => {
+      positions.set(entity.id, placeOnEllipse(index, slice.length, ring.radiusX, ring.radiusY, ring.angleOffset));
+    });
+    cursor += slice.length;
+    if (cursor >= others.length) {
+      break;
+    }
+  }
+
+  return positions;
+}
+
+function strongestRelationWeight(relations: GraphRelation[], sourceEntityId: string, targetEntityId: string): number {
+  let best = 0;
+  for (const relation of relations) {
+    const touchesPair = (
+      (relation.fromEntityId === sourceEntityId && relation.toEntityId === targetEntityId)
+      || (relation.fromEntityId === targetEntityId && relation.toEntityId === sourceEntityId)
+    );
+    if (touchesPair) {
+      best = Math.max(best, relation.weight);
+    }
+  }
+
+  return best;
+}
+
+function placeOnEllipse(index: number, total: number, radiusX: number, radiusY: number, angleOffset = -Math.PI / 2): { x: number; y: number } {
+  if (total <= 0) {
+    return { x: 50, y: 50 };
+  }
+
+  const angle = angleOffset + ((Math.PI * 2) / total) * index;
+  return {
+    x: 50 + Math.cos(angle) * radiusX,
+    y: 50 + Math.sin(angle) * radiusY,
+  };
+}
+
+function computeGraphNodeSize(entity: GraphEntity, maxMentionCount: number, focused: boolean): number {
+  if (focused) {
+    return 88;
+  }
+
+  const ratio = maxMentionCount <= 0 ? 0 : entity.mentionCount / maxMentionCount;
+  return Math.round(52 + ratio * 20);
+}
+
+function buildGraphNodeWidth(node: GraphExplorerNode): number {
+  const nameWidth = Math.max(node.entity.name.length * 18 + 28, 112);
+  return Math.min(Math.max(nameWidth, node.size + 24), 220);
 }
 
 function createDraft(detailPayload: LibraryNovelDetailPayload): GraphDraftState {
@@ -933,6 +2293,61 @@ function normalizeDraftExtractionConcurrency(value: number): number {
   }
 
   return Math.max(1, Math.min(12, Math.trunc(value)));
+}
+
+function shouldExpandBuildProgress(status: string): boolean {
+  return status === 'queued' || status === 'running' || status === 'paused' || status === 'failed';
+}
+
+function shouldUseGraphPreview(...values: Array<string | undefined>): boolean {
+  const text = values.filter(Boolean).join(' ');
+  return text.length > 90 || /\n/.test(text);
+}
+
+function buildEntityListPreview(
+  entities: LibraryNovelDetailPayload['knowledgeGraph']['entities'],
+): GraphPreviewDialogState {
+  return {
+    title: '全部实体',
+    subtitle: `共 ${entities.length} 个实体，按当前权重排序展示。`,
+    body: entities.map((entity, index) => [
+      `${index + 1}. ${entity.name}`,
+      `出现 ${entity.mentionCount} 次`,
+      entity.summary,
+      entity.aliases.length > 0 ? `别名：${entity.aliases.join('、')}` : '',
+    ].filter(Boolean).join('\n')),
+  };
+}
+
+function buildRelationListPreview(
+  relations: LibraryNovelDetailPayload['knowledgeGraph']['relations'],
+): GraphPreviewDialogState {
+  return {
+    title: '全部关系',
+    subtitle: `共 ${relations.length} 条关系，按当前权重排序展示。`,
+    body: relations.map((relation, index) => [
+      `${index + 1}. ${relation.summary}`,
+      `权重 ${relation.weight}`,
+      ...relation.evidence.slice(0, 3).map((evidence, evidenceIndex) => `证据 ${evidenceIndex + 1}：${evidence}`),
+    ].filter(Boolean).join('\n')),
+  };
+}
+
+function formatGraphEntityType(entityType: GraphEntity['entityType']): string {
+  switch (entityType) {
+    case 'character':
+      return '角色';
+    case 'location':
+      return '地点';
+    case 'organization':
+      return '组织';
+    case 'concept':
+      return '概念';
+    case 'author':
+      return '作者';
+    default:
+      return '实体';
+  }
 }
 
 function formatGraphStatus(status: string): string {

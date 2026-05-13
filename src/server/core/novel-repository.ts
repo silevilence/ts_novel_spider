@@ -1094,6 +1094,61 @@ export class SqliteNovelRepository {
       .run(sourceId, novelId);
   }
 
+  replaceKnowledgeGraphBuildCheckpoints(
+    sourceId: string,
+    novelId: string,
+    checkpoints: Array<{
+      chunkId: string;
+      chapterId: string;
+      chapterIndex: number;
+      chunkIndex: number;
+      chapterTitle: string;
+      extractionJson: string;
+      warningMessage: string | null;
+    }>,
+  ): void {
+    this.assertNovelExists(sourceId, novelId);
+
+    const insertCheckpoint = this.#database.prepare(
+      `
+        INSERT INTO novel_graph_build_checkpoints (
+          source_id,
+          novel_id,
+          chunk_id,
+          chapter_id,
+          chapter_index,
+          chunk_index,
+          chapter_title,
+          extraction_json,
+          warning_message,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    );
+
+    const transaction = this.#database.transaction(() => {
+      this.#database.prepare('DELETE FROM novel_graph_build_checkpoints WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+
+      for (const checkpoint of checkpoints) {
+        insertCheckpoint.run(
+          sourceId,
+          novelId,
+          checkpoint.chunkId,
+          checkpoint.chapterId,
+          checkpoint.chapterIndex,
+          checkpoint.chunkIndex,
+          checkpoint.chapterTitle,
+          checkpoint.extractionJson,
+          checkpoint.warningMessage,
+          new Date().toISOString(),
+        );
+      }
+    });
+
+    transaction();
+  }
+
   listResumableKnowledgeGraphBuilds(): Array<{ sourceId: string; novelId: string; build: StoredKnowledgeGraphBuildRow }> {
     return this.#database
       .prepare(

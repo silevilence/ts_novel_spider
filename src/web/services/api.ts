@@ -25,6 +25,7 @@ import type {
 } from '../../server/routes/library';
 
 export type LibraryExportFormat = 'markdown' | 'txt' | 'epub';
+export type LibraryKnowledgeGraphBuildMode = 'full' | 'incremental' | 'rebuild';
 
 export interface UpdateNetworkProxyInput {
   enabled: boolean;
@@ -332,11 +333,18 @@ export async function updateLibraryKnowledgeGraphProfile(
 export async function buildLibraryKnowledgeGraph(
   sourceId: string,
   novelId: string,
+  mode: LibraryKnowledgeGraphBuildMode = 'incremental',
 ): Promise<LibraryKnowledgeGraphBuildPayload> {
   return requestJson<LibraryKnowledgeGraphBuildPayload>(
     `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph/build`,
     {
       method: 'POST',
+      ...(mode === 'incremental'
+        ? {}
+        : {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }),
     },
   );
 }

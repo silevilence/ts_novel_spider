@@ -11,6 +11,7 @@ import {
 import type {
   LibraryAssistantResponse,
   LibraryKnowledgeGraphBuild,
+  KnowledgeGraphBuildMode,
   LibraryKnowledgeGraphProfile,
   LibraryKnowledgeGraphProfileInput,
   LibraryKnowledgeGraphState,
@@ -96,6 +97,10 @@ interface UpdateKnowledgeGraphProfileRequestBody {
   rerankModel?: unknown;
   extractionConcurrency?: unknown;
   neo4j?: unknown;
+}
+
+interface BuildKnowledgeGraphRequestBody {
+  mode?: unknown;
 }
 
 interface AskLibraryAssistantRequestBody {
@@ -189,7 +194,11 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
 
   router.post('/novels/:sourceId/:novelId/graph/build', (request, response) => {
     const { sourceId, novelId } = request.params;
-    const build = service.buildLibraryKnowledgeGraph(sourceId, novelId);
+    const build = service.buildLibraryKnowledgeGraph(
+      sourceId,
+      novelId,
+      parseBuildKnowledgeGraphBody((request.body ?? {}) as BuildKnowledgeGraphRequestBody),
+    );
 
     if (!build) {
       response.status(404).json({
@@ -581,6 +590,18 @@ function parseKnowledgeGraphProfileBody(body: UpdateKnowledgeGraphProfileRequest
     ...(body.extractionConcurrency !== undefined ? { extractionConcurrency: parseExtractionConcurrency(body.extractionConcurrency) } : {}),
     ...(body.neo4j !== undefined ? { neo4j: parseNeo4jRoute(body.neo4j) } : {}),
   };
+}
+
+function parseBuildKnowledgeGraphBody(body: BuildKnowledgeGraphRequestBody): { mode?: KnowledgeGraphBuildMode } {
+  if (body.mode === undefined) {
+    return {};
+  }
+
+  if (body.mode === 'full' || body.mode === 'incremental' || body.mode === 'rebuild') {
+    return { mode: body.mode };
+  }
+
+  throw new Error('mode must be one of full, incremental, or rebuild.');
 }
 
 function parseExtractionModels(value: unknown): Array<{ providerId?: string; modelId?: string; maxConcurrency?: number }> {

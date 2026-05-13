@@ -233,6 +233,7 @@ test('knowledge graph APIs target the expected endpoints', async () => {
       },
     });
     await buildLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
+    await buildLibraryKnowledgeGraph('syosetu 18', 'n1000/lib', 'rebuild');
     await pauseLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
     await resumeLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
     await deleteLibraryKnowledgeGraph('syosetu 18', 'n1000/lib');
@@ -249,15 +250,20 @@ test('knowledge graph APIs target the expected endpoints', async () => {
     });
     assert.equal(calls[2]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/build');
     assert.equal(calls[2]?.init?.method, 'POST');
-    assert.equal(calls[3]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/pause');
+    assert.equal(calls[3]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/build');
     assert.equal(calls[3]?.init?.method, 'POST');
-    assert.equal(calls[4]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/resume');
+    assert.deepEqual(JSON.parse(String(calls[3]?.init?.body)), {
+      mode: 'rebuild',
+    });
+    assert.equal(calls[4]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/pause');
     assert.equal(calls[4]?.init?.method, 'POST');
-    assert.equal(calls[5]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph');
-    assert.equal(calls[5]?.init?.method, 'DELETE');
-    assert.equal(calls[6]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/assistant/chat');
-    assert.equal(calls[6]?.init?.method, 'POST');
-    assert.deepEqual(JSON.parse(String(calls[6]?.init?.body)), {
+    assert.equal(calls[5]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph/resume');
+    assert.equal(calls[5]?.init?.method, 'POST');
+    assert.equal(calls[6]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/graph');
+    assert.equal(calls[6]?.init?.method, 'DELETE');
+    assert.equal(calls[7]?.input, '/api/library/novels/syosetu%2018/n1000%2Flib/assistant/chat');
+    assert.equal(calls[7]?.init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(calls[7]?.init?.body)), {
       message: '现在发生了什么？',
       chapterId: 'chapter/1',
     });
