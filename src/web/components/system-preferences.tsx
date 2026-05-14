@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { LlmProviderPanel } from './llm-provider-panel';
 import { Neo4jPanel } from './neo4j-panel';
 import { NetworkProxyPanel } from './network-proxy-panel';
+import { ReaderTypographyPanel } from './reader-typography-panel';
 import type {
   ControlCenterModel,
   NoticeInput,
@@ -19,6 +20,7 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
   const [proxyOpen, setProxyOpen] = useState(false);
   const [llmOpen, setLlmOpen] = useState(false);
   const [neo4jOpen, setNeo4jOpen] = useState(false);
+  const [readerOpen, setReaderOpen] = useState(false);
 
   return (
     <div className="settings-stack">
@@ -159,6 +161,25 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
         {neo4jOpen ? (
           <div className="fold-content">
             <Neo4jPanel onNotice={onNotify} />
+          </div>
+        ) : null}
+      </section>
+
+      <section className="fold-card">
+        <div className="fold-header">
+          <div>
+            <p className="eyebrow">阅读器排版</p>
+            <h2>全局排版与预览</h2>
+            <p className="panel-note">设置字号、行高、字体族等排版参数，并通过多语种沙箱即时预览效果。书籍详情页支持单独覆盖。</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={() => setReaderOpen((current) => !current)}>
+            {readerOpen ? '收起' : '展开'}
+          </button>
+        </div>
+
+        {readerOpen ? (
+          <div className="fold-content">
+            <ReaderTypographyPanel onNotice={onNotify} />
           </div>
         ) : null}
       </section>

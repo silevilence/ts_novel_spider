@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { ChapterDirectory } from './chapter-directory';
+import { FontFamilyPicker } from './font-family-picker';
 import { LibraryIntelligencePanel } from './library-intelligence-panel';
 import type { LibraryModel } from '../services/library-model';
 import {
@@ -79,6 +80,16 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
   const [readerBookmarkNote, setReaderBookmarkNote] = useState('');
   const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null);
   const [editingBookmarkNote, setEditingBookmarkNote] = useState('');
+  const [isReaderTypographyOpen, setIsReaderTypographyOpen] = useState(false);
+  const [readerTypographyDraft, setReaderTypographyDraft] = useState<{
+    fontSize: number;
+    fontSizePreset: 'small' | 'medium' | 'large';
+    lineHeight: number;
+    paragraphSpacing: number;
+    fontFamilyPreset: 'sans' | 'serif' | 'monospace' | 'custom';
+    fontFamilyCustom: string;
+  } | null>(null);
+  const [readerTypographyDirty, setReaderTypographyDirty] = useState(false);
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -691,7 +702,17 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
               </aside>
             </div>
 
-            <div className="reader-copy">
+            <div className="reader-copy"
+              style={
+                readerTypographyDraft
+                  ? {
+                      fontSize: `${readerTypographyDraft.fontSize}rem`,
+                      lineHeight: readerTypographyDraft.lineHeight,
+                      gap: `${readerTypographyDraft.paragraphSpacing}rem`,
+                      fontFamily: resolveReaderFontFamily(readerTypographyDraft.fontFamilyPreset, readerTypographyDraft.fontFamilyCustom),
+                    }
+                  : undefined
+              }>
               {parseReaderContent(readerChapter.content).map((block, index) => {
                 if (block.type === 'divider') {
                   return <hr key={`${readerChapter.id}-${index}`} className="reader-section-divider" />;
@@ -774,6 +795,28 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
 
         <button
           type="button"
+          className={`reader-typography-fab${model.readerTypography?.source === 'novel' ? ' highlight' : ''}`}
+          onClick={() => {
+            if (model.readerTypography) {
+              setReaderTypographyDraft({
+                fontSize: model.readerTypography.fontSize,
+                fontSizePreset: model.readerTypography.fontSizePreset,
+                lineHeight: model.readerTypography.lineHeight,
+                paragraphSpacing: model.readerTypography.paragraphSpacing,
+                fontFamilyPreset: model.readerTypography.fontFamilyPreset,
+                fontFamilyCustom: model.readerTypography.fontFamilyCustom,
+              });
+              setReaderTypographyDirty(false);
+            }
+            setIsReaderTypographyOpen(true);
+          }}
+          aria-label="调整阅读器排版"
+        >
+          排版
+        </button>
+
+        <button
+          type="button"
           className="reader-directory-fab"
           onClick={() => setIsReaderDirectoryOpen(true)}
           aria-label="打开章节目录"
@@ -816,6 +859,197 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
                 emptyMessage="当前作品还没有本地章节。"
                 onPickChapter={(chapterId) => model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId)}
               />
+            </aside>
+          </div>
+        ) : null}
+
+        {isReaderTypographyOpen && model.readerTypography && readerTypographyDraft ? (
+          <div className="reader-typography-overlay" role="presentation" onClick={() => setIsReaderTypographyOpen(false)}>
+            <aside
+              className="reader-typography-drawer"
+              aria-label="阅读器排版控制"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="reader-typography-drawer-header">
+                <div>
+                  <p className="eyebrow">阅读器排版</p>
+                  <h2>调整当前视图</h2>
+                  <div className="reader-typography-source-indicator">
+                    <span className={`source-badge${model.readerTypography.source === 'novel' ? ' override' : ''}`}>
+                      {model.readerTypography.source === 'novel' ? '当前书覆盖' : '跟随全局默认'}
+                    </span>
+                    {readerTypographyDirty ? (
+                      <span className="source-badge override">尚未保存</span>
+                    ) : null}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button reader-directory-close"
+                  onClick={() => setIsReaderTypographyOpen(false)}
+                >
+                  关闭
+                </button>
+              </div>
+
+              <div className="reader-typography-drawer-body">
+                {/* 字号快捷档位 */}
+                <fieldset className="reader-typography-group">
+                  <legend className="label">字号</legend>
+                  <div className="reader-typography-preset-row">
+                    {(Object.entries({ small: '0.95rem', medium: '1.03rem', large: '1.16rem' }) as Array<['small' | 'medium' | 'large', string]>).map(([preset, label]) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        className={`preset-chip${readerTypographyDraft.fontSizePreset === preset ? ' active' : ''}`}
+                        onClick={() => {
+                          const sizes: Record<'small' | 'medium' | 'large', number> = { small: 0.95, medium: 1.03, large: 1.16 };
+                          setReaderTypographyDraft((prev) => prev ? { ...prev, fontSize: sizes[preset], fontSizePreset: preset } : prev);
+                          setReaderTypographyDirty(true);
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+
+                {/* 精确字号 */}
+                <fieldset className="reader-typography-group">
+                  <legend className="label">精确字号 (rem)</legend>
+                  <div className="reader-typography-range">
+                    <input
+                      type="range"
+                      min={0.7}
+                      max={2.2}
+                      step={0.01}
+                      value={readerTypographyDraft.fontSize}
+                      onChange={(event) => {
+                        setReaderTypographyDraft((prev) => prev ? { ...prev, fontSize: Number(event.target.value) } : prev);
+                        setReaderTypographyDirty(true);
+                      }}
+                    />
+                    <span className="range-value">{readerTypographyDraft.fontSize.toFixed(2)}</span>
+                  </div>
+                </fieldset>
+
+                {/* 行高 */}
+                <fieldset className="reader-typography-group">
+                  <legend className="label">行高</legend>
+                  <div className="reader-typography-range">
+                    <input
+                      type="range"
+                      min={1.2}
+                      max={3}
+                      step={0.05}
+                      value={readerTypographyDraft.lineHeight}
+                      onChange={(event) => {
+                        setReaderTypographyDraft((prev) => prev ? { ...prev, lineHeight: Number(event.target.value) } : prev);
+                        setReaderTypographyDirty(true);
+                      }}
+                    />
+                    <span className="range-value">{readerTypographyDraft.lineHeight.toFixed(2)}</span>
+                  </div>
+                </fieldset>
+
+                {/* 段间距 */}
+                <fieldset className="reader-typography-group">
+                  <legend className="label">段间距 (rem)</legend>
+                  <div className="reader-typography-range">
+                    <input
+                      type="range"
+                      min={0}
+                      max={3.5}
+                      step={0.05}
+                      value={readerTypographyDraft.paragraphSpacing}
+                      onChange={(event) => {
+                        setReaderTypographyDraft((prev) => prev ? { ...prev, paragraphSpacing: Number(event.target.value) } : prev);
+                        setReaderTypographyDirty(true);
+                      }}
+                    />
+                    <span className="range-value">{readerTypographyDraft.paragraphSpacing.toFixed(2)}</span>
+                  </div>
+                </fieldset>
+
+                {/* 字体族 */}
+                <FontFamilyPicker
+                  preset={readerTypographyDraft.fontFamilyPreset}
+                  fontFamilyCustom={readerTypographyDraft.fontFamilyCustom}
+                  onPresetChange={(preset) => {
+                    setReaderTypographyDraft((prev) => prev ? { ...prev, fontFamilyPreset: preset } : prev);
+                    setReaderTypographyDirty(true);
+                  }}
+                  onCustomChange={(value) => {
+                    setReaderTypographyDraft((prev) => prev ? { ...prev, fontFamilyCustom: value } : prev);
+                    setReaderTypographyDirty(true);
+                  }}
+                  disabled={model.readerTypographyBusy}
+                />
+
+                {/* 操作按钮 */}
+                <div className="action-row wrap reader-typography-actions">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => {
+                      const draft = readerTypographyDraft;
+                      if (!draft) { return; }
+                      void model.updateReaderTypography({
+                        fontSize: draft.fontSize,
+                        fontSizePreset: draft.fontSizePreset,
+                        lineHeight: draft.lineHeight,
+                        paragraphSpacing: draft.paragraphSpacing,
+                        fontFamilyPreset: draft.fontFamilyPreset,
+                        fontFamilyCustom: draft.fontFamilyCustom,
+                      });
+                      setReaderTypographyDirty(false);
+                    }}
+                    disabled={model.readerTypographyBusy}
+                  >
+                    {model.readerTypographyBusy ? '保存中…' : '保存排版'}
+                  </button>
+                  {readerTypographyDirty ? (
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        if (model.readerTypography) {
+                          setReaderTypographyDraft({
+                            fontSize: model.readerTypography.fontSize,
+                            fontSizePreset: model.readerTypography.fontSizePreset,
+                            lineHeight: model.readerTypography.lineHeight,
+                            paragraphSpacing: model.readerTypography.paragraphSpacing,
+                            fontFamilyPreset: model.readerTypography.fontFamilyPreset,
+                            fontFamilyCustom: model.readerTypography.fontFamilyCustom,
+                          });
+                          setReaderTypographyDirty(false);
+                        }
+                      }}
+                      disabled={model.readerTypographyBusy}
+                    >
+                      放弃修改
+                    </button>
+                  ) : null}
+                </div>
+
+                {/* 恢复全局默认 */}
+                {model.readerTypography.source === 'novel' ? (
+                  <div className="action-row wrap">
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => void model.resetReaderTypography()}
+                      disabled={model.readerTypographyBusy}
+                    >
+                      {model.readerTypographyBusy ? '恢复中…' : '恢复全局默认排版'}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="reader-typography-reset-hint">
+                    当前书使用全局排版。如需单独调整，修改参数后点击"保存排版"即可为本书建立独立设置。
+                  </p>
+                )}
+              </div>
             </aside>
           </div>
         ) : null}
@@ -1319,4 +1553,18 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
       </div>
     </div>
   );
+}
+
+function resolveReaderFontFamily(preset: string, custom: string): string {
+  switch (preset) {
+    case 'serif':
+      return '"Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif';
+    case 'monospace':
+      return '"Noto Sans Mono CJK SC", "Source Han Mono SC", "Courier New", monospace';
+    case 'custom':
+      return custom || '"Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+    case 'sans':
+    default:
+      return '"Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+  }
 }

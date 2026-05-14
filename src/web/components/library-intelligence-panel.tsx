@@ -156,6 +156,7 @@ export function LibraryIntelligencePanel({
   const [graphResuming, setGraphResuming] = useState(false);
   const [graphDeleting, setGraphDeleting] = useState(false);
   const [graphProgressExpanded, setGraphProgressExpanded] = useState(() => shouldExpandBuildProgress(detailPayload.knowledgeGraph.build.status));
+  const [configExpanded, setConfigExpanded] = useState(false);
   const [graphPreview, setGraphPreview] = useState<GraphPreviewDialogState | null>(null);
   const [graphSearchInput, setGraphSearchInput] = useState('');
   const deferredGraphSearchInput = useDeferredValue(graphSearchInput);
@@ -646,6 +647,8 @@ export function LibraryIntelligencePanel({
                 graphExplorer={graphExplorer}
                 totalEntityCount={knowledgeGraph.entities.length}
                 totalRelationCount={knowledgeGraph.relations.length}
+                topEntities={topEntities}
+                topRelations={topRelations}
                 searchInput={graphSearchInput}
                 onSearchInputChange={setGraphSearchInput}
                 onClearSearch={() => setGraphSearchInput('')}
@@ -653,99 +656,38 @@ export function LibraryIntelligencePanel({
                 onFocusEntityIdChange={setGraphFocusEntityId}
                 onPreviewEntity={handlePreviewEntity}
                 onPreviewRelation={handlePreviewRelation}
+                onPreviewAllEntities={() => setGraphPreview(buildEntityListPreview(knowledgeGraph.entities))}
+                onPreviewAllRelations={() => setGraphPreview(buildRelationListPreview(knowledgeGraph.relations))}
               />
             </section>
 
-            <section className="card intelligence-list-card intelligence-side-card">
-              <div className="panel-heading compact-heading split">
-                <div>
-                  <p className="label">图谱实体</p>
-                  <h3>高频实体</h3>
-                </div>
-                {knowledgeGraph.entities.length > 5 ? (
-                  <button
-                    type="button"
-                    className="ghost-button intelligence-inline-button"
-                    onClick={() => setGraphPreview(buildEntityListPreview(knowledgeGraph.entities))}
-                  >
-                    查看更多
-                  </button>
-                ) : null}
-              </div>
-              {topEntities.length === 0 ? (
-                <p className="panel-note">当前还没有实体，先生成一次图谱。</p>
-              ) : (
-                <div className="intelligence-list">
-                  {topEntities.map((entity) => (
-                    <article key={entity.id} className="intelligence-list-item">
-                      <div className="intelligence-list-copy">
-                        <strong>{entity.name}</strong>
-                        <p className="intelligence-preview-text">{entity.summary}</p>
-                        <div className="action-row wrap compact-actions">
-                          <button type="button" className="ghost-button intelligence-inline-button" onClick={() => setGraphFocusEntityId(entity.id)}>
-                            在图中查看
-                          </button>
-                          {shouldUseGraphPreview(entity.summary) ? (
-                            <button type="button" className="ghost-button intelligence-inline-button" onClick={() => handlePreviewEntity(entity)}>
-                              浮窗查看
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                      <span className="status-badge state-indexed">{entity.mentionCount} 次</span>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="card intelligence-list-card intelligence-side-card">
-              <div className="panel-heading compact-heading split">
-                <div>
-                  <p className="label">图谱关系</p>
-                  <h3>主要关系</h3>
-                </div>
-                {knowledgeGraph.relations.length > 5 ? (
-                  <button
-                    type="button"
-                    className="ghost-button intelligence-inline-button"
-                    onClick={() => setGraphPreview(buildRelationListPreview(knowledgeGraph.relations))}
-                  >
-                    查看更多
-                  </button>
-                ) : null}
-              </div>
-              {topRelations.length === 0 ? (
-                <p className="panel-note">当前还没有关系，生成后会按证据强度排序展示。</p>
-              ) : (
-                <div className="intelligence-list">
-                  {topRelations.map((relation) => (
-                    <article key={relation.id} className="intelligence-list-item">
-                      <div className="intelligence-list-copy">
-                        <strong className="intelligence-preview-text">{relation.summary}</strong>
-                        <p className="intelligence-preview-text">{relation.evidence[0] ?? '暂无证据摘要。'}</p>
-                        <div className="action-row wrap compact-actions">
-                          <button type="button" className="ghost-button intelligence-inline-button" onClick={() => handlePreviewRelation(relation)}>
-                            查看证据
-                          </button>
-                        </div>
-                      </div>
-                      <span className="status-badge ok">权重 {relation.weight}</span>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="card intelligence-config-card intelligence-config-span">
-              <div className="panel-heading split align-start compact-heading">
+            <section className={`card intelligence-config-card intelligence-config-span${configExpanded ? '' : ' fold-card'}`}>
+              <button
+                type="button"
+                className="panel-heading compact-heading split fold-header"
+                onClick={() => setConfigExpanded((current) => !current)}
+                aria-expanded={configExpanded}
+              >
                 <div>
                   <p className="label">单书配置</p>
                   <h3>模型与图库路由</h3>
                 </div>
-                <span className="panel-note">空着就沿用全局默认；上方关系图卡片负责发起增量、重建和全量任务。</span>
-              </div>
-
+                <span className="panel-note">
+                  {knowledgeGraph.profile.configLocked
+                    ? '已锁定'
+                    : graphDraft.chatModelKey
+                      ? `对话 ${buildModelLabels.get(graphDraft.chatModelKey) ?? '自定义'}`
+                      : '沿用全局默认'}
+                  {' · '}
+                  {knowledgeGraph.profile.neo4j.source === 'novel'
+                    ? 'Neo4j 本书专用'
+                    : knowledgeGraph.profile.neo4j.source === 'global'
+                      ? 'Neo4j 沿用全局'
+                      : 'Neo4j 未启用'}
+                </span>
+              </button>
+              {configExpanded ? (
+                <div className="fold-content">
               <div className="intelligence-config-grid">
                 <label>
                   <span>对话模型</span>
@@ -945,6 +887,8 @@ export function LibraryIntelligencePanel({
                   {graphDeleting ? '清空中...' : '清空图谱'}
                 </button>
               </div>
+                </div>
+              ) : null}
             </section>
           </div>
         </section>
@@ -1114,6 +1058,8 @@ interface KnowledgeGraphWorkspaceProps {
   graphExplorer: GraphExplorerState;
   totalEntityCount: number;
   totalRelationCount: number;
+  topEntities: GraphEntity[];
+  topRelations: GraphRelation[];
   searchInput: string;
   onSearchInputChange: (value: string) => void;
   onClearSearch: () => void;
@@ -1121,6 +1067,8 @@ interface KnowledgeGraphWorkspaceProps {
   onFocusEntityIdChange: (entityId: string | null) => void;
   onPreviewEntity: (entity: GraphEntity) => void;
   onPreviewRelation: (relation: GraphRelation) => void;
+  onPreviewAllEntities: () => void;
+  onPreviewAllRelations: () => void;
 }
 
 const GRAPH_WORLD_WIDTH = 1440;
@@ -1133,6 +1081,8 @@ function KnowledgeGraphWorkspace({
   graphExplorer,
   totalEntityCount,
   totalRelationCount,
+  topEntities,
+  topRelations,
   searchInput,
   onSearchInputChange,
   onClearSearch,
@@ -1140,13 +1090,18 @@ function KnowledgeGraphWorkspace({
   onFocusEntityIdChange,
   onPreviewEntity,
   onPreviewRelation,
+  onPreviewAllEntities,
+  onPreviewAllRelations,
 }: KnowledgeGraphWorkspaceProps) {
   const inlineCanvasRef = useRef<HTMLDivElement | null>(null);
   const modalCanvasRef = useRef<HTMLDivElement | null>(null);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<'inspect' | 'entities' | 'relations'>('inspect');
+  const [searchFocused, setSearchFocused] = useState(false);
   const [viewport, setViewport] = useState<GraphViewportState>({ zoom: 0.72, offsetX: 82, offsetY: 56 });
   const [dragState, setDragState] = useState<GraphDragState | null>(null);
   const [nodePositions, setNodePositions] = useState<Record<string, { x: number; y: number }>>(() => createGraphNodePositionMap(graphExplorer.nodes));
+  const touchStateRef = useRef<{ initialDistance: number; initialZoom: number } | null>(null);
 
   useEffect(() => {
     setNodePositions(createGraphNodePositionMap(graphExplorer.nodes));
@@ -1246,6 +1201,71 @@ function KnowledgeGraphWorkspace({
   }, [fullscreenOpen]);
 
   useEffect(() => {
+    const containers = [inlineCanvasRef.current, fullscreenOpen ? modalCanvasRef.current : null]
+      .filter((container): container is HTMLDivElement => container !== null);
+
+    if (containers.length === 0) {
+      return;
+    }
+
+    function handleTouchStart(event: TouchEvent) {
+      if (event.touches.length !== 2) {
+        return;
+      }
+
+      event.preventDefault();
+      const t0 = event.touches[0]!;
+      const t1 = event.touches[1]!;
+      const dx = t0.clientX - t1.clientX;
+      const dy = t0.clientY - t1.clientY;
+      touchStateRef.current = {
+        initialDistance: Math.sqrt(dx * dx + dy * dy),
+        initialZoom: viewport.zoom,
+      };
+    }
+
+    function handleTouchMove(event: TouchEvent) {
+      if (event.touches.length !== 2 || !touchStateRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      const t0 = event.touches[0]!;
+      const t1 = event.touches[1]!;
+      const dx = t0.clientX - t1.clientX;
+      const dy = t0.clientY - t1.clientY;
+      const currentDistance = Math.sqrt(dx * dx + dy * dy);
+      const ratio = currentDistance / touchStateRef.current.initialDistance;
+      const nextZoom = clampGraphZoom(touchStateRef.current.initialZoom * ratio);
+
+      const midX = (t0.clientX + t1.clientX) / 2;
+      const midY = (t0.clientY + t1.clientY) / 2;
+
+      setViewport((current) => zoomGraphViewport(current, nextZoom, midX, midY));
+    }
+
+    function handleTouchEnd() {
+      touchStateRef.current = null;
+    }
+
+    containers.forEach((container) => {
+      container.addEventListener('touchstart', handleTouchStart, { passive: false });
+      container.addEventListener('touchmove', handleTouchMove, { passive: false });
+      container.addEventListener('touchend', handleTouchEnd);
+      container.addEventListener('touchcancel', handleTouchEnd);
+    });
+
+    return () => {
+      containers.forEach((container) => {
+        container.removeEventListener('touchstart', handleTouchStart);
+        container.removeEventListener('touchmove', handleTouchMove);
+        container.removeEventListener('touchend', handleTouchEnd);
+        container.removeEventListener('touchcancel', handleTouchEnd);
+      });
+    };
+  }, [fullscreenOpen, viewport.zoom]);
+
+  useEffect(() => {
     if (!dragState) {
       return;
     }
@@ -1314,6 +1334,11 @@ function KnowledgeGraphWorkspace({
       : [];
   });
   const focusEntity = graphExplorer.focusEntity;
+
+  const searchSuggestions = computeSearchSuggestions(
+    graphExplorer.nodes.map((node) => node.entity),
+    searchInput,
+  );
 
   function beginCanvasPan(event: React.PointerEvent<HTMLDivElement>) {
     if (event.button !== 0) {
@@ -1386,6 +1411,47 @@ function KnowledgeGraphWorkspace({
         className={`graph-browser-canvas interactive${dragState?.kind === 'pan' ? ' panning' : ''}${enlarged ? ' enlarged' : ''}`}
         role="img"
         aria-label={enlarged ? '知识图谱放大操作区' : '知识图谱浏览区域'}
+        tabIndex={0}
+        onKeyDown={(event) => {
+          const step = 60;
+          switch (event.key) {
+            case 'ArrowUp':
+              event.preventDefault();
+              setViewport((current) => ({ ...current, offsetY: current.offsetY + step }));
+              break;
+            case 'ArrowDown':
+              event.preventDefault();
+              setViewport((current) => ({ ...current, offsetY: current.offsetY - step }));
+              break;
+            case 'ArrowLeft':
+              event.preventDefault();
+              setViewport((current) => ({ ...current, offsetX: current.offsetX + step }));
+              break;
+            case 'ArrowRight':
+              event.preventDefault();
+              setViewport((current) => ({ ...current, offsetX: current.offsetX - step }));
+              break;
+            case '+':
+            case '=':
+              event.preventDefault();
+              setViewport((current) => {
+                const nextZoom = clampGraphZoom(current.zoom * 1.15);
+                return zoomGraphViewport(current, nextZoom, (containerRef.current?.clientWidth ?? 400) / 2, (containerRef.current?.clientHeight ?? 300) / 2);
+              });
+              break;
+            case '-':
+              event.preventDefault();
+              setViewport((current) => {
+                const nextZoom = clampGraphZoom(current.zoom * 0.87);
+                return zoomGraphViewport(current, nextZoom, (containerRef.current?.clientWidth ?? 400) / 2, (containerRef.current?.clientHeight ?? 300) / 2);
+              });
+              break;
+            case 'f':
+              event.preventDefault();
+              fitView(containerRef.current);
+              break;
+          }
+        }}
         onPointerDown={beginCanvasPan}
       >
         {renderedNodes.length === 0 ? (
@@ -1402,16 +1468,94 @@ function KnowledgeGraphWorkspace({
             }}
           >
             <svg className="graph-browser-svg" viewBox={`0 0 ${GRAPH_WORLD_WIDTH} ${GRAPH_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-hidden="true">
-              {renderedEdges.map((edge) => (
-                <line
-                  key={edge.relation.id}
-                  className={`graph-edge${edge.primary ? ' primary' : ''}${edge.matched ? ' matched' : ''}`}
-                  x1={edge.fromNode.canvasX}
-                  y1={edge.fromNode.canvasY}
-                  x2={edge.toNode.canvasX}
-                  y2={edge.toNode.canvasY}
-                />
-              ))}
+              <defs>
+                <marker
+                  id="graph-arrow-default"
+                  viewBox="0 0 10 8"
+                  refX="9"
+                  refY="4"
+                  markerWidth="6"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0,0 L10,4 L0,8 Z" fill="rgba(158,177,196,0.28)" />
+                </marker>
+                <marker
+                  id="graph-arrow-primary"
+                  viewBox="0 0 10 8"
+                  refX="9"
+                  refY="4"
+                  markerWidth="6"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0,0 L10,4 L0,8 Z" fill="rgba(127,208,255,0.56)" />
+                </marker>
+                <marker
+                  id="graph-arrow-matched"
+                  viewBox="0 0 10 8"
+                  refX="9"
+                  refY="4"
+                  markerWidth="6"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0,0 L10,4 L0,8 Z" fill="rgba(255,209,102,0.7)" />
+                </marker>
+                <marker
+                  id="graph-arrow-hover"
+                  viewBox="0 0 10 8"
+                  refX="9"
+                  refY="4"
+                  markerWidth="6"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0,0 L10,4 L0,8 Z" fill="rgba(255,140,66,0.82)" />
+                </marker>
+              </defs>
+              {renderedEdges.map((edge) => {
+                const midX = (edge.fromNode.canvasX + edge.toNode.canvasX) / 2;
+                const midY = (edge.fromNode.canvasY + edge.toNode.canvasY) / 2;
+                const arrowId = edge.matched ? 'graph-arrow-matched' : edge.primary ? 'graph-arrow-primary' : 'graph-arrow-default';
+                const label = edge.relation.summary.length > 10
+                  ? edge.relation.summary.slice(0, 10) + '…'
+                  : edge.relation.summary;
+                return (
+                  <g key={edge.relation.id}
+                    className="graph-edge-group"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onPreviewRelation(edge.relation);
+                    }}
+                  >
+                    <line
+                      className="graph-edge-hit"
+                      x1={edge.fromNode.canvasX}
+                      y1={edge.fromNode.canvasY}
+                      x2={edge.toNode.canvasX}
+                      y2={edge.toNode.canvasY}
+                    />
+                    <line
+                      className={`graph-edge${edge.primary ? ' primary' : ''}${edge.matched ? ' matched' : ''}`}
+                      x1={edge.fromNode.canvasX}
+                      y1={edge.fromNode.canvasY}
+                      x2={edge.toNode.canvasX}
+                      y2={edge.toNode.canvasY}
+                      markerEnd={`url(#${arrowId})`}
+                    />
+                    <text
+                      className={`graph-edge-label${edge.matched ? ' matched' : ''}${edge.primary ? ' primary' : ''}`}
+                      x={midX}
+                      y={midY}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                    >
+                      {label}
+                    </text>
+                  </g>
+                );
+              })}
             </svg>
 
             {renderedNodes.map((node) => (
@@ -1568,69 +1712,115 @@ function KnowledgeGraphWorkspace({
 
     return (
       <div className={`graph-browser-stage${enlarged ? ' enlarged' : ''}`}>
+        <div className="graph-toolbar-row">
+          <label className="graph-search-field">
+            <span>搜索图谱</span>
+            <div className="graph-search-wrapper">
+            <input
+              value={searchInput}
+              onChange={(event) => onSearchInputChange(event.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => { setTimeout(() => setSearchFocused(false), 180); }}
+              placeholder="试试角色名、别名、关系摘要、证据内容或章节关键词"
+            />
+            {searchFocused && searchSuggestions.length > 0 ? (
+              <div className="graph-search-suggestions">
+                {searchSuggestions.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    className="graph-search-suggestion-item"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      onSearchInputChange(suggestion);
+                      setSearchFocused(false);
+                    }}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            </div>
+          </label>
+
+          <div className="graph-result-strip">
+            <article className="graph-result-stat">
+              <span className="label">实体</span>
+              <strong>{graphExplorer.nodes.length}/{totalEntityCount}</strong>
+            </article>
+            <article className="graph-result-stat">
+              <span className="label">关系</span>
+              <strong>{graphExplorer.edges.length}/{totalRelationCount}</strong>
+            </article>
+            <article className="graph-result-stat">
+              <span className="label">章节</span>
+              <strong>{graphExplorer.spotlightChapters.length}</strong>
+            </article>
+          </div>
+
+          <div className="action-row wrap compact-actions graph-toolbar-actions">
+            <button type="button" className="ghost-button" onClick={onClearSearch} disabled={searchInput.trim().length === 0}>
+              清空搜索
+            </button>
+            <button type="button" className="ghost-button" onClick={onClearFocus} disabled={!graphExplorer.focusEntity}>
+              取消聚焦
+            </button>
+            <button type="button" className="ghost-button" onClick={() => setFullscreenOpen(true)}>
+              放大查看
+            </button>
+            <button type="button" className="ghost-button" onClick={() => zoomByStep(1.15, containerRef.current)}>放大 +</button>
+            <button type="button" className="ghost-button" onClick={() => zoomByStep(0.87, containerRef.current)}>缩小 -</button>
+            <button type="button" className="ghost-button" onClick={() => fitView(containerRef.current)}>适配</button>
+            <button type="button" className="ghost-button" onClick={() => resetView(containerRef.current)}>重置</button>
+          </div>
+        </div>
+
         <div className={`graph-canvas-shell${enlarged ? ' enlarged' : ''}`}>
           <div className="graph-control-rail graph-control-rail-left" aria-hidden="true">
             <span className="graph-control-caption">交互</span>
             <span className="graph-control-pill">拖拽节点</span>
             <span className="graph-control-pill">空白拖动画布</span>
             <span className="graph-control-pill">滚轮缩放</span>
+            <span className="graph-control-caption" style={{ marginTop: '0.35rem' }}>图例</span>
+            <span className="graph-control-pill node-legend"><span className="node-legend-dot sm" /> 提及少</span>
+            <span className="graph-control-pill node-legend"><span className="node-legend-dot lg" /> 提及多</span>
           </div>
 
           {canvasElement}
-
-          <div className="graph-control-rail graph-control-rail-right">
-            <button type="button" className="graph-control-button" onClick={() => zoomByStep(1.15, containerRef.current)}>放大 +</button>
-            <button type="button" className="graph-control-button" onClick={() => zoomByStep(0.87, containerRef.current)}>缩小 -</button>
-            <button type="button" className="graph-control-button" onClick={() => fitView(containerRef.current)}>适配</button>
-            <button type="button" className="graph-control-button" onClick={() => resetView(containerRef.current)}>重置</button>
-          </div>
         </div>
 
-        <aside className={`graph-inspector${enlarged ? ' enlarged' : ''}`}>
-          <section className="graph-inspector-card">
-            <div className="assistant-trace-heading split">
-              <span className="label">联动检索</span>
-              <span className="panel-note">搜实体、关系和章节证据</span>
-            </div>
-            <div className="graph-toolbar graph-toolbar-inline">
-              <label className="graph-search-field">
-                <span>搜索图谱</span>
-                <input
-                  value={searchInput}
-                  onChange={(event) => onSearchInputChange(event.target.value)}
-                  placeholder="试试角色名、别名、关系摘要、证据内容或章节关键词"
-                />
-              </label>
-              <div className="action-row wrap compact-actions graph-toolbar-actions graph-toolbar-actions-inline">
-                <button type="button" className="ghost-button" onClick={onClearSearch} disabled={searchInput.trim().length === 0}>
-                  清空搜索
-                </button>
-                <button type="button" className="ghost-button" onClick={onClearFocus} disabled={!graphExplorer.focusEntity}>
-                  取消聚焦
-                </button>
-                <button type="button" className="ghost-button" onClick={() => setFullscreenOpen(true)}>
-                  放大查看
-                </button>
-              </div>
-            </div>
+        <div className="graph-inspector-footer">
 
-            <div className="graph-result-strip">
-              <article className="graph-result-stat">
-                <span className="label">实体</span>
-                <strong>{graphExplorer.nodes.length}/{totalEntityCount}</strong>
-              </article>
-              <article className="graph-result-stat">
-                <span className="label">关系</span>
-                <strong>{graphExplorer.edges.length}/{totalRelationCount}</strong>
-              </article>
-              <article className="graph-result-stat">
-                <span className="label">章节</span>
-                <strong>{graphExplorer.spotlightChapters.length}</strong>
-              </article>
-            </div>
-          </section>
 
-          <section className="graph-inspector-card">
+
+          <div className="graph-inspector-tabs">
+            <button
+              type="button"
+              className={`graph-inspector-tab${inspectorTab === 'inspect' ? ' active' : ''}`}
+              onClick={() => setInspectorTab('inspect')}
+            >
+              当前检视
+            </button>
+            <button
+              type="button"
+              className={`graph-inspector-tab${inspectorTab === 'entities' ? ' active' : ''}`}
+              onClick={() => setInspectorTab('entities')}
+            >
+              高频实体
+            </button>
+            <button
+              type="button"
+              className={`graph-inspector-tab${inspectorTab === 'relations' ? ' active' : ''}`}
+              onClick={() => setInspectorTab('relations')}
+            >
+              主要关系
+            </button>
+          </div>
+
+          {inspectorTab === 'inspect' ? (
+            <>
+              <section className="graph-inspector-card">
             <p className="label">{focusEntity ? '当前焦点' : searchInput.trim().length > 0 ? '搜索命中' : '浏览提示'}</p>
             {focusEntity ? (
               <>
@@ -1714,7 +1904,76 @@ function KnowledgeGraphWorkspace({
               </div>
             )}
           </section>
-        </aside>
+            </>
+          ) : inspectorTab === 'entities' ? (
+            <section className="graph-inspector-card">
+              <div className="assistant-trace-heading split">
+                <span className="label">高频实体</span>
+                {totalEntityCount > 5 ? (
+                  <button type="button" className="ghost-button" onClick={onPreviewAllEntities}>
+                    查看更多
+                  </button>
+                ) : null}
+              </div>
+              {topEntities.length === 0 ? (
+                <p className="panel-note">当前还没有实体，先生成一次图谱。</p>
+              ) : (
+                <div className="intelligence-list">
+                  {topEntities.map((entity) => (
+                    <article key={entity.id} className="intelligence-list-item">
+                      <div className="intelligence-list-copy">
+                        <strong>{entity.name}</strong>
+                        <p className="intelligence-preview-text">{entity.summary}</p>
+                        <div className="action-row wrap compact-actions">
+                          <button type="button" className="ghost-button intelligence-inline-button" onClick={() => onFocusEntityIdChange(entity.id)}>
+                            在图中查看
+                          </button>
+                          {entity.summary && entity.summary.length > 90 ? (
+                            <button type="button" className="ghost-button intelligence-inline-button" onClick={() => onPreviewEntity(entity)}>
+                              浮窗查看
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      <span className="status-badge state-indexed">{entity.mentionCount} 次</span>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : (
+            <section className="graph-inspector-card">
+              <div className="assistant-trace-heading split">
+                <span className="label">主要关系</span>
+                {totalRelationCount > 5 ? (
+                  <button type="button" className="ghost-button" onClick={onPreviewAllRelations}>
+                    查看更多
+                  </button>
+                ) : null}
+              </div>
+              {topRelations.length === 0 ? (
+                <p className="panel-note">当前还没有关系，生成后会按证据强度排序展示。</p>
+              ) : (
+                <div className="intelligence-list">
+                  {topRelations.map((relation) => (
+                    <article key={relation.id} className="intelligence-list-item">
+                      <div className="intelligence-list-copy">
+                        <strong className="intelligence-preview-text">{relation.summary}</strong>
+                        <p className="intelligence-preview-text">{relation.evidence[0] ?? '暂无证据摘要。'}</p>
+                        <div className="action-row wrap compact-actions">
+                          <button type="button" className="ghost-button intelligence-inline-button" onClick={() => onPreviewRelation(relation)}>
+                            查看证据
+                          </button>
+                        </div>
+                      </div>
+                      <span className="status-badge ok">权重 {relation.weight}</span>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
       </div>
     );
   }
@@ -2059,7 +2318,9 @@ function buildGraphExplorerState(
         ],
   )).slice(0, 10);
   const summaryMessage = queryTokens.length > 0
-    ? `已命中 ${matchedEntityIds.size} 个实体、${matchedRelationIds.size} 条关系，并自动带出相邻节点。`
+    ? matchedEntityIds.size > 0 || matchedRelationIds.size > 0
+      ? `已命中 ${matchedEntityIds.size} 个实体、${matchedRelationIds.size} 条关系，并自动带出相邻节点。`
+      : `没有精确命中「${rawQuery.trim()}」，已展示所有可见节点。`
     : focusEntity
       ? `当前聚焦 ${focusEntity.name}，右侧显示它附近最重要的关系。`
       : '默认展示当前最重要的实体和关系；搜索后会自动收敛到相关子图。';
@@ -2172,7 +2433,38 @@ function buildGraphLayout(
     }
   }
 
-  return positions;
+  return resolveLayoutOverlaps(positions);
+}
+
+function resolveLayoutOverlaps(
+  positions: Map<string, { x: number; y: number }>,
+): Map<string, { x: number; y: number }> {
+  const entries: Array<[string, { x: number; y: number }]> = [];
+  for (const entry of positions.entries()) {
+    entries.push(entry);
+  }
+
+  const nudged = new Map(positions);
+
+  for (let i = 0; i < entries.length; i += 1) {
+    const [idA, posA] = entries[i]!;
+    for (let j = i + 1; j < entries.length; j += 1) {
+      const [idB, posB] = entries[j]!;
+      const dx = posB.x - posA.x;
+      const dy = posB.y - posA.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      if (distance < 4 && distance > 0) {
+        const nx = dx / distance;
+        const ny = dy / distance;
+        const spread = (4 - distance) / 2 + 1;
+        nudged.set(idA, { x: posA.x - nx * spread, y: posA.y - ny * spread });
+        nudged.set(idB, { x: posB.x + nx * spread, y: posB.y + ny * spread });
+      }
+    }
+  }
+
+  return nudged;
 }
 
 function strongestRelationWeight(relations: GraphRelation[], sourceEntityId: string, targetEntityId: string): number {
@@ -2212,8 +2504,24 @@ function computeGraphNodeSize(entity: GraphEntity, maxMentionCount: number, focu
 }
 
 function buildGraphNodeWidth(node: GraphExplorerNode): number {
-  const nameWidth = Math.max(node.entity.name.length * 18 + 28, 112);
-  return Math.min(Math.max(nameWidth, node.size + 24), 220);
+  let charWidth = 0;
+  for (const char of node.entity.name) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (
+      (codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
+      (codePoint >= 0x3040 && codePoint <= 0x309f) ||
+      (codePoint >= 0x30a0 && codePoint <= 0x30ff) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7af)
+    ) {
+      charWidth += 19;
+    } else if ((codePoint >= 0x41 && codePoint <= 0x5a) || (codePoint >= 0x61 && codePoint <= 0x7a) || (codePoint >= 0x30 && codePoint <= 0x39)) {
+      charWidth += 9;
+    } else {
+      charWidth += 11;
+    }
+  }
+  const nameWidth = Math.max(charWidth + 28, 112);
+  return Math.min(Math.max(nameWidth, node.size + 24), 260);
 }
 
 function createDraft(detailPayload: LibraryNovelDetailPayload): GraphDraftState {
@@ -2435,4 +2743,47 @@ function formatFailureRate(value: number): string {
 
 function cryptoRandomId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function computeSearchSuggestions(
+  entities: GraphEntity[],
+  rawInput: string,
+): string[] {
+  const query = rawInput.trim().toLowerCase();
+  const seen = new Set<string>();
+  const names: Array<{ text: string; score: number }> = [];
+
+  for (const entity of entities) {
+    addSuggestion(names, seen, entity.name, query);
+    for (const alias of entity.aliases) {
+      addSuggestion(names, seen, alias, query);
+    }
+  }
+
+  names.sort((a, b) => b.score - a.score);
+  return names.slice(0, 8).map((entry) => entry.text);
+}
+
+function addSuggestion(
+  names: Array<{ text: string; score: number }>,
+  seen: Set<string>,
+  text: string,
+  query: string,
+): void {
+  const normalized = text.toLowerCase();
+  if (normalized.length === 0 || seen.has(normalized)) {
+    return;
+  }
+
+  if (query.length === 0) {
+    return;
+  }
+
+  const index = normalized.indexOf(query);
+  if (index < 0) {
+    return;
+  }
+
+  seen.add(normalized);
+  names.push({ text, score: index === 0 ? 3 : 1 });
 }

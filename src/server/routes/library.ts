@@ -26,6 +26,7 @@ import type {
   LibraryNovelSummary,
   LibraryReadingProgress,
 } from '../core/offline-library';
+import type { ReaderTypographyResolved } from '../core/system-preferences';
 
 export interface LibraryNovelSummaryPayload {
   novels: LibraryNovelSummary[];
@@ -86,6 +87,10 @@ export interface LibraryAssistantPayload {
   reply: LibraryAssistantResponse;
 }
 
+export interface LibraryReaderTypographyPayload {
+  typography: ReaderTypographyResolved;
+}
+
 export interface LibraryRouterOptions {
   service: ControlCenterService;
 }
@@ -106,6 +111,27 @@ interface BuildKnowledgeGraphRequestBody {
 interface AskLibraryAssistantRequestBody {
   message?: unknown;
   chapterId?: unknown;
+}
+
+interface UpdateReaderTypographyRequestBody {
+  fontSize?: unknown;
+  fontSizePreset?: unknown;
+  lineHeight?: unknown;
+  paragraphSpacing?: unknown;
+  fontFamilyPreset?: unknown;
+  fontFamilyCustom?: unknown;
+}
+
+const READER_FONT_SIZE_DEFAULT = 1.03;
+const READER_LINE_HEIGHT_DEFAULT = 1.9;
+const READER_PARAGRAPH_SPACING_DEFAULT = 1;
+
+function validateFontSizePreset(value: unknown): 'small' | 'medium' | 'large' {
+  return value === 'small' || value === 'medium' || value === 'large' ? value : 'medium';
+}
+
+function validateFontFamilyPreset(value: unknown): 'sans' | 'serif' | 'monospace' | 'custom' {
+  return value === 'sans' || value === 'serif' || value === 'monospace' || value === 'custom' ? value : 'sans';
 }
 
 export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
@@ -456,6 +482,74 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     }
 
     response.status(204).end();
+  });
+
+  router.get('/novels/:sourceId/:novelId/reader-typography', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const typography = service.getLibraryReaderTypography(sourceId, novelId);
+
+    if (!typography) {
+      response.status(404).json({
+        message: `Library novel ${sourceId}/${novelId} was not found.`,
+      });
+      return;
+    }
+
+    const payload: LibraryReaderTypographyPayload = {
+      typography,
+    };
+
+    response.json(payload);
+  });
+
+  router.put('/novels/:sourceId/:novelId/reader-typography', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const body = (request.body ?? {}) as UpdateReaderTypographyRequestBody;
+      const typography = service.updateLibraryReaderTypography(sourceId, novelId, {
+        fontSize: typeof body.fontSize === 'number' ? body.fontSize : READER_FONT_SIZE_DEFAULT,
+        fontSizePreset: validateFontSizePreset(body.fontSizePreset),
+        lineHeight: typeof body.lineHeight === 'number' ? body.lineHeight : READER_LINE_HEIGHT_DEFAULT,
+        paragraphSpacing: typeof body.paragraphSpacing === 'number' ? body.paragraphSpacing : READER_PARAGRAPH_SPACING_DEFAULT,
+        fontFamilyPreset: validateFontFamilyPreset(body.fontFamilyPreset),
+        fontFamilyCustom: typeof body.fontFamilyCustom === 'string' ? body.fontFamilyCustom : '',
+      });
+
+      if (!typography) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      const payload: LibraryReaderTypographyPayload = {
+        typography,
+      };
+
+      response.json(payload);
+    } catch (error) {
+      response.status(422).json({
+        message: error instanceof Error ? error.message : 'Reader typography update failed.',
+      });
+    }
+  });
+
+  router.delete('/novels/:sourceId/:novelId/reader-typography', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const typography = service.deleteLibraryReaderTypography(sourceId, novelId);
+
+    if (!typography) {
+      response.status(404).json({
+        message: `Library novel ${sourceId}/${novelId} was not found.`,
+      });
+      return;
+    }
+
+    const payload: LibraryReaderTypographyPayload = {
+      typography,
+    };
+
+    response.json(payload);
   });
 
   router.post('/novels/:sourceId/:novelId/chapters/:chapterId/media/:mediaId/cache', async (request, response) => {

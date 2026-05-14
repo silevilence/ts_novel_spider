@@ -15,10 +15,13 @@ import {
   fetchLibraryChapter,
   fetchLibraryNovel,
   fetchLibraryNovels,
+  fetchLibraryReaderTypography,
   fetchNovelPreview,
   fetchTask,
   updateLibraryAlias,
   updateLibraryBookmark,
+  updateLibraryReaderTypography,
+  deleteLibraryReaderTypography,
   updateLibraryReadingProgress,
 } from './api';
 import { SseTaskLogBridge } from './task-log-bridge';
@@ -27,6 +30,7 @@ import type {
   LibraryChapterDetailPayload,
   LibraryNovelDetailPayload,
   LibraryNovelSummaryPayload,
+  LibraryReaderTypographyPayload,
 } from '../../server/routes/library';
 import type { NoticeInput } from './control-center-model';
 
@@ -73,6 +77,21 @@ export interface LibraryModel {
   redownloadSelectedChapters: (chapterIds: string[]) => Promise<void>;
   cacheMediaAsset: (mediaId: string) => Promise<void>;
   cacheAllMediaAssets: () => Promise<void>;
+  /** 当前阅读器生效的排版配置 (合并了全局默认与当前书的覆盖) */
+  readerTypography: LibraryReaderTypographyPayload['typography'] | null;
+  /** 是否正在加载或保存阅读器排版 */
+  readerTypographyBusy: boolean;
+  /** 更新当前书籍的阅读器排版覆盖 */
+  updateReaderTypography: (input: {
+    fontSize?: number;
+    fontSizePreset?: 'small' | 'medium' | 'large';
+    lineHeight?: number;
+    paragraphSpacing?: number;
+    fontFamilyPreset?: 'sans' | 'serif' | 'monospace' | 'custom';
+    fontFamilyCustom?: string;
+  }) => Promise<void>;
+  /** 重置当前书籍的阅读器排版到全局默认 */
+  resetReaderTypography: () => Promise<void>;
 }
 
 interface UseLibraryModelOptions {
@@ -99,6 +118,8 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
   const [mediaBusyId, setMediaBusyId] = useState<string | null>(null);
+  const [readerTypography, setReaderTypography] = useState<LibraryModel['readerTypography']>(null);
+  const [readerTypographyBusy, setReaderTypographyBusy] = useState(false);
   const [mediaBatchBusy, setMediaBatchBusy] = useState(false);
   const [mediaBatchProgress, setMediaBatchProgress] = useState<LibraryModel['mediaBatchProgress']>(null);
   const [currentTask, setCurrentTask] = useState<ApiTaskSnapshot | null>(null);
@@ -783,6 +804,69 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     }
   }
 
+  const loadReaderTypography = useEffectEvent(async (sourceId: string, novelId: string) => {
+    try {
+      const payload = await fetchLibraryReaderTypography(sourceId, novelId);
+      startTransition(() => {
+        setReaderTypography(payload.typography);
+      });
+    } catch {
+      setReaderTypography(null);
+    }
+  });
+
+  const handleUpdateReaderTypography: LibraryModel['updateReaderTypography'] = useEffectEvent(async (input) => {
+    if (!detail) {
+      return;
+    }
+
+    const sourceId = detail.novel.sourceId;
+    const novelId = detail.novel.metadata.novelId;
+
+    setReaderTypographyBusy(true);
+    try {
+      const payload = await updateLibraryReaderTypography(sourceId, novelId, input);
+      startTransition(() => {
+        setReaderTypography(payload.typography);
+      });
+      publishNotice({ tone: 'success', title: '排版已更新', message: '当前书的阅读器排版已更新。' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '更新书籍排版失败。';
+      publishNotice({ tone: 'error', title: '更新失败', message });
+    } finally {
+      setReaderTypographyBusy(false);
+    }
+  });
+
+  const handleResetReaderTypography: LibraryModel['resetReaderTypography'] = useEffectEvent(async () => {
+    if (!detail) {
+      return;
+    }
+
+    const sourceId = detail.novel.sourceId;
+    const novelId = detail.novel.metadata.novelId;
+
+    setReaderTypographyBusy(true);
+    try {
+      const payload = await deleteLibraryReaderTypography(sourceId, novelId);
+      startTransition(() => {
+        setReaderTypography(payload.typography);
+      });
+      publishNotice({ tone: 'success', title: '已恢复', message: '已恢复为全局默认排版。' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '恢复全局排版失败。';
+      publishNotice({ tone: 'error', title: '恢复失败', message });
+    } finally {
+      setReaderTypographyBusy(false);
+    }
+  });
+
+  useEffect(() => {
+    if (location.sourceId && location.novelId) {
+      void loadReaderTypography(location.sourceId, location.novelId);
+    }
+  }, [location.sourceId, location.novelId]);
+
   return {
     location,
     libraryOverview,
@@ -816,6 +900,10 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     redownloadSelectedChapters,
     cacheMediaAsset,
     cacheAllMediaAssets,
+    readerTypography,
+    readerTypographyBusy,
+    updateReaderTypography: handleUpdateReaderTypography,
+    resetReaderTypography: handleResetReaderTypography,
   };
 }
 

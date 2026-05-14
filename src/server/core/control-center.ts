@@ -18,6 +18,10 @@ import {
   type LlmProviderConfigInput,
   type Neo4jConfigInput,
   type Neo4jPreferencesState,
+  type ReaderTypographyConfigInput,
+  type ReaderTypographyResolved,
+  type ReaderTypographyState,
+  resolveEffectiveReaderTypography,
 } from './system-preferences';
 import {
   searchLibraryNovels,
@@ -381,6 +385,60 @@ export class ControlCenterService {
     return this.#repository.deleteBookmark(sourceId, novelId, bookmarkId);
   }
 
+  getLibraryReaderTypography(sourceId: string, novelId: string): ReaderTypographyResolved {
+    const global = this.#systemPreferences.getReaderTypography().config;
+    const overrideRow = this.#repository.getReaderTypographyOverride(sourceId, novelId);
+    const override: import('./system-preferences').ReaderTypographyConfig | null = overrideRow
+      ? {
+          fontSize: overrideRow.fontSize,
+          fontSizePreset: overrideRow.fontSizePreset as ReaderTypographyConfigInput['fontSizePreset'] ?? global.fontSizePreset,
+          lineHeight: overrideRow.lineHeight,
+          paragraphSpacing: overrideRow.paragraphSpacing,
+          fontFamilyPreset: overrideRow.fontFamilyPreset as ReaderTypographyConfigInput['fontFamilyPreset'] ?? global.fontFamilyPreset,
+          fontFamilyCustom: overrideRow.fontFamilyCustom,
+        }
+      : null;
+
+    return resolveEffectiveReaderTypography(global, override);
+  }
+
+  updateLibraryReaderTypography(
+    sourceId: string,
+    novelId: string,
+    input: import('./system-preferences').ReaderTypographyConfig,
+  ): ReaderTypographyResolved | null {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    if (!snapshot) {
+      return null;
+    }
+
+    const global = this.#systemPreferences.getReaderTypography().config;
+    this.#repository.saveReaderTypographyOverride({
+      sourceId,
+      novelId,
+      fontSize: input.fontSize,
+      fontSizePreset: input.fontSizePreset,
+      lineHeight: input.lineHeight,
+      paragraphSpacing: input.paragraphSpacing,
+      fontFamilyPreset: input.fontFamilyPreset,
+      fontFamilyCustom: input.fontFamilyCustom,
+      updatedAt: new Date().toISOString(),
+    });
+
+    return resolveEffectiveReaderTypography(global, input);
+  }
+
+  deleteLibraryReaderTypography(sourceId: string, novelId: string): ReaderTypographyResolved | null {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    if (!snapshot) {
+      return null;
+    }
+
+    this.#repository.deleteReaderTypographyOverride(sourceId, novelId);
+    const global = this.#systemPreferences.getReaderTypography().config;
+    return resolveEffectiveReaderTypography(global, null);
+  }
+
   async cacheLibraryChapterMedia(
     sourceId: string,
     novelId: string,
@@ -515,6 +573,14 @@ export class ControlCenterService {
 
   async validateNeo4jPreferences(): Promise<Neo4jPreferencesState> {
     return this.#systemPreferences.validateNeo4j();
+  }
+
+  getReaderTypography(): ReaderTypographyState {
+    return this.#systemPreferences.getReaderTypography();
+  }
+
+  updateReaderTypography(input: ReaderTypographyConfigInput): ReaderTypographyState {
+    return this.#systemPreferences.updateReaderTypography(input);
   }
 
   async previewNovel(input: PreviewNovelInput): Promise<PreviewNovelResult> {

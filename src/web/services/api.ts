@@ -5,6 +5,7 @@ import type {
   ControlNeo4jPayload,
   ControlNetworkProxyPayload,
   ControlPreviewPayload,
+  ControlReaderTypographyPayload,
   ControlSourcesPayload,
   ControlTaskPayload,
   ControlTasksPayload,
@@ -21,6 +22,7 @@ import type {
   LibraryMediaPayload,
   LibraryNovelDetailPayload,
   LibraryNovelSummaryPayload,
+  LibraryReaderTypographyPayload,
   LibraryReadingProgressPayload,
 } from '../../server/routes/library';
 
@@ -202,6 +204,85 @@ export async function validateNeo4jPreferences(): Promise<ControlNeo4jPayload> {
   }
 
   return (await response.json()) as ControlNeo4jPayload;
+}
+
+export async function fetchReaderTypographyPreferences(): Promise<ControlReaderTypographyPayload> {
+  return requestJson<ControlReaderTypographyPayload>('/api/control/preferences/reader-typography');
+}
+
+export interface UpdateReaderTypographyInput {
+  fontSize?: number;
+  fontSizePreset?: 'small' | 'medium' | 'large';
+  lineHeight?: number;
+  paragraphSpacing?: number;
+  fontFamilyPreset?: 'sans' | 'serif' | 'monospace' | 'custom';
+  fontFamilyCustom?: string;
+}
+
+export async function updateReaderTypographyPreferences(
+  input: UpdateReaderTypographyInput,
+): Promise<ControlReaderTypographyPayload> {
+  const response = await fetch('/api/control/preferences/reader-typography', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Reader typography preferences update failed');
+  }
+
+  return (await response.json()) as ControlReaderTypographyPayload;
+}
+
+export async function fetchLibraryReaderTypography(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryReaderTypographyPayload> {
+  return requestJson<LibraryReaderTypographyPayload>(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/reader-typography`);
+}
+
+export async function updateLibraryReaderTypography(
+  sourceId: string,
+  novelId: string,
+  input: UpdateReaderTypographyInput,
+): Promise<LibraryReaderTypographyPayload> {
+  const response = await fetch(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/reader-typography`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    },
+  );
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Library reader typography update failed');
+  }
+
+  return (await response.json()) as LibraryReaderTypographyPayload;
+}
+
+export async function deleteLibraryReaderTypography(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryReaderTypographyPayload> {
+  const response = await fetch(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/reader-typography`,
+    {
+      method: 'DELETE',
+    },
+  );
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Library reader typography reset failed');
+  }
+
+  return (await response.json()) as LibraryReaderTypographyPayload;
 }
 
 export async function updateNetworkProxy(

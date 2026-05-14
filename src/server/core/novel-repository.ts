@@ -138,6 +138,18 @@ export interface StoredKnowledgeGraphBuildCheckpointRow {
   updatedAt: string;
 }
 
+export interface StoredReaderTypographyOverrideRow {
+  sourceId: string;
+  novelId: string;
+  fontSize: number;
+  fontSizePreset: string;
+  lineHeight: number;
+  paragraphSpacing: number;
+  fontFamilyPreset: string;
+  fontFamilyCustom: string;
+  updatedAt: string;
+}
+
 export interface StoredKnowledgeGraphEntityRow {
   id: string;
   name: string;
@@ -236,6 +248,18 @@ interface BookmarkRow {
   volume_title: string | null;
   note: string;
   created_at: string;
+  updated_at: string;
+}
+
+interface ReaderTypographyRow {
+  source_id: string;
+  novel_id: string;
+  font_size: number;
+  font_size_preset: string;
+  line_height: number;
+  paragraph_spacing: number;
+  font_family_preset: string;
+  font_family_custom: string;
   updated_at: string;
 }
 
@@ -721,6 +745,86 @@ export class SqliteNovelRepository {
         `,
       )
       .run(bookmarkId, sourceId, novelId);
+
+    return result.changes > 0;
+  }
+
+  getReaderTypographyOverride(sourceId: string, novelId: string): StoredReaderTypographyOverrideRow | null {
+    const row = this.#database
+      .prepare(
+        `
+          SELECT
+            source_id,
+            novel_id,
+            font_size,
+            font_size_preset,
+            line_height,
+            paragraph_spacing,
+            font_family_preset,
+            font_family_custom,
+            updated_at
+          FROM reader_typography
+          WHERE source_id = ? AND novel_id = ?
+        `,
+      )
+      .get(sourceId, novelId) as ReaderTypographyRow | undefined;
+
+    return row ? mapReaderTypographyRow(row) : null;
+  }
+
+  saveReaderTypographyOverride(input: StoredReaderTypographyOverrideRow): StoredReaderTypographyOverrideRow {
+    const timestamp = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO reader_typography (
+            source_id,
+            novel_id,
+            font_size,
+            font_size_preset,
+            line_height,
+            paragraph_spacing,
+            font_family_preset,
+            font_family_custom,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (source_id, novel_id) DO UPDATE SET
+            font_size = excluded.font_size,
+            font_size_preset = excluded.font_size_preset,
+            line_height = excluded.line_height,
+            paragraph_spacing = excluded.paragraph_spacing,
+            font_family_preset = excluded.font_family_preset,
+            font_family_custom = excluded.font_family_custom,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId,
+        input.novelId,
+        input.fontSize,
+        input.fontSizePreset,
+        input.lineHeight,
+        input.paragraphSpacing,
+        input.fontFamilyPreset,
+        input.fontFamilyCustom,
+        timestamp,
+      );
+
+    return {
+      ...input,
+      updatedAt: timestamp,
+    };
+  }
+
+  deleteReaderTypographyOverride(sourceId: string, novelId: string): boolean {
+    const result = this.#database
+      .prepare(
+        `
+          DELETE FROM reader_typography
+          WHERE source_id = ? AND novel_id = ?
+        `,
+      )
+      .run(sourceId, novelId);
 
     return result.changes > 0;
   }
@@ -1874,6 +1978,22 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_graph_profiles', 'extraction_models_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
+
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS reader_typography (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        font_size REAL NOT NULL,
+        font_size_preset TEXT NOT NULL,
+        line_height REAL NOT NULL,
+        paragraph_spacing REAL NOT NULL,
+        font_family_preset TEXT NOT NULL,
+        font_family_custom TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+    `);
   }
 
   private ensureColumnExists(tableName: string, columnName: string, columnDefinition: string): void {
@@ -2019,6 +2139,20 @@ function mapBookmarkRow(row: BookmarkRow): StoredBookmarkRow {
     volumeTitle: row.volume_title,
     note: row.note,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapReaderTypographyRow(row: ReaderTypographyRow): StoredReaderTypographyOverrideRow {
+  return {
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    fontSize: row.font_size,
+    fontSizePreset: row.font_size_preset,
+    lineHeight: row.line_height,
+    paragraphSpacing: row.paragraph_spacing,
+    fontFamilyPreset: row.font_family_preset,
+    fontFamilyCustom: row.font_family_custom,
     updatedAt: row.updated_at,
   };
 }

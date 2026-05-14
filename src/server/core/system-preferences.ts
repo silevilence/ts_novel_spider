@@ -125,6 +125,129 @@ export interface Neo4jPreferencesState {
   validation: Neo4jValidationResult | null;
 }
 
+// ── 阅读器排版偏好 ──
+
+export type ReaderFontFamilyPreset = 'sans' | 'serif' | 'monospace' | 'custom';
+
+export interface ReaderTypographyConfigInput {
+  fontSize?: number;
+  fontSizePreset?: 'small' | 'medium' | 'large';
+  lineHeight?: number;
+  paragraphSpacing?: number;
+  fontFamilyPreset?: ReaderFontFamilyPreset;
+  fontFamilyCustom?: string;
+}
+
+export interface ReaderTypographyConfig {
+  fontSize: number;
+  fontSizePreset: 'small' | 'medium' | 'large';
+  lineHeight: number;
+  paragraphSpacing: number;
+  fontFamilyPreset: ReaderFontFamilyPreset;
+  fontFamilyCustom: string;
+}
+
+export interface ReaderTypographyState {
+  config: ReaderTypographyConfig;
+  updatedAt: string | null;
+}
+
+/** 阅读器排版生效配置，含来源标记 */
+export interface ReaderTypographyResolved {
+  fontSize: number;
+  fontSizePreset: 'small' | 'medium' | 'large';
+  lineHeight: number;
+  paragraphSpacing: number;
+  fontFamilyPreset: ReaderFontFamilyPreset;
+  fontFamilyCustom: string;
+  source: 'global' | 'novel';
+}
+
+export const READER_TYPOGRAPHY_FONT_SIZE_PRESETS: Record<ReaderTypographyConfig['fontSizePreset'], number> = {
+  small: 0.95,
+  medium: 1.03,
+  large: 1.16,
+};
+
+export const READER_TYPOGRAPHY_FONT_SIZE_MIN = 0.7;
+export const READER_TYPOGRAPHY_FONT_SIZE_MAX = 2.2;
+export const READER_TYPOGRAPHY_LINE_HEIGHT_MIN = 1.2;
+export const READER_TYPOGRAPHY_LINE_HEIGHT_MAX = 3.0;
+export const READER_TYPOGRAPHY_PARAGRAPH_SPACING_MIN = 0;
+export const READER_TYPOGRAPHY_PARAGRAPH_SPACING_MAX = 3.5;
+
+export const READER_TYPOGRAPHY_DEFAULTS: ReaderTypographyConfig = {
+  fontSize: READER_TYPOGRAPHY_FONT_SIZE_PRESETS.medium,
+  fontSizePreset: 'medium',
+  lineHeight: 1.9,
+  paragraphSpacing: 1,
+  fontFamilyPreset: 'sans',
+  fontFamilyCustom: '',
+};
+
+export function resolveFontFamily(config: ReaderTypographyConfig): string {
+  switch (config.fontFamilyPreset) {
+    case 'serif':
+      return '"Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif';
+    case 'monospace':
+      return '"Noto Sans Mono CJK SC", "Source Han Mono SC", "Courier New", monospace';
+    case 'custom':
+      return config.fontFamilyCustom || READER_TYPOGRAPHY_DEFAULTS.fontFamilyCustom || resolveFontFamily({ ...config, fontFamilyPreset: 'sans', fontFamilyCustom: '' });
+    case 'sans':
+    default:
+      return '"Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+  }
+}
+
+export function resolveEffectiveReaderTypography(
+  global: ReaderTypographyConfig,
+  override: ReaderTypographyConfig | null,
+): ReaderTypographyResolved {
+  const config = override ?? global;
+  return {
+    fontSize: clampFontSize(config.fontSize),
+    fontSizePreset: config.fontSizePreset,
+    lineHeight: clampLineHeight(config.lineHeight),
+    paragraphSpacing: clampParagraphSpacing(config.paragraphSpacing),
+    fontFamilyPreset: config.fontFamilyPreset,
+    fontFamilyCustom: config.fontFamilyCustom,
+    source: override ? 'novel' : 'global',
+  };
+}
+
+export function normalizeReaderTypographyInput(input: ReaderTypographyConfigInput): ReaderTypographyConfig {
+  return {
+    fontSize: typeof input.fontSize === 'number' ? clampFontSize(input.fontSize) : READER_TYPOGRAPHY_DEFAULTS.fontSize,
+    fontSizePreset: isFontSizePreset(input.fontSizePreset) ? input.fontSizePreset : READER_TYPOGRAPHY_DEFAULTS.fontSizePreset,
+    lineHeight: typeof input.lineHeight === 'number' ? clampLineHeight(input.lineHeight) : READER_TYPOGRAPHY_DEFAULTS.lineHeight,
+    paragraphSpacing: typeof input.paragraphSpacing === 'number' ? clampParagraphSpacing(input.paragraphSpacing) : READER_TYPOGRAPHY_DEFAULTS.paragraphSpacing,
+    fontFamilyPreset: isFontFamilyPreset(input.fontFamilyPreset) ? input.fontFamilyPreset : READER_TYPOGRAPHY_DEFAULTS.fontFamilyPreset,
+    fontFamilyCustom: typeof input.fontFamilyCustom === 'string' ? input.fontFamilyCustom.trim() : '',
+  };
+}
+
+function clampFontSize(value: number): number {
+  return Math.max(READER_TYPOGRAPHY_FONT_SIZE_MIN, Math.min(READER_TYPOGRAPHY_FONT_SIZE_MAX, value));
+}
+
+function clampLineHeight(value: number): number {
+  return Math.max(READER_TYPOGRAPHY_LINE_HEIGHT_MIN, Math.min(READER_TYPOGRAPHY_LINE_HEIGHT_MAX, value));
+}
+
+function clampParagraphSpacing(value: number): number {
+  return Math.max(READER_TYPOGRAPHY_PARAGRAPH_SPACING_MIN, Math.min(READER_TYPOGRAPHY_PARAGRAPH_SPACING_MAX, value));
+}
+
+function isFontSizePreset(value: unknown): value is ReaderTypographyConfig['fontSizePreset'] {
+  return value === 'small' || value === 'medium' || value === 'large';
+}
+
+function isFontFamilyPreset(value: unknown): value is ReaderFontFamilyPreset {
+  return value === 'sans' || value === 'serif' || value === 'monospace' || value === 'custom';
+}
+
+// ──
+
 export interface SystemPreferencesServiceOptions {
   fetchImpl?: typeof fetch;
   storageFilePath?: string;
@@ -134,6 +257,7 @@ export interface SystemPreferencesServiceOptions {
 interface PersistedSystemPreferences {
   llmProviders: LlmProviderConfigInput[];
   neo4j: Neo4jConfigInput & { updatedAt?: string | null };
+  readerTypography?: ReaderTypographyConfigInput;
   updatedAt: string | null;
 }
 
@@ -148,6 +272,8 @@ export class SystemPreferencesService {
   #llmValidations = new Map<string, LlmModelValidationResult>();
   #neo4jConfig: Neo4jConfig;
   #neo4jValidation: Neo4jValidationResult | null = null;
+  #readerTypography: ReaderTypographyConfig;
+  #readerTypographyUpdatedAt: string | null = null;
   #updatedAt: string | null;
 
   constructor(options: SystemPreferencesServiceOptions = {}) {
@@ -162,6 +288,8 @@ export class SystemPreferencesService {
       ...this.#neo4jConfig,
       updatedAt: persisted?.neo4j.updatedAt ?? null,
     };
+    this.#readerTypography = normalizeReaderTypographyInput(persisted?.readerTypography ?? {});
+    this.#readerTypographyUpdatedAt = persisted?.readerTypography ? (persisted.updatedAt ?? null) : null;
     this.#updatedAt = persisted?.updatedAt ?? null;
   }
 
@@ -179,7 +307,7 @@ export class SystemPreferencesService {
     this.#llmProviders = normalizeProviderInputs(inputs);
     this.#llmValidations = filterValidations(this.#llmValidations, this.#llmProviders);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography);
     return this.getLlmState();
   }
 
@@ -287,7 +415,7 @@ export class SystemPreferencesService {
     };
     this.#neo4jValidation = null;
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography);
     return this.getNeo4jState();
   }
 
@@ -324,6 +452,21 @@ export class SystemPreferencesService {
     }
 
     return this.getNeo4jState();
+  }
+
+  getReaderTypography(): ReaderTypographyState {
+    return {
+      config: { ...this.#readerTypography },
+      updatedAt: this.#readerTypographyUpdatedAt,
+    };
+  }
+
+  updateReaderTypography(input: ReaderTypographyConfigInput): ReaderTypographyState {
+    this.#readerTypography = normalizeReaderTypographyInput(input);
+    this.#readerTypographyUpdatedAt = new Date().toISOString();
+    this.touch();
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography);
+    return this.getReaderTypography();
   }
 
   private touch(): void {
@@ -1094,30 +1237,33 @@ function persistPreferences(
   llmProviders: StoredLlmProviderConfig[],
   neo4jConfig: Neo4jConfig,
   updatedAt: string | null,
+  readerTypography?: ReaderTypographyConfig,
 ): void {
   if (!storageFilePath) {
     return;
   }
 
   fs.mkdirSync(path.dirname(storageFilePath), { recursive: true });
+  const payload: Record<string, unknown> = {
+    llmProviders,
+    neo4j: {
+      enabled: neo4jConfig.enabled,
+      uri: neo4jConfig.uri,
+      username: neo4jConfig.username,
+      password: neo4jConfig.password,
+      database: neo4jConfig.database,
+      updatedAt: neo4jConfig.updatedAt,
+    },
+    updatedAt,
+  };
+
+  if (readerTypography) {
+    payload.readerTypography = readerTypography;
+  }
+
   fs.writeFileSync(
     storageFilePath,
-    JSON.stringify(
-      {
-        llmProviders,
-        neo4j: {
-          enabled: neo4jConfig.enabled,
-          uri: neo4jConfig.uri,
-          username: neo4jConfig.username,
-          password: neo4jConfig.password,
-          database: neo4jConfig.database,
-          updatedAt: neo4jConfig.updatedAt,
-        },
-        updatedAt,
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(payload, null, 2),
     'utf8',
   );
 }

@@ -21,6 +21,9 @@ import type {
   Neo4jConfig,
   Neo4jConfigInput,
   Neo4jValidationResult,
+  ReaderTypographyConfig,
+  ReaderTypographyConfigInput,
+  ReaderTypographyState,
 } from '../core/system-preferences';
 import type { NovelMetadata, ResolvedChapterState, SpiderRunFailure } from '../core/spider';
 
@@ -93,6 +96,11 @@ export interface ControlNeo4jPayload {
   validation: Neo4jValidationResult | null;
 }
 
+export interface ControlReaderTypographyPayload {
+  config: ReaderTypographyConfig;
+  updatedAt: string | null;
+}
+
 export interface ControlCenterRouterOptions {
   service: ControlCenterService;
 }
@@ -134,6 +142,15 @@ interface UpdateNeo4jRequestBody {
   username?: unknown;
   password?: unknown;
   database?: unknown;
+}
+
+interface UpdateReaderTypographyRequestBody {
+  fontSize?: unknown;
+  fontSizePreset?: unknown;
+  lineHeight?: unknown;
+  paragraphSpacing?: unknown;
+  fontFamilyPreset?: unknown;
+  fontFamilyCustom?: unknown;
 }
 
 export function createControlCenterRouter({ service }: ControlCenterRouterOptions): Router {
@@ -246,6 +263,21 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     } catch (error) {
       response.status(400).json({
         message: error instanceof Error ? error.message : 'Invalid Neo4j validation request.',
+      });
+    }
+  });
+
+  router.get('/preferences/reader-typography', (_request, response) => {
+    response.json(serializeReaderTypographyPreferences(service.getReaderTypography()));
+  });
+
+  router.put('/preferences/reader-typography', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as UpdateReaderTypographyRequestBody;
+      response.json(serializeReaderTypographyPreferences(service.updateReaderTypography(parseReaderTypographyBody(body))));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid reader typography preferences request.',
       });
     }
   });
@@ -729,4 +761,41 @@ function optionalUrlString(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object';
+}
+
+function serializeReaderTypographyPreferences(state: ReaderTypographyState): ControlReaderTypographyPayload {
+  return {
+    config: state.config,
+    updatedAt: state.updatedAt,
+  };
+}
+
+function parseReaderTypographyBody(body: UpdateReaderTypographyRequestBody): ReaderTypographyConfigInput {
+  const input: ReaderTypographyConfigInput = {};
+
+  if (typeof body.fontSize === 'number') {
+    input.fontSize = body.fontSize;
+  }
+
+  if (body.fontSizePreset === 'small' || body.fontSizePreset === 'medium' || body.fontSizePreset === 'large') {
+    input.fontSizePreset = body.fontSizePreset;
+  }
+
+  if (typeof body.lineHeight === 'number') {
+    input.lineHeight = body.lineHeight;
+  }
+
+  if (typeof body.paragraphSpacing === 'number') {
+    input.paragraphSpacing = body.paragraphSpacing;
+  }
+
+  if (body.fontFamilyPreset === 'sans' || body.fontFamilyPreset === 'serif' || body.fontFamilyPreset === 'monospace' || body.fontFamilyPreset === 'custom') {
+    input.fontFamilyPreset = body.fontFamilyPreset;
+  }
+
+  if (typeof body.fontFamilyCustom === 'string') {
+    input.fontFamilyCustom = body.fontFamilyCustom;
+  }
+
+  return input;
 }

@@ -282,3 +282,61 @@ test('library routes export markdown, txt and epub packages for a stored novel',
     cleanup();
   }
 });
+
+test('library reader typography routes resolve global defaults and novel override lifecycle', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    // — GET 应返回全局默认
+    const getResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/reader-typography`);
+    assert.equal(getResponse.status, 200);
+    const getPayload = (await getResponse.json()) as { typography: { source: string; fontSize: number } };
+    assert.equal(getPayload.typography.source, 'global');
+    assert.ok(getPayload.typography.fontSize > 0);
+
+    // — PUT 单书覆盖
+    const putResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/reader-typography`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fontSize: 1.2,
+        fontSizePreset: 'large',
+        lineHeight: 2.4,
+        paragraphSpacing: 1.2,
+        fontFamilyPreset: 'serif',
+      }),
+    });
+    assert.equal(putResponse.status, 200);
+    const putPayload = (await putResponse.json()) as { typography: { source: string; fontSize: number } };
+    assert.equal(putPayload.typography.source, 'novel');
+    assert.equal(putPayload.typography.fontSize, 1.2);
+
+    // — GET 应返回单书覆盖
+    const getAgainResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/reader-typography`);
+    const getAgainPayload = (await getAgainResponse.json()) as { typography: { source: string } };
+    assert.equal(getAgainPayload.typography.source, 'novel');
+
+    // — DELETE 恢复全局
+    const deleteResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/reader-typography`, {
+      method: 'DELETE',
+    });
+    assert.equal(deleteResponse.status, 200);
+    const deletePayload = (await deleteResponse.json()) as { typography: { source: string } };
+    assert.equal(deletePayload.typography.source, 'global');
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});

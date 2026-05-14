@@ -701,6 +701,68 @@ test('task events endpoint returns 404 for unknown tasks', async () => {
   }
 });
 
+test('reader typography preferences routes load defaults and persist updates', async () => {
+  const systemPreferences = new SystemPreferencesService();
+  const { app, cleanup } = createTestServer({ systemPreferences });
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    // — GET 默认值
+    const getResponse = await fetch(`${baseUrl}/api/control/preferences/reader-typography`);
+    assert.equal(getResponse.status, 200);
+    const getPayload = (await getResponse.json()) as { config: { fontSize: number; lineHeight: number; fontFamilyPreset: string }; updatedAt: string | null };
+    assert.ok(getPayload.config.fontSize > 0);
+    assert.ok(getPayload.config.lineHeight > 1);
+    assert.match(getPayload.config.fontFamilyPreset, /sans|serif|monospace|custom/);
+    assert.equal(getPayload.updatedAt, null);
+
+    // — PUT 更新值
+    const putResponse = await fetch(`${baseUrl}/api/control/preferences/reader-typography`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fontSize: 1.12,
+        fontSizePreset: 'large',
+        lineHeight: 2.2,
+        paragraphSpacing: 0.8,
+        fontFamilyPreset: 'serif',
+      }),
+    });
+    assert.equal(putResponse.status, 200);
+    const putPayload = (await putResponse.json()) as { config: { fontSize: number; fontSizePreset: string; lineHeight: number; paragraphSpacing: number; fontFamilyPreset: string }; updatedAt: string | null };
+    assert.equal(putPayload.config.fontSize, 1.12);
+    assert.equal(putPayload.config.fontSizePreset, 'large');
+    assert.equal(putPayload.config.lineHeight, 2.2);
+    assert.equal(putPayload.config.paragraphSpacing, 0.8);
+    assert.equal(putPayload.config.fontFamilyPreset, 'serif');
+    assert.ok(putPayload.updatedAt);
+
+    // — GET 确认持久化
+    const getAgainResponse = await fetch(`${baseUrl}/api/control/preferences/reader-typography`);
+    const getAgainPayload = (await getAgainResponse.json()) as { config: { fontSize: number } };
+    assert.equal(getAgainPayload.config.fontSize, 1.12);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) { reject(error); return; }
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
 async function waitForCompletedTask(baseUrl: string, taskId: string) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const response = await fetch(`${baseUrl}/api/control/tasks/${taskId}`);
