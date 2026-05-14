@@ -1208,10 +1208,27 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
     const parsed = JSON.parse(fileContent) as {
       llmProviders?: unknown;
       neo4j?: unknown;
+      readerTypography?: unknown;
       updatedAt?: unknown;
     };
 
-    return {
+    let readerTypography: ReaderTypographyConfigInput | undefined;
+
+    if (isRecord(parsed.readerTypography)) {
+      const rt: ReaderTypographyConfigInput = {};
+      const raw = parsed.readerTypography as Record<string, unknown>;
+
+      if (typeof raw.fontSize === 'number') { rt.fontSize = raw.fontSize; }
+      if (isFontSizePreset(raw.fontSizePreset)) { rt.fontSizePreset = raw.fontSizePreset; }
+      if (typeof raw.lineHeight === 'number') { rt.lineHeight = raw.lineHeight; }
+      if (typeof raw.paragraphSpacing === 'number') { rt.paragraphSpacing = raw.paragraphSpacing; }
+      if (isFontFamilyPreset(raw.fontFamilyPreset)) { rt.fontFamilyPreset = raw.fontFamilyPreset; }
+      if (typeof raw.fontFamilyCustom === 'string') { rt.fontFamilyCustom = raw.fontFamilyCustom; }
+
+      readerTypography = rt;
+    }
+
+    const result: PersistedSystemPreferences = {
       llmProviders: Array.isArray(parsed.llmProviders)
         ? parsed.llmProviders.filter((entry): entry is LlmProviderConfigInput => isRecord(entry))
         : [],
@@ -1227,6 +1244,12 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       updatedAt:
         typeof parsed.updatedAt === 'string' || parsed.updatedAt === null ? parsed.updatedAt : null,
     };
+
+    if (readerTypography) {
+      result.readerTypography = readerTypography;
+    }
+
+    return result;
   } catch {
     return null;
   }

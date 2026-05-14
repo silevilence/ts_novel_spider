@@ -29,7 +29,7 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
           <p className="eyebrow">系统偏好</p>
           <h2>统一管理全局默认配置</h2>
           <p className="route-copy">
-            这里集中管理下载方式、网络代理、模型服务和图数据库连接。保存后，后续新任务和后续 AI 能力都会直接复用这些默认值。
+            这里集中管理任务选项、网络代理、阅读器排版、模型服务和图数据库连接。保存后，后续新任务和阅读等能力都会直接复用这些默认值。
           </p>
         </div>
 
@@ -58,9 +58,9 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
       <section className="fold-card">
         <div className="fold-header">
           <div>
-            <p className="eyebrow">下载方式</p>
-            <h2>默认下载选项</h2>
-            <p className="panel-note">这些设置会自动用于之后创建的任务。</p>
+            <p className="eyebrow">任务选项</p>
+            <h2>默认任务设置</h2>
+            <p className="panel-note">这些设置会自动用于之后创建的抓取任务。</p>
           </div>
           <button type="button" className="ghost-button" onClick={() => setCrawlOpen((current) => !current)}>
             {crawlOpen ? '收起' : '展开'}
