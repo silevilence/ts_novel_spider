@@ -14,6 +14,7 @@
 |---|---|
 | 后端 | Node.js ≥ 20, Express 5, `better-sqlite3`, `cheerio` |
 | 前端 | React 19, Vite 6, TypeScript strict 模式 |
+| AI / 图谱 | `ai` (Vercel AI SDK), `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `ai-sdk-ollama`, `neo4j-driver`, `zod`, `jsonrepair` |
 | 导出 | `jszip`（EPUB 打包） |
 | 工程化 | `tsx` (watch + test runner), `concurrently`, Docker multi-stage build |
 
@@ -32,14 +33,18 @@
 │   │   │       ├── syosetu-spider-adapter.ts      # Syosetu（继承 Syosetu18）
 │   │   │       └── mock-html-spider-adapter.ts    # 测试用 Mock
 │   │   ├── core/
-│   │   │   ├── spider.ts          # SpiderAdapter 接口 + BaseHtmlSpiderAdapter 抽象类
-│   │   │   ├── spider-runner.ts   # 批量抓取调度器（含并发、重试、异常隔离）
-│   │   │   ├── control-center.ts  # ControlCenterService（任务生命周期、Spider 注册表）
-│   │   │   ├── novel-repository.ts # SQLite ORM（SqliteNovelRepository）
-│   │   │   ├── offline-library.ts # 离线书库服务（章节详情、媒体资产）
-│   │   │   ├── export-engine.ts   # 本地导出引擎（Markdown / EPUB / TXT）
-│   │   │   ├── network-proxy.ts   # 网络代理服务（持久化至 .data/network-proxy.json）
-│   │   │   └── logging.ts         # SpiderLogDispatcher + SpiderLogAdapter 接口
+│   │   │   ├── spider.ts              # SpiderAdapter 接口 + BaseHtmlSpiderAdapter 抽象类
+│   │   │   ├── spider-runner.ts       # 批量抓取调度器（含并发、重试、异常隔离）
+│   │   │   ├── control-center.ts      # ControlCenterService（任务生命周期、Spider 注册表）
+│   │   │   ├── novel-repository.ts    # SQLite ORM（SqliteNovelRepository，含图谱/偏好/书签等表）
+│   │   │   ├── offline-library.ts     # 离线书库服务（章节详情、媒体资产、别名、书签、进度）
+│   │   │   ├── export-engine.ts       # 本地导出引擎（Markdown / EPUB / TXT）
+│   │   │   ├── network-proxy.ts       # 网络代理服务（持久化至 .data/network-proxy.json）
+│   │   │   ├── logging.ts             # SpiderLogDispatcher + SpiderLogAdapter 接口
+│   │   │   ├── system-preferences.ts  # 系统偏好服务（LLM 配置、Neo4j、阅读排版）
+│   │   │   ├── library-intelligence.ts # 知识图谱与 AI 伴读核心服务
+│   │   │   ├── library-intelligence-rag.ts # 图谱提取与 RAG 检索底层实现
+│   │   │   └── library-search.ts      # 本地书库多维度搜索与相关性排序
 │   │   ├── routes/
 │   │   │   ├── control-center.ts  # /api/control 路由
 │   │   │   ├── library.ts         # /api/library 路由
@@ -47,15 +52,32 @@
 │   │   ├── app.ts                 # createServerApp()，挂载路由与静态资源
 │   │   └── index.ts               # HTTP 监听入口
 │   └── web/
-│       ├── components/            # UI 组件
+│       ├── components/
+│       │   ├── app-shell.tsx              # 全局壳层（导航、摘要卡片、通知）
+│       │   ├── control-console.tsx        # 开始抓取页面
+│       │   ├── chapter-directory.tsx      # 章节目录（含增量状态高亮）
+│       │   ├── metadata-board.tsx         # 小说元数据展示
+│       │   ├── library-workspace.tsx      # 本地书库（总览/详情/阅读器）
+│       │   ├── monitor-dashboard.tsx      # 任务进度监控
+│       │   ├── task-monitor.tsx           # 单任务实时日志
+│       │   ├── system-preferences.tsx     # 下载设置页（含 LLM/Neo4j/排版子面板）
+│       │   ├── llm-provider-panel.tsx     # 大模型服务商配置
+│       │   ├── neo4j-panel.tsx            # Neo4j 图数据库连接配置
+│       │   ├── library-intelligence-panel.tsx # AI 伴读对话面板
+│       │   ├── reader-typography-panel.tsx # 阅读器排版偏好
+│       │   ├── font-family-picker.tsx     # 字体族选择器
+│       │   ├── network-proxy-panel.tsx    # 网络代理配置
+│       │   ├── notification-center.tsx    # 全局通知吐司
+│       │   └── status-panel.tsx           # 状态摘要卡片
 │       ├── services/              # API 封装（api.ts）+ 视图模型
 │       ├── App.tsx                # 路由配置入口
 │       └── vite.config.ts
 ├── scripts/ci/                    # CI 发布准备脚本
+├── docs/                          # UX 设计规范与开发备忘
 ├── data/
 │   ├── exports/                   # 导出文件输出目录
 │   └── offline-assets/            # 离线图片缓存
-├── .data/                         # 运行时数据（SQLite、代理配置）— 不提交 Git
+├── .data/                         # 运行时数据（SQLite、代理配置、系统偏好）— 不提交 Git
 ├── Dockerfile                     # 生产镜像（multi-stage）
 ├── Dockerfile.dev                 # 开发镜像（国内加速源）
 ├── docker-compose.yml             # 生产编排（消费 ghcr.io 镜像）
@@ -98,6 +120,31 @@
 
 - SPA 回退路由使用 `app.use(fallback)` 中间件，**不得使用** `app.get('*', ...)` （Express 5 已弃用）。
 
+### 4.7 系统偏好：SystemPreferencesService
+
+- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理三类全局配置，均持久化至 `.data/system-preferences.json`：
+  - **LLM 提供商配置**（`LlmProviderConfig`）：支持 openai-compatible / anthropic / google-generative-ai / ollama 四种类型，每个提供商可配置多个模型，每个模型可手动或自动映射能力标签（chat / embedding / rerank）。
+  - **Neo4j 图数据库连接**（`Neo4jConfig`）：URI、用户名、密码，支持连接验证。
+  - **阅读器排版偏好**（`ReaderTypographyConfig`）：全局默认字体族、字号、行高、段间距。
+- LLM API Key 以明文存储于 JSON 文件中，注意安全边界。
+- 模型能力检测通过发送轻量 API 请求验证，结果缓存在内存中。
+
+### 4.8 知识图谱与 AI 伴读：LibraryIntelligenceService
+
+- `LibraryIntelligenceService`（`src/server/core/library-intelligence.ts`）编排知识图谱构建与 AI 问答。
+- 底层抽取与检索逻辑位于 `src/server/core/library-intelligence-rag.ts`，使用 Vercel AI SDK 调用 LLM 进行实体/关系抽取和 RAG 检索。
+- 图谱构建支持 **full**（全量重建）、**incremental**（增量追加）、**rebuild**（先清空再全量）三种模式。
+- 构建过程可暂停/恢复，状态持久化至 SQLite。每个小说可独立配置抽取模型池与并发数。
+- AI 伴读采用混合检索：元数据 + 图谱子图 + 章节块（关键词评分 + 向量余弦相似度 + 可选重排序）。
+- OpenAI 兼容接口需确保 base URL 包含 `/v1` 路径（若原始 URL 无 path 则自动补齐）。
+- 图谱功能为 **实验性**，未经用户明确要求不得主动启用或宣传为稳定功能。
+
+### 4.9 书库搜索：LibrarySearch
+
+- `searchLibraryNovels()`（`src/server/core/library-search.ts`）实现结构化查询解析器。
+- 支持字段限定搜索（`name:`、`author:`、`tag:`、`site:`、`alias:` 等），逻辑运算符 `+`（与）、`,`（或）、`-`（非），以及括号分组。
+- 搜索结果按相关性评分降序排列，同分按更新时间倒序。
+
 ## 5. API 路由速查 (API Routes)
 
 | 方法 | 路径 | 说明 |
@@ -110,10 +157,34 @@
 | GET | `/api/control/tasks/:id/stream` | SSE：实时任务日志流 |
 | GET/PUT | `/api/control/network-proxy` | 读取/更新代理配置 |
 | POST | `/api/control/network-proxy/validate` | 验证代理连通性 |
-| GET | `/api/library/novels` | 书库列表 |
-| GET | `/api/library/novels/:sourceId/:novelId` | 书库单本详情 |
+| GET/PUT | `/api/control/preferences/llm-providers` | 读取/更新 LLM 提供商配置 |
+| POST | `/api/control/preferences/llm-providers/:providerId/models/:modelId/validate` | 验证单个 LLM 模型 |
+| GET/PUT | `/api/control/preferences/neo4j` | 读取/更新 Neo4j 连接配置 |
+| POST | `/api/control/preferences/neo4j/validate` | 验证 Neo4j 连接 |
+| GET/PUT | `/api/control/preferences/reader-typography` | 读取/更新全局阅读排版偏好 |
+| GET | `/api/library/novels` | 书库列表（支持 `?q=` 搜索） |
+| GET | `/api/library/novels/:sourceId/:novelId` | 书库单本详情（含知识图谱状态） |
 | GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId` | 章节内容 |
 | GET | `/api/library/novels/:sourceId/:novelId/exports/:format/download` | 下载导出文件（markdown/txt/epub） |
+| GET | `/api/library/novels/:sourceId/:novelId/graph` | 获取知识图谱状态 |
+| PUT | `/api/library/novels/:sourceId/:novelId/graph/profile` | 更新图谱构建配置 |
+| POST | `/api/library/novels/:sourceId/:novelId/graph/build` | 启动图谱构建 |
+| POST | `/api/library/novels/:sourceId/:novelId/graph/pause` | 暂停图谱构建 |
+| POST | `/api/library/novels/:sourceId/:novelId/graph/resume` | 恢复图谱构建 |
+| DELETE | `/api/library/novels/:sourceId/:novelId/graph` | 清除图谱数据 |
+| POST | `/api/library/novels/:sourceId/:novelId/assistant/chat` | AI 伴读问答 |
+| POST | `/api/library/novels/:sourceId/:novelId/aliases` | 创建书籍别名 |
+| PUT | `/api/library/novels/:sourceId/:novelId/aliases/:aliasId` | 更新别名 |
+| DELETE | `/api/library/novels/:sourceId/:novelId/aliases/:aliasId` | 删除别名 |
+| PUT | `/api/library/novels/:sourceId/:novelId/progress` | 更新阅读进度 |
+| POST | `/api/library/novels/:sourceId/:novelId/bookmarks` | 创建书签 |
+| PUT | `/api/library/novels/:sourceId/:novelId/bookmarks/:bookmarkId` | 更新书签备注 |
+| DELETE | `/api/library/novels/:sourceId/:novelId/bookmarks/:bookmarkId` | 删除书签 |
+| GET/PUT | `/api/library/novels/:sourceId/:novelId/reader-typography` | 单本阅读排版偏好 |
+| DELETE | `/api/library/novels/:sourceId/:novelId/reader-typography` | 恢复全局排版默认值 |
+| POST | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId/media/:mediaId/cache` | 缓存单张图片 |
+| POST | `/api/library/novels/:sourceId/:novelId/media/cache` | 批量缓存全书图片 |
+| GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId/media/:mediaId/file` | 获取缓存图片文件 |
 
 ## 6. 编码规范 (Coding Standards)
 
@@ -142,4 +213,7 @@
 - **新增爬虫**：在 `src/server/adapters/spider/` 下创建适配器文件，继承 `BaseHtmlSpiderAdapter`，并在 `ControlCenterService` 注册表中追加，同时补充测试。
 - **前端组件**：默认使用 React Hooks，通过 `src/web/services/api.ts` 调用后端接口，与现有暗黑模式视觉风格保持一致。
 - **网络请求**：爬虫 HTTP 请求默认带完整 Headers，并经由 `createProxyAwareHtmlFetcher` 发出。
+- **知识图谱与 AI 伴读**：相关功能为实验性，未经用户明确要求不得主动启用。新增图谱相关代码时需同步更新 `novel-repository.ts` 中的表结构与迁移逻辑。图谱构建测试应使用 SQLite 内存数据库，不得依赖真实 Neo4j 或 LLM 调用。
+- **系统偏好**：新增偏好字段需在 `SystemPreferencesService` 中定义接口与持久化逻辑，并在前端 `SystemPreferences` 组件中提供对应 UI。偏好迁移策略（新增字段默认值）需在 `system-preferences.ts` 中显式处理。
+- **书库搜索**：搜索语法变更需同步更新 `library-search.ts` 中的分词器与解析器，并补充测试覆盖。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*

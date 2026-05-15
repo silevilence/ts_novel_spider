@@ -7,11 +7,15 @@
 - **多站点抓取**：内置 [小説家になろう](https://ncode.syosetu.com)（Syosetu）与 [ノクターンノベルズ](https://novel18.syosetu.com)（Syosetu18）适配器
 - **增量同步**：自动对比本地缓存与远端目录，高亮标识新增章节
 - **批量下载**：支持并发抓取，单章失败不阻塞整体任务，失败章节可单点重试
-- **离线阅读**：内置沉浸式阅读器，图片资源可本地化缓存
+- **离线阅读**：内置沉浸式阅读器，支持字体、字号、行高、段间距个性化排版，图片资源可本地化缓存
 - **多格式导出**：支持导出为 Markdown、EPUB、TXT 三种格式
 - **网络代理**：支持配置 HTTP/SOCKS 代理，代理配置持久化跨重启保留
 - **后台守护**：前端界面关闭后，后端抓取任务持续运行，不受影响
 - **实时监控**：通过 SSE 推送任务进度，前端实时展示日志与进度条
+- **智能检索**：支持按书名、作者、标签、摘要等多维度模糊搜索，可按相关性排序
+- **阅读进度与书签**：自动记忆每本书的阅读位置，支持手动添加章内书签
+- **书籍别名**：可为本地书籍设置自定义别名，搜索时自动关联
+- **AI 伴读与知识图谱（实验性）**：接入大语言模型自动构建人物关系与情节图谱，支持 AI 问答辅助理解文本内容
 
 ## 快速上手
 
@@ -87,42 +91,48 @@ docker compose -f docker-compose.dev.yml up
 
 ## 使用说明
 
-1. 打开 Web 界面，在**控制台**页面选择目标站点（Syosetu / Syosetu18）
+1. 打开 Web 界面，在**开始抓取**页面选择目标站点（Syosetu / Syosetu18）
 2. 输入小说 ID（如 `n3130lr`），点击**预览**加载元数据与目录
 3. 在章节目录中勾选需要下载的章节，点击**开始抓取**
-4. 切换至**任务监控**页面查看实时进度与日志
-5. 下载完成后，前往**书库**页面离线阅读或导出文件
+4. 切换至**任务进度**页面查看实时进度与日志
+5. 下载完成后，前往**本地书库**页面离线阅读或导出文件
+6. 在**下载设置**页面可配置网络代理、大模型服务、图数据库连接以及阅读排版偏好
 
-如需通过代理访问站点，在**系统设置**页面配置代理地址并验证连通性。
+如需启用 AI 伴读与知识图谱功能（实验性），需先在设置中完成大模型与 Neo4j 的连接配置。
 
 ## 目录结构
 
 ```
 .
 ├── src/
-│   ├── server/           # 后端与爬虫核心逻辑
-│   │   ├── adapters/     # 站点适配器（Spider）与日志适配器（Log）
-│   │   ├── core/         # 调度器、数据库、导出引擎、网络代理
-│   │   ├── routes/       # Express API 路由
-│   │   └── index.ts      # 服务入口
-│   └── web/              # 前端 React 工程（Vite 构建）
-│       ├── components/   # UI 组件
-│       ├── services/     # API 封装与视图模型
-│       └── App.tsx       # 前端入口
+│   ├── server/                  # 后端与爬虫核心逻辑
+│   │   ├── adapters/
+│   │   │   ├── log/             # 日志适配器
+│   │   │   └── spider/          # 站点爬虫适配器（Syosetu / Syosetu18）
+│   │   ├── core/                # 调度器、数据库、导出引擎、网络代理、系统偏好、知识图谱
+│   │   ├── routes/              # Express API 路由
+│   │   └── index.ts             # 服务入口
+│   └── web/                     # 前端 React 工程（Vite 构建）
+│       ├── components/          # UI 组件（控制台、书库、监控、设置）
+│       ├── services/            # API 封装与视图模型
+│       └── App.tsx              # 前端入口与路由配置
 ├── data/
-│   ├── exports/          # 导出的小说文件
-│   └── offline-assets/   # 本地化图片缓存
-├── Dockerfile            # 生产镜像构建脚本
-├── Dockerfile.dev        # 开发镜像构建脚本
-├── docker-compose.yml    # 生产环境编排配置
-└── docker-compose.dev.yml # 开发环境编排配置
+│   ├── exports/                 # 导出的小说文件
+│   └── offline-assets/          # 本地化图片缓存
+├── .data/                       # 运行时数据（SQLite、代理配置、系统偏好）— 不提交 Git
+├── docs/                        # UX 设计规范与开发备忘
+├── Dockerfile                   # 生产镜像构建脚本（multi-stage）
+├── Dockerfile.dev               # 开发镜像构建脚本（国内加速源）
+├── docker-compose.yml           # 生产环境编排配置
+└── docker-compose.dev.yml       # 开发环境编排配置
 ```
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Node.js, Express 5, better-sqlite3, Cheerio |
+| 后端 | Node.js ≥ 20, Express 5, better-sqlite3, Cheerio |
 | 前端 | React 19, Vite 6, TypeScript |
+| AI / 图谱 | Vercel AI SDK, Neo4j, 支持 OpenAI / Anthropic / Google / Ollama |
 | 导出 | JSZip（EPUB 打包）|
 | 工程化 | tsx, concurrently, Docker |
