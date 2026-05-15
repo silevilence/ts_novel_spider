@@ -157,6 +157,7 @@ export function LibraryIntelligencePanel({
   const [graphDeleting, setGraphDeleting] = useState(false);
   const [graphProgressExpanded, setGraphProgressExpanded] = useState(() => shouldExpandBuildProgress(detailPayload.knowledgeGraph.build.status));
   const [configExpanded, setConfigExpanded] = useState(false);
+  const [graphBrowserExpanded, setGraphBrowserExpanded] = useState(true);
   const [graphPreview, setGraphPreview] = useState<GraphPreviewDialogState | null>(null);
   const [graphSearchInput, setGraphSearchInput] = useState('');
   const deferredGraphSearchInput = useDeferredValue(graphSearchInput);
@@ -448,6 +449,8 @@ export function LibraryIntelligencePanel({
             </div>
 
             <div className="intelligence-progress-overview">
+              {graphProgressExpanded ? (
+              <>
               <div className="intelligence-progress-summary-grid">
                 <article className="summary-tile">
                   <span className="label">进度</span>
@@ -486,6 +489,8 @@ export function LibraryIntelligencePanel({
               <div className="progress-track" aria-hidden="true">
                 <div className="progress-fill" style={{ width: `${build.progressPercent}%` }} />
               </div>
+              </>
+              ) : null}
 
               <div className="action-row wrap compact-actions">
                 <button
@@ -585,9 +590,18 @@ export function LibraryIntelligencePanel({
                   <span className="status-badge state-indexed">实体 {knowledgeGraph.entities.length}</span>
                   <span className="status-badge ok">关系 {knowledgeGraph.relations.length}</span>
                   <span className="status-badge state-idle">当前可见 {graphExplorer.nodes.length}/{graphExplorer.edges.length}</span>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => setGraphBrowserExpanded((current) => !current)}
+                  >
+                    {graphBrowserExpanded ? '收起' : '展开'}
+                  </button>
                 </div>
               </div>
 
+              {graphBrowserExpanded ? (
+              <>
               <div className="graph-build-actions">
                 <article className="graph-action-tile">
                   <p className="label">增量更新</p>
@@ -659,6 +673,8 @@ export function LibraryIntelligencePanel({
                 onPreviewAllEntities={() => setGraphPreview(buildEntityListPreview(knowledgeGraph.entities))}
                 onPreviewAllRelations={() => setGraphPreview(buildRelationListPreview(knowledgeGraph.relations))}
               />
+              </>
+              ) : null}
             </section>
 
             <section className={`card intelligence-config-card intelligence-config-span${configExpanded ? '' : ' fold-card'}`}>

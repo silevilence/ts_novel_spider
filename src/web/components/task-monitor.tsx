@@ -86,7 +86,11 @@ export function TaskMonitor({
           <ul className="history-list">
             {recentTasks.length > 0 ? recentTasks.map((task) => (
               <li key={task.id}>
-                <button type="button" className="history-button" onClick={() => onPickTask(task.id)}>
+                <button
+                  type="button"
+                  className={`history-button${task.id === currentTask?.id ? ' active' : ''}`}
+                  onClick={() => onPickTask(task.id)}
+                >
                   <span>{getSourceLabel(task.sourceId)} / {task.novelId}</span>
                   <span className={`status-badge state-${task.status}`}>{formatTaskStatus(task.status)}</span>
                 </button>

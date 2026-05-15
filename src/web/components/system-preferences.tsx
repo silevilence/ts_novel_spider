@@ -22,6 +22,19 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
   const [neo4jOpen, setNeo4jOpen] = useState(false);
   const [readerOpen, setReaderOpen] = useState(false);
 
+  const foldStates = [crawlOpen, proxyOpen, llmOpen, neo4jOpen, readerOpen];
+  const allExpanded = foldStates.every(Boolean);
+  const allCollapsed = foldStates.every((open) => !open);
+
+  function toggleAllFold() {
+    const next = !allExpanded;
+    setCrawlOpen(next);
+    setProxyOpen(next);
+    setLlmOpen(next);
+    setNeo4jOpen(next);
+    setReaderOpen(next);
+  }
+
   return (
     <div className="settings-stack">
       <section className="hero route-hero">
@@ -51,6 +64,9 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
         <div className="action-row wrap">
           <button type="button" className="ghost-button" onClick={onOpenControl}>
             返回开始抓取
+          </button>
+          <button type="button" className="ghost-button" onClick={toggleAllFold}>
+            {allCollapsed ? '展开全部' : '折叠全部'}
           </button>
         </div>
       </section>

@@ -90,6 +90,7 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
     fontFamilyCustom: string;
   } | null>(null);
   const [readerTypographyDirty, setReaderTypographyDirty] = useState(false);
+  const [isPageNavOpen, setIsPageNavOpen] = useState(false);
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -105,10 +106,11 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
     setReaderBookmarkNote('');
     setEditingBookmarkId(null);
     setEditingBookmarkNote('');
+    setIsPageNavOpen(false);
   }, [model.location.path]);
 
   useEffect(() => {
-    if (!isExportDialogOpen && !descriptionDialog && !isRedownloadPickerOpen) {
+    if (!isExportDialogOpen && !descriptionDialog && !isRedownloadPickerOpen && !isPageNavOpen) {
       return;
     }
 
@@ -117,6 +119,7 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
         setIsExportDialogOpen(false);
         setIsRedownloadPickerOpen(false);
         setDescriptionDialog(null);
+        setIsPageNavOpen(false);
       }
     };
 
@@ -125,7 +128,7 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [descriptionDialog, isExportDialogOpen, isRedownloadPickerOpen]);
+  }, [descriptionDialog, isExportDialogOpen, isRedownloadPickerOpen, isPageNavOpen]);
 
   useEffect(() => {
     if (model.location.view !== 'reader' || !model.chapter?.chapter.chapter.id) {
@@ -270,7 +273,12 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
 
           {model.novels.length === 0 ? (
             <div className="empty-state">
-              <p>{model.loading ? '正在读取书库...' : '书库里还没有小说，先去抓取一本。'}</p>
+              <p>{model.loading ? '正在读取书库...' : '书库里还没有小说。'}</p>
+              {!model.loading ? (
+                <button type="button" className="primary-button" onClick={onOpenControl}>
+                  去抓取第一本作品
+                </button>
+              ) : null}
             </div>
           ) : (
             <div className="library-grid">
@@ -1551,6 +1559,34 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
           返回抓取台
         </button>
       </div>
+
+      {isPageNavOpen ? (
+        <div className="page-nav-popover" role="menu" aria-label="页面导航">
+          <button type="button" role="menuitem" onClick={() => { window.scrollTo({ top: 0, behavior: 'smooth' }); setIsPageNavOpen(false); }}>
+            <span className="page-nav-icon" aria-hidden="true">↑</span>
+            回到顶部
+          </button>
+          <button type="button" role="menuitem" onClick={() => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); setIsPageNavOpen(false); }}>
+            <span className="page-nav-icon" aria-hidden="true">↓</span>
+            直达底部
+          </button>
+          <button type="button" role="menuitem" onClick={() => { scrollToChapterDirectory(); setIsPageNavOpen(false); }}>
+            <span className="page-nav-icon" aria-hidden="true">☰</span>
+            章节目录
+          </button>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        className="page-nav-fab"
+        aria-label={isPageNavOpen ? '关闭页面导航' : '打开页面导航'}
+        aria-expanded={isPageNavOpen}
+        aria-haspopup="menu"
+        onClick={() => setIsPageNavOpen((open) => !open)}
+      >
+        {isPageNavOpen ? '✕' : '☰'}
+      </button>
     </div>
   );
 }

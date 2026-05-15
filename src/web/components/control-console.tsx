@@ -67,8 +67,9 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
             </label>
           </div>
           {model.selectedSource ? <p className="panel-note">{model.selectedSource.description}</p> : null}
+          <div className="control-form-separator"></div>
           <div className="action-row wrap">
-            <button type="button" className="ghost-button subtle" onClick={onOpenSettings}>
+            <button type="button" className="ghost-button" onClick={onOpenSettings}>
               更多设置
             </button>
             <span className="panel-note">

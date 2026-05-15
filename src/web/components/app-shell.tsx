@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { HealthPayload } from '../../server/routes/health';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
 import type { AppRouteDefinition } from '../services/app-routes';
@@ -25,12 +26,46 @@ export function AppShell({
   getSourceLabel,
   children,
 }: AppShellProps) {
+  const [scrolled, setScrolled] = useState(false);
+  const scrolledRef = useRef(false);
   const currentTaskLabel = currentTask
     ? `${getSourceLabel(currentTask.sourceId)} / ${formatTaskStatus(currentTask.status)}`
     : '空闲';
 
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (y > 80 && !scrolledRef.current) {
+        scrolledRef.current = true;
+        setScrolled(true);
+      } else if (y < 40 && scrolledRef.current) {
+        scrolledRef.current = false;
+        setScrolled(false);
+      }
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
   return (
-    <main className="app-shell">
+    <main className={`app-shell${scrolled ? ' scrolled' : ''}`}>
+      <div className="shell-sticky-bar" aria-hidden={!scrolled}>
+        <span className="shell-sticky-brand">TS Novel Spider</span>
+        <nav className="shell-nav" aria-label="快捷导航">
+          {routes.map((route) => (
+            <button
+              key={route.id}
+              type="button"
+              className={`shell-nav-button ${route.id === activeRoute.id ? 'active' : ''}`}
+              aria-current={route.id === activeRoute.id ? 'page' : undefined}
+              onClick={() => onNavigate(route.path)}
+            >
+              {route.label}
+            </button>
+          ))}
+        </nav>
+      </div>
       <header className="shell-header">
         <div className="shell-hero">
           <div className="route-header">

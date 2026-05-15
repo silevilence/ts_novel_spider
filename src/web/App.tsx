@@ -69,6 +69,7 @@ export function App() {
 
     window.history.pushState(null, '', resolvedLocation.path);
     setCurrentLocation(resolvedLocation);
+    window.scrollTo({ top: 0, behavior: 'auto' });
   }
 
   return (

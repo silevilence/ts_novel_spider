@@ -14,6 +14,34 @@
   --ok: #61d4a6;
   --warn: #ffd166;
   --danger: #ff7b72;
+
+  /* ---- spacing scale ---- */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+
+  /* ---- interaction tokens ---- */
+  --button-min-height: 44px;
+  --button-radius: 999px;
+  --button-transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, border-color 140ms ease;
+  --focus-ring: 2px solid rgba(127, 208, 255, 0.7);
+  --focus-offset: 2px;
+
+  /* ---- panel tokens ---- */
+  --panel-radius: 28px;
+  --panel-shadow: 0 26px 90px rgba(2, 6, 12, 0.4);
+  --panel-blur: blur(18px);
+  --panel-max-width: 1180px;
+
+  /* ---- sticky / z-index scale ---- */
+  --z-dock: 5;
+  --z-shell-header: 10;
+  --z-fab: 12;
+  --z-overlay: 14;
+  --z-toast: 20;
+
   color-scheme: dark;
   font-family: "IBM Plex Sans", "Segoe UI", "PingFang SC", sans-serif;
   background:
@@ -68,12 +96,12 @@ textarea {
 }
 
 button {
-  min-height: 44px;
+  min-height: var(--button-min-height);
   padding: 0.8rem 1rem;
-  border-radius: 999px;
+  border-radius: var(--button-radius);
   border: none;
   cursor: pointer;
-  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, border-color 140ms ease;
+  transition: var(--button-transition);
 }
 
 button:hover:not(:disabled) {
@@ -106,15 +134,15 @@ input:focus,
 select:focus,
 textarea:focus,
 button:focus-visible {
-  outline: 2px solid rgba(127, 208, 255, 0.7);
-  outline-offset: 2px;
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
 }
 
 .app-shell {
   display: grid;
-  gap: 1.5rem;
+  gap: 1.25rem;
   min-height: 100vh;
-  padding: 1.6rem 1.25rem 6.5rem;
+  padding: 0.85rem 1.25rem 6.5rem;
 }
 
 .shell-header,
@@ -122,18 +150,22 @@ button:focus-visible {
 .status-panel,
 .panel,
 .fold-card {
-  width: min(1180px, 100%);
+  width: min(var(--panel-max-width), 100%);
   margin: 0 auto;
   border: 1px solid var(--line);
-  border-radius: 28px;
+  border-radius: var(--panel-radius);
   background: var(--panel);
-  box-shadow: 0 26px 90px rgba(2, 6, 12, 0.4);
-  backdrop-filter: blur(18px);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: var(--panel-blur);
 }
 
 .shell-header {
-  padding: 1.25rem;
+  padding: 0.75rem 1.25rem;
   overflow: hidden;
+  border-radius: 28px;
+  box-shadow:
+    0 26px 90px rgba(2, 6, 12, 0.4),
+    0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .shell-header::after {
@@ -151,7 +183,24 @@ button:focus-visible {
 .shell-hero {
   position: relative;
   display: grid;
-  gap: 1.2rem;
+  gap: 0.75rem;
+  transition: gap 180ms ease;
+}
+
+.shell-header h1 {
+  transition: font-size 180ms ease;
+}
+
+.shell-header .eyebrow {
+  transition: font-size 180ms ease, letter-spacing 180ms ease;
+}
+
+.shell-nav-button {
+  transition: min-height 180ms ease, padding 180ms ease, font-size 180ms ease, var(--button-transition);
+}
+
+.shell-nav {
+  transition: gap 180ms ease;
 }
 
 .hero,
@@ -159,6 +208,7 @@ button:focus-visible {
 .status-panel,
 .fold-card {
   padding: 1.5rem;
+  scroll-margin-top: 5rem;
 }
 
 .hero h1,
@@ -222,10 +272,16 @@ button:focus-visible {
 .shell-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.9rem;
+  gap: 0.6rem;
 }
 
-.shell-stat,
+.shell-stat {
+  padding: 0.7rem 0.85rem;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--panel-strong);
+}
+
 .card,
 .status-panel div {
   padding: 1rem;
@@ -234,7 +290,57 @@ button:focus-visible {
   background: var(--panel-strong);
 }
 
-.shell-stat strong,
+.shell-stat strong {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.95rem;
+}
+
+/* ---- scrolled compact sticky bar (fixed, no layout shift) ---- */
+
+.shell-sticky-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-shell-header);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.35rem 1rem;
+  background: rgba(6, 18, 31, 0.94);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 4px 20px rgba(2, 6, 12, 0.32);
+  transform: translateY(-100%);
+  transition: transform 200ms ease;
+}
+
+.app-shell.scrolled .shell-sticky-bar {
+  transform: translateY(0);
+}
+
+.shell-sticky-brand {
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  margin-right: 0.35rem;
+}
+
+.shell-sticky-bar .shell-nav {
+  gap: 0.35rem;
+}
+
+.shell-sticky-bar .shell-nav-button {
+  min-height: 32px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.82rem;
+}
+
 .status-panel dd,
 .card strong {
   display: block;
@@ -285,6 +391,12 @@ button:focus-visible {
   border-radius: 24px;
   background: linear-gradient(180deg, rgba(10, 28, 44, 0.88), rgba(7, 19, 32, 0.72));
   border: 1px solid rgba(127, 208, 255, 0.16);
+}
+
+.control-form-separator {
+  height: 1px;
+  margin: 0.2rem 0;
+  background: var(--line);
 }
 
 .control-form-grid,
@@ -896,6 +1008,12 @@ button:focus-visible {
   color: inherit;
 }
 
+.history-button.active {
+  border-color: rgba(255, 140, 66, 0.4);
+  background: linear-gradient(135deg, rgba(255, 140, 66, 0.14), rgba(127, 208, 255, 0.08));
+  box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.16);
+}
+
 .status-panel dl {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   margin: 0;
@@ -1433,7 +1551,7 @@ button:focus-visible {
   position: fixed;
   right: 1.5rem;
   bottom: 1.5rem;
-  z-index: 12;
+  z-index: var(--z-fab);
   min-width: 88px;
   border: 1px solid rgba(255, 140, 66, 0.28);
   background: rgba(5, 16, 27, 0.94);
@@ -1441,10 +1559,78 @@ button:focus-visible {
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.36);
 }
 
+/* ---- page navigation FAB (detail pages) ---- */
+
+.page-nav-fab {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 5.5rem;
+  z-index: 41;
+  min-width: 52px;
+  min-height: 52px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 140, 66, 0.28);
+  border-radius: var(--button-radius);
+  background: rgba(5, 16, 27, 0.94);
+  color: var(--ink);
+  font-size: 1.3rem;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.36);
+  cursor: pointer;
+  transition: var(--button-transition);
+}
+
+.page-nav-fab:hover {
+  transform: translateY(-1px);
+}
+
+.page-nav-popover {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 9rem;
+  z-index: 41;
+  display: grid;
+  gap: 0.35rem;
+  min-width: 180px;
+  padding: 0.6rem;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(5, 16, 27, 0.96);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(18px);
+}
+
+.page-nav-popover button {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 0.65rem;
+  min-height: 42px;
+  padding: 0.6rem 0.85rem;
+  border-radius: 14px;
+  background: rgba(8, 24, 39, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+
+.page-nav-popover button:hover {
+  background: rgba(12, 30, 47, 0.88);
+  border-color: var(--line);
+}
+
+.page-nav-icon {
+  font-size: 1.1rem;
+  width: 1.4rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
 .reader-directory-overlay {
   position: fixed;
   inset: 0;
-  z-index: 14;
+  z-index: var(--z-overlay);
   display: flex;
   justify-content: flex-end;
   background: rgba(2, 8, 15, 0.56);
@@ -1519,7 +1705,7 @@ button:focus-visible {
 .action-dock {
   position: sticky;
   bottom: 1rem;
-  z-index: 5;
+  z-index: var(--z-dock);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1566,7 +1752,7 @@ button:focus-visible {
   position: fixed;
   top: 1.1rem;
   right: 1.1rem;
-  z-index: 20;
+  z-index: var(--z-toast);
   display: grid;
   gap: 0.75rem;
   width: min(360px, calc(100vw - 2rem));
@@ -1678,6 +1864,16 @@ button:focus-visible {
   .reader-directory-fab {
     right: 1rem;
     bottom: 1rem;
+  }
+
+  .page-nav-fab {
+    right: 1rem;
+    bottom: 5rem;
+  }
+
+  .page-nav-popover {
+    right: 1rem;
+    bottom: 8rem;
   }
 
   .reader-directory-drawer {
