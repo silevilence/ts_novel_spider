@@ -255,6 +255,11 @@ export interface StoredTranslationBuildRow {
   failedChapters: number;
   glossaryVersion: number;
   profileVersion: number;
+  currentChapterTitle: string | null;
+  currentChapterParagraphs: number;
+  currentChapterTranslatedParagraphs: number;
+  totalTranslatedParagraphs: number;
+  totalParagraphEstimate: number;
   updatedAt: string | null;
 }
 
@@ -554,6 +559,11 @@ interface TranslationBuildRow {
   failed_chapters: number;
   glossary_version: number;
   profile_version: number;
+  current_chapter_title: string | null;
+  current_chapter_paragraphs: number;
+  current_chapter_translated_paragraphs: number;
+  total_translated_paragraphs: number;
+  total_paragraph_estimate: number;
   updated_at: string;
 }
 
@@ -2080,7 +2090,9 @@ export class SqliteNovelRepository {
           SELECT
             source_id, novel_id, status, stage, progress_percent, message, error_message,
             started_at, completed_at, model_stats_json, translated_chapters, reviewed_chapters,
-            failed_chapters, glossary_version, profile_version, updated_at
+            failed_chapters, glossary_version, profile_version,
+            current_chapter_title, current_chapter_paragraphs, current_chapter_translated_paragraphs, total_translated_paragraphs, total_paragraph_estimate,
+            updated_at
           FROM novel_translation_builds
           WHERE source_id = ? AND novel_id = ?
         `,
@@ -2106,6 +2118,11 @@ export class SqliteNovelRepository {
     failedChapters: number;
     glossaryVersion: number;
     profileVersion: number;
+    currentChapterTitle?: string | null;
+    currentChapterParagraphs?: number;
+    currentChapterTranslatedParagraphs?: number;
+    totalTranslatedParagraphs?: number;
+    totalParagraphEstimate?: number;
   }): StoredTranslationBuildRow {
     this.assertNovelExists(input.sourceId, input.novelId);
 
@@ -2116,9 +2133,11 @@ export class SqliteNovelRepository {
           INSERT INTO novel_translation_builds (
             source_id, novel_id, status, stage, progress_percent, message, error_message,
             started_at, completed_at, model_stats_json, translated_chapters, reviewed_chapters,
-            failed_chapters, glossary_version, profile_version, updated_at
+            failed_chapters, glossary_version, profile_version,
+            current_chapter_title, current_chapter_paragraphs, current_chapter_translated_paragraphs, total_translated_paragraphs, total_paragraph_estimate,
+            updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(source_id, novel_id) DO UPDATE SET
             status = excluded.status, stage = excluded.stage,
             progress_percent = excluded.progress_percent, message = excluded.message,
@@ -2129,6 +2148,11 @@ export class SqliteNovelRepository {
             failed_chapters = excluded.failed_chapters,
             glossary_version = excluded.glossary_version,
             profile_version = excluded.profile_version,
+            current_chapter_title = excluded.current_chapter_title,
+            current_chapter_paragraphs = excluded.current_chapter_paragraphs,
+            current_chapter_translated_paragraphs = excluded.current_chapter_translated_paragraphs,
+            total_translated_paragraphs = excluded.total_translated_paragraphs,
+            total_paragraph_estimate = excluded.total_paragraph_estimate,
             updated_at = excluded.updated_at
         `,
       )
@@ -2137,7 +2161,10 @@ export class SqliteNovelRepository {
         input.progressPercent, input.message, input.errorMessage,
         input.startedAt, input.completedAt, input.modelStatsJson,
         input.translatedChapters, input.reviewedChapters, input.failedChapters,
-        input.glossaryVersion, input.profileVersion, updatedAt,
+        input.glossaryVersion, input.profileVersion,
+        input.currentChapterTitle ?? null, input.currentChapterParagraphs ?? 0, input.currentChapterTranslatedParagraphs ?? 0, input.totalTranslatedParagraphs ?? 0,
+        input.totalParagraphEstimate ?? 0,
+        updatedAt,
       );
 
     const build = this.getTranslationBuild(input.sourceId, input.novelId);
@@ -3032,6 +3059,13 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
 
+    // 翻译构建——段落级进度追踪
+    this.ensureColumnExists('novel_translation_builds', 'current_chapter_title', 'TEXT');
+    this.ensureColumnExists('novel_translation_builds', 'current_chapter_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('novel_translation_builds', 'current_chapter_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('novel_translation_builds', 'total_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('novel_translation_builds', 'total_paragraph_estimate', 'INTEGER NOT NULL DEFAULT 0');
+
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS reader_typography (
         source_id TEXT NOT NULL,
@@ -3571,6 +3605,11 @@ function mapTranslationBuildRow(row: TranslationBuildRow): StoredTranslationBuil
     failedChapters: row.failed_chapters,
     glossaryVersion: row.glossary_version,
     profileVersion: row.profile_version,
+    currentChapterTitle: row.current_chapter_title,
+    currentChapterParagraphs: row.current_chapter_paragraphs,
+    currentChapterTranslatedParagraphs: row.current_chapter_translated_paragraphs,
+    totalTranslatedParagraphs: row.total_translated_paragraphs,
+    totalParagraphEstimate: row.total_paragraph_estimate,
     updatedAt: row.updated_at,
   };
 }

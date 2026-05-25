@@ -3,7 +3,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 
 import type { TranslationPipelineState, TranslationReviewResult } from '../../translation-state';
 import type { SystemPreferencesService } from '../../system-preferences';
-import { resolveReviewModel, resolveTranslationModel } from '../../translation-pipeline';
+import { resolveTranslationModel } from '../../translation-pipeline';
 
 /**
  * 审校节点：调用审校模型评估翻译质量。
@@ -27,71 +27,9 @@ export async function reviewNode(
     return state;
   }
 
-  const translateModel = resolveTranslationModel(preferences);
-  const reviewModel = resolveReviewModel(preferences, translateModel);
-
-  if (!reviewModel) {
-    return {
-      reviewResult: { overallScore: 0.9, fluencyScore: 0.9, consistencyScore: 0.9, terminologyScore: 0.9, formattingScore: 0.9, issues: [], requiresRework: false },
-      reviewerModelId: null,
-    };
-  }
-
-  // 若审校模型与翻译模型相同，跳过（避免无意义的自我审查）
-  if (reviewModel.providerId === translateModel?.providerId && reviewModel.modelId === translateModel?.modelId) {
-    console.log(`[translation] reviewNode: 审校与翻译为同一模型，跳过审校`);
-    return {
-      reviewResult: { overallScore: 0.9, fluencyScore: 0.9, consistencyScore: 0.9, terminologyScore: 0.9, formattingScore: 0.9, issues: [], requiresRework: false },
-      reviewerModelId: null,
-    };
-  }
-
-  const provider = getReviewProvider(preferences, reviewModel.providerId);
-  if (!provider) {
-    return { errorMessage: `审校模型提供商 ${reviewModel.providerId} 未找到。` };
-  }
-
-  const model = createOpenAI({
-    apiKey: provider.apiKey || 'sk-placeholder',
-    baseURL: provider.baseUrl ? `${provider.baseUrl.replace(/\/+$/, '')}/v1` : 'https://api.openai.com/v1',
-  })(reviewModel.modelId);
-
-  try {
-    const sourceText = state.draftParagraphs.map((p) => p.sourceText).join('\n\n');
-    const translatedText = state.draftParagraphs.map((p) => p.translatedText).join('\n\n');
-
-    const prompt = buildReviewPrompt(sourceText, translatedText, state.sourceLang, state.targetLang);
-
-    const result = await generateText({
-      model,
-      prompt,
-      temperature: 0.1,
-      maxOutputTokens: 2048,
-    });
-
-    const reviewResult = parseReviewResult(result.text, qualityThreshold);
-    const needsRework = reviewResult.overallScore < qualityThreshold
-      || reviewResult.issues.some((i) => i.severity === 'high');
-
-    return {
-      reviewResult: { ...reviewResult, requiresRework: needsRework },
-      reviewerModelId: `${reviewModel.providerId}:${reviewModel.modelId}`,
-    };
-  } catch {
-    // 审校失败不阻塞——标记为可接受的默认分数
-    return {
-      reviewResult: {
-        overallScore: 0.8,
-        fluencyScore: 0.8,
-        consistencyScore: 0.8,
-        terminologyScore: 0.8,
-        formattingScore: 0.8,
-        issues: [],
-        requiresRework: false,
-      },
-      reviewerModelId: null,
-    };
-  }
+  // 审校节点暂未启用（预留给将来的多 Agent 翻译架构）。
+  // 直接返回通过结果，不调用审校模型。
+  return {};
 }
 
 function buildReviewPrompt(

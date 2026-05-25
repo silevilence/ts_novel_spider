@@ -16,6 +16,7 @@ import {
   isLibraryExportTranslationMode,
 } from '../core/export-engine';
 import { createTranslationPipelineGraph } from '../core/translation-pipeline';
+import { TranslationHistoryManager } from '../core/translation/nodes/history-manager';
 
 // ── SQLite 迁移 + CRUD ──
 
@@ -232,7 +233,7 @@ test('translation tables are created by migration', () => {
 test('global translation preferences default and normalization', () => {
   assert.equal(TRANSLATION_DEFAULTS.sourceLang, 'ja');
   assert.equal(TRANSLATION_DEFAULTS.targetLang, 'zh-CN');
-  assert.equal(TRANSLATION_DEFAULTS.qualityThreshold, 0.8);
+  assert.equal(TRANSLATION_DEFAULTS.translationConcurrency, 2);
   assert.equal(TRANSLATION_DEFAULTS.autoRejectUntranslatedTerms, true);
 
   const normalized = normalizeTranslationPreferencesInput({});
@@ -242,10 +243,10 @@ test('global translation preferences default and normalization', () => {
   const custom = normalizeTranslationPreferencesInput({
     sourceLang: 'en',
     targetLang: 'zh-CN',
-    qualityThreshold: 0.9,
+    translationConcurrency: 5,
   });
   assert.equal(custom.sourceLang, 'en');
-  assert.equal(custom.qualityThreshold, 0.9);
+  assert.equal(custom.translationConcurrency, 5);
 });
 
 test('system preferences persist translation config', () => {
@@ -260,15 +261,15 @@ test('system preferences persist translation config', () => {
     prefs.updateTranslationPreferences({
       sourceLang: 'ja',
       targetLang: 'zh-CN',
-      qualityThreshold: 0.9,
+      translationConcurrency: 5,
     });
     const updated = prefs.getTranslationState();
-    assert.equal(updated.config.qualityThreshold, 0.9);
+    assert.equal(updated.config.translationConcurrency, 5);
 
     // Reload from disk
     const prefs2 = new SystemPreferencesService({ storageFilePath: prefsPath });
     const reloaded = prefs2.getTranslationState();
-    assert.equal(reloaded.config.qualityThreshold, 0.9);
+    assert.equal(reloaded.config.translationConcurrency, 5);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -290,7 +291,8 @@ test('translation pipeline graph compiles with all nodes', () => {
   const graph = createTranslationPipelineGraph({
     preferences: {} as unknown as SystemPreferencesService,
     repository: {} as unknown as SqliteNovelRepository,
-    qualityThreshold: 0.8,
+    historyManager: new TranslationHistoryManager(),
+    paragraphsPerBatch: 2,
   });
   assert.ok(graph);
   assert.equal(typeof graph.invoke, 'function');
@@ -311,11 +313,9 @@ test('translation state types compile with minimal values', () => {
     glossary: [],
     segments: [],
     draftParagraphs: [],
-    reviewResult: null,
     translatedTitle: null,
     finalParagraphs: [],
     translatorModelId: null,
-    reviewerModelId: null,
     tokenUsageJson: null,
     sourceContentHash: 'abc',
     glossaryVersion: 1,

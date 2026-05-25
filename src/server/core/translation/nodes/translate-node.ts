@@ -5,21 +5,34 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOllama } from 'ai-sdk-ollama';
 
 import type { TranslationPipelineState, ParagraphDraft, TranslationTermEntry } from '../../translation-state';
+import type { TranslationHistoryManager } from './history-manager';
+import type { LlmInteractionLogger } from './llm-logger';
 import type { SystemPreferencesService, LlmProviderConfig } from '../../system-preferences';
 import { resolveTranslationModel } from '../../translation-pipeline';
 
+/** 批量段落翻译的分隔符：LLM 必须保持此分隔符以支持本地拆分 */
+const BATCH_SEPARATOR = '\n\n---\n\n';
+
+/** 备选分隔符列表（按优先级尝试拆分） */
+const FALLBACK_SEPARATORS = ['\n\n---\n\n', '\n---\n', '\n\n---', '---\n\n', '---'];
+
 /**
- * 翻译节点：调用 LLM 逐段翻译章节内容。
+ * 翻译节点：批量段落翻译 + 对话历史上下文。
  *
  * 策略：
- * - 从系统偏好中解析翻译模型。
- * - 每段独立调用 LLM，附带术语表作为翻译约束。
+ * - 按 paragraphsPerBatch 将段落分组，每组一次 LLM 调用。
+ * - 严格按段落顺序发送，保留对话历史作为上下文参考。
+ * - LLM 响应按分隔符拆分为各段落译文，段落数不匹配时回退逐段翻译。
+ * - 上下文超标时自动舍弃旧历史后重试（最多 3 次）。
  * - 支持暂停检测（state.pauseRequested）。
- * - 单段失败记录错误并标记 confidence=0，不阻塞整体。
  */
 export async function translateNode(
   state: TranslationPipelineState,
   preferences: SystemPreferencesService,
+  historyManager: TranslationHistoryManager,
+  paragraphsPerBatch: number,
+  llmLogger?: LlmInteractionLogger,
+  onBatchProgress?: (batchParagraphs: number, totalCompleted: number) => void,
   modelOverride?: string,
   abortSignal?: AbortSignal,
 ): Promise<Partial<TranslationPipelineState>> {
@@ -34,69 +47,326 @@ export async function translateNode(
   }
 
   const model = createLanguageModel(provider, modelRoute.modelId);
-  console.log(`[translation] translateNode: provider=${provider.type} model=${modelRoute.modelId} hasApiKey=${!!(provider.apiKey && provider.apiKey.length > 8)} baseUrl=${provider.baseUrl || '(default)'}`);
-  const glossary = buildGlossaryContext(state.glossary);
-  const drafts: ParagraphDraft[] = [];
-  const totalSegments = state.segments.length;
-  console.log(`[translation] 开始翻译共 ${totalSegments} 个段落`);
+  console.log(`[translation] translateNode: provider=${provider.type} model=${modelRoute.modelId} paragraphsPerBatch=${paragraphsPerBatch} ${historyManager.summary()}`);
 
-  for (let i = 0; i < state.segments.length; i++) {
-    const segment = state.segments[i]!;
+  const glossary = buildGlossaryContext(state.glossary);
+  const systemPrompt = buildTranslationSystemPrompt(state.sourceLang, state.targetLang, glossary);
+  const totalSegments = state.segments.length;
+  console.log(`[translation] 开始翻译共 ${totalSegments} 个段落，每批 ${paragraphsPerBatch} 段`);
+
+  const drafts: ParagraphDraft[] = [];
+  const modelIdStr = `${modelRoute.providerId}:${modelRoute.modelId}`;
+
+  // 按 paragraphsPerBatch 分组段落
+  const batches = chunkArray(state.segments, paragraphsPerBatch);
+
+  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+    const batch = batches[batchIdx]!;
 
     if (state.pauseRequested || abortSignal?.aborted) {
-      console.log(`[translation] 翻译中断: 段 ${i + 1}/${totalSegments}`);
+      console.log(`[translation] 翻译中断: 批 ${batchIdx + 1}/${batches.length}`);
       return { draftParagraphs: drafts, pauseRequested: true };
     }
 
-    console.log(`[translation] 段 ${i + 1}/${totalSegments} (${segment.sourceText.length} 字)...`);
+    const batchStartIdx = batchIdx * paragraphsPerBatch + 1;
+    const batchEndIdx = batchStartIdx + batch.length - 1;
+    console.log(`[translation] 批 ${batchIdx + 1}/${batches.length} (段 ${batchStartIdx}-${batchEndIdx}, ${batch.length} 段)...`);
 
     try {
-      const prompt = buildTranslationPrompt(
-        segment.sourceText,
-        state.sourceLang,
-        state.targetLang,
-        glossary,
-      );
-
-      const result = await generateText({
+      const batchDrafts = await translateBatch(
+        batch,
         model,
-        system: buildTranslationSystemPrompt(state.sourceLang, state.targetLang, glossary),
-        prompt,
-        temperature: 0.3,
-        maxOutputTokens: Math.max(segment.sourceText.length * 3, 256),
-        abortSignal: AbortSignal.timeout(60000),
-      });
+        systemPrompt,
+        state.glossary,
+        modelIdStr,
+        historyManager,
+        llmLogger,
+      );
+      drafts.push(...batchDrafts);
 
-      const translatedText = result.text.trim();
-      const appliedTermIds = findAppliedTerms(translatedText, state.glossary);
+      // 仅当本批所有段落都有有效译文时才追加到对话历史
+      const allValid = batchDrafts.every(
+        (d) => d.translatedText && d.translatedText.length > 0,
+      );
+      if (allValid) {
+        const batchSource = batch.map((s) => s.sourceText).join('\n');
+        const batchTranslated = batchDrafts.map((d) => d.translatedText).join('\n');
+        historyManager.addEntry(batchSource, batchTranslated);
+      }
 
-      console.log(`[translation] 段 ${i + 1}/${totalSegments} 完成 (${translatedText.length} 字译文)`);
+      // 通知外部批次完成（用于实时进度条）
+      onBatchProgress?.(batch.length, drafts.length);
 
-      drafts.push({
-        paragraphIndex: segment.paragraphIndex,
-        sourceText: segment.sourceText,
-        translatedText,
-        confidence: translatedText.length > 0 ? 0.85 : 0,
-        appliedTermIds,
-        modelId: `${modelRoute.providerId}:${modelRoute.modelId}`,
-      });
+      console.log(`[translation] 批 ${batchIdx + 1}/${batches.length} 完成 (${batchDrafts.length} 段译文${allValid ? ', 已入历史' : ''})`);
     } catch (error) {
-      console.error(`[translation] translateNode 段 ${segment.paragraphIndex} 失败:`, error instanceof Error ? error.message : String(error));
-      drafts.push({
-        paragraphIndex: segment.paragraphIndex,
-        sourceText: segment.sourceText,
-        translatedText: null as unknown as string,
-        confidence: 0,
-        appliedTermIds: [],
-        modelId: `${modelRoute.providerId}:${modelRoute.modelId}`,
-      });
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[translation] 批 ${batchIdx + 1}/${batches.length} 整体失败:`, errMsg);
+
+      // 批量失败时回退到逐段单独翻译（即时执行，保证顺序）
+      console.log(`[translation] 回退逐段翻译 ${batch.length} 段...`);
+      for (let si = 0; si < batch.length; si++) {
+        const segment = batch[si]!;
+
+        // 回退路径也检查暂停
+        if (state.pauseRequested || abortSignal?.aborted) {
+          console.log(`[translation] 回退中翻译中断: 段索引 ${segment.paragraphIndex}`);
+          return { draftParagraphs: drafts, pauseRequested: true };
+        }
+
+        console.log(`[translation]   回退段 ${si + 1}/${batch.length} (段索引 ${segment.paragraphIndex}, ${segment.sourceText.length} 字)...`);
+        try {
+          const singleDraft = await translateSingleSegment(
+            segment,
+            model,
+            systemPrompt,
+            state.glossary,
+            modelIdStr,
+            llmLogger,
+          );
+          drafts.push(singleDraft);
+          // 逐段成功时也追加到历史，保持上下文连贯
+          if (singleDraft.translatedText && singleDraft.translatedText.length > 0) {
+            historyManager.addEntry(segment.sourceText, singleDraft.translatedText);
+          }
+          // 通知进度（回退段也算完成）
+          onBatchProgress?.(1, drafts.length);
+        } catch (singleError) {
+          const singleMsg = singleError instanceof Error ? singleError.message : String(singleError);
+          console.error(`[translation] 段 ${segment.paragraphIndex} 回退也失败:`, singleMsg);
+          drafts.push({
+            paragraphIndex: segment.paragraphIndex,
+            sourceText: segment.sourceText,
+            translatedText: '',
+            confidence: 0,
+            appliedTermIds: [],
+            modelId: modelIdStr,
+          });
+        }
+      }
     }
   }
 
+  console.log(`[translation] 翻译全部完成: ${drafts.length} 段译文, ${historyManager.summary()}`);
   return {
     draftParagraphs: drafts,
-    translatorModelId: `${modelRoute.providerId}:${modelRoute.modelId}`,
+    translatorModelId: modelIdStr,
   };
+}
+
+/**
+ * 翻译一批段落（一次 LLM 调用）。
+ * 遇到上下文溢出错误时自动裁剪历史后重试。
+ */
+async function translateBatch(
+  batch: Array<{ paragraphIndex: number; sourceText: string; id: string }>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  model: any,
+  systemPrompt: string,
+  glossary: TranslationTermEntry[],
+  modelIdStr: string,
+  historyManager: TranslationHistoryManager,
+  llmLogger?: LlmInteractionLogger,
+): Promise<ParagraphDraft[]> {
+  let lastError: Error | null = null;
+  const maxRetries = 3;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const prompt = buildBatchPrompt(batch);
+      const historyMessages = historyManager.buildHistoryMessages();
+
+      console.log(`[translation] 调用 LLM (尝试 ${attempt + 1}/${maxRetries + 1}, ${batch.length} 段, ${historyMessages.length} 条历史)`);
+
+      // 将对话历史嵌入 prompt 以避免 exactOptionalPropertyTypes 问题
+      const historyContext = historyMessages.length > 0
+        ? historyMessages.map((m) => `[${m.role === 'user' ? '原文' : '译文'}]: ${m.content}`).join('\n\n') + '\n\n'
+        : '';
+
+      const fullPrompt = historyContext + prompt;
+
+      const callStart = Date.now();
+      const result = await generateText({
+        model,
+        system: systemPrompt,
+        prompt: fullPrompt,
+        temperature: 0.3,
+        maxOutputTokens: Math.max(batch.reduce((sum, s) => sum + s.sourceText.length, 0) * 3, 512),
+        abortSignal: AbortSignal.timeout(120000),
+      });
+      const callDuration = Date.now() - callStart;
+
+      const responseText = result.text.trim();
+
+      llmLogger?.logCall({
+        provider: modelIdStr.split(':')[0] ?? 'unknown',
+        model: modelIdStr.split(':')[1] ?? modelIdStr,
+        systemPrompt,
+        userPrompt: fullPrompt,
+        response: responseText,
+        durationMs: callDuration,
+      });
+
+      return splitBatchResponse(responseText, batch, glossary, modelIdStr);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      const errMsg = lastError.message;
+
+      // 检测是否是上下文超标错误
+      if (isContextOverflowError(errMsg) && historyManager.size > 0) {
+        const discardCount = Math.max(2, Math.ceil(historyManager.size / 2));
+        console.warn(`[translation] 上下文超标，舍弃 ${discardCount} 条旧历史后重试 (${historyManager.size} → ${Math.max(0, historyManager.size - discardCount)})`);
+        historyManager.discardOldest(discardCount);
+        continue;
+      }
+
+      // 非上下文错误或历史已耗尽，抛出
+      if (attempt >= maxRetries || !isContextOverflowError(errMsg)) {
+        throw lastError;
+      }
+      console.warn(`[translation] 翻译失败，第 ${attempt + 1} 次重试: ${errMsg}`);
+    }
+  }
+
+  throw lastError ?? new Error('翻译批次失败，已达最大重试次数');
+}
+
+/**
+ * 逐段单独翻译（回退策略）。
+ */
+async function translateSingleSegment(
+  segment: { paragraphIndex: number; sourceText: string; id: string },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  model: any,
+  systemPrompt: string,
+  glossary: TranslationTermEntry[],
+  modelIdStr: string,
+  llmLogger?: LlmInteractionLogger,
+): Promise<ParagraphDraft> {
+  const callStart = Date.now();
+  const result = await generateText({
+    model,
+    system: systemPrompt,
+    prompt: segment.sourceText,
+    temperature: 0.3,
+    maxOutputTokens: Math.max(segment.sourceText.length * 3, 256),
+    abortSignal: AbortSignal.timeout(60000),
+  });
+  const callDuration = Date.now() - callStart;
+
+  const translatedText = result.text.trim();
+
+  llmLogger?.logCall({
+    provider: modelIdStr.split(':')[0] ?? 'unknown',
+    model: modelIdStr.split(':')[1] ?? modelIdStr,
+    systemPrompt,
+    userPrompt: segment.sourceText,
+    response: translatedText,
+    durationMs: callDuration,
+  });
+
+  const appliedTermIds = findAppliedTerms(translatedText, glossary);
+
+  return {
+    paragraphIndex: segment.paragraphIndex,
+    sourceText: segment.sourceText,
+    translatedText,
+    confidence: translatedText.length > 0 ? 0.85 : 0,
+    appliedTermIds,
+    modelId: modelIdStr,
+  };
+}
+
+/**
+ * 将 LLM 响应按分隔符拆分为各段落译文。
+ * 尝试多种分隔符变体，支持带/不带编号前缀的响应。
+ * 段落数不匹配时抛出错误以触发回退。
+ */
+function splitBatchResponse(
+  responseText: string,
+  batch: Array<{ paragraphIndex: number; sourceText: string }>,
+  glossary: TranslationTermEntry[],
+  modelIdStr: string,
+): ParagraphDraft[] {
+  let parts: string[] = [];
+  let usedSeparator = '';
+
+  // 依次尝试各种分隔符
+  for (const sep of FALLBACK_SEPARATORS) {
+    const candidate = responseText.split(sep);
+    if (candidate.length === batch.length) {
+      parts = candidate;
+      usedSeparator = sep;
+      break;
+    }
+  }
+
+  // 如果所有分隔符都不匹配段落数，尝试基于编号拆分
+  if (parts.length !== batch.length) {
+    const numberedSplit = splitByNumberedPrefix(responseText);
+    if (numberedSplit.length === batch.length) {
+      parts = numberedSplit;
+      usedSeparator = 'numbered';
+    }
+  }
+
+  // 清理各部分：去除编号前缀和首尾空白
+  const cleaned = parts.map((p) => {
+    const stripped = p.replace(/^\s*(?:\d+[\.\、\)]\s*|段落\d+[：:]\s*|【\d+】\s*)/, '').trim();
+    return stripped;
+  }).filter((p) => p.length > 0);
+
+  if (cleaned.length !== batch.length) {
+    throw new Error(
+      `译文段落数不匹配：期望 ${batch.length} 段，LLM 返回 ${cleaned.length} 段 ` +
+      `(分隔符 "${usedSeparator || '无'}" 拆出 ${parts.length} 部分)。将回退逐段翻译。`,
+    );
+  }
+
+  const drafts: ParagraphDraft[] = [];
+  for (let i = 0; i < batch.length; i++) {
+    const segment = batch[i]!;
+    const translatedText = cleaned[i]!;
+    const appliedTermIds = findAppliedTerms(translatedText, glossary);
+
+    drafts.push({
+      paragraphIndex: segment.paragraphIndex,
+      sourceText: segment.sourceText,
+      translatedText,
+      confidence: translatedText.length > 0 ? 0.85 : 0,
+      appliedTermIds,
+      modelId: modelIdStr,
+    });
+  }
+
+  return drafts;
+}
+
+/** 按编号前缀（如 "1." "2、" "3）"）拆分文本 */
+function splitByNumberedPrefix(text: string): string[] {
+  // 按 "数字+标点+空白" 的模式拆分，保留段落内容
+  const parts = text.split(/\n(?=\d+[\.\、\)]\s*)/);
+  if (parts.length >= 2) return parts;
+  // 尝试 "【数字】" 模式
+  return text.split(/(?=【\d+】)/);
+}
+
+/** 构建批次翻译 prompt：带编号的段落 + 明确的分隔符要求 */
+function buildBatchPrompt(
+  batch: Array<{ sourceText: string }>,
+): string {
+  const numberedParts: string[] = [];
+  for (let i = 0; i < batch.length; i++) {
+    // 使用 "【N】" 编号在译文中更不容易与正文混淆
+    numberedParts.push(`【${i + 1}】${batch[i]!.sourceText}`);
+  }
+
+  return [
+    `请将以下 ${batch.length} 段文本翻译为目标语言。`,
+    `重要：每段译文之间必须用单独一行 "---" 分隔，不要合并段落，不要添加任何解释。`,
+    `每段译文前用 "【N】" 标记段落编号以帮助对齐。`,
+    '',
+    numberedParts.join('\n\n---\n\n'),
+  ].join('\n');
 }
 
 /** 构建翻译系统提示词（Agent 角色设定 + 术语约束） */
@@ -114,18 +384,9 @@ function buildTranslationSystemPrompt(
     '3. 严格遵循术语表中的翻译，术语表优先级高于你的常识',
     '4. 人物名、地名、专有名词按术语表翻译，术语表未覆盖的合理音译',
     '5. 译文需自然流畅，符合目标语言阅读习惯',
+
     glossary ? `\n术语表（强制遵循）：\n${glossary}` : '',
   ].join('\n');
-}
-
-/** 构建翻译提示词 */
-function buildTranslationPrompt(
-  sourceText: string,
-  sourceLang: string,
-  targetLang: string,
-  glossary: string,
-): string {
-  return sourceText;
 }
 
 /** 从术语表中查找哪些术语出现在译文中 */
@@ -147,6 +408,27 @@ function buildGlossaryContext(glossary: TranslationTermEntry[]): string {
     .join('\n');
 }
 
+/** 检测错误是否为上下文溢出 */
+function isContextOverflowError(errorMessage: string): boolean {
+  const lower = errorMessage.toLowerCase();
+  const overflowPatterns = [
+    'context_length_exceeded',
+    'context window',
+    'maximum context length',
+    'reduce the length',
+    'too many tokens',
+    'token limit',
+    'max_tokens',
+    'input length',
+    'context length',
+    '请求内容超长',
+    '超出上下文',
+    '超出最大长度',
+    'no_kv_slot',
+  ];
+  return overflowPatterns.some((pattern) => lower.includes(pattern));
+}
+
 function langLabel(code: string): string {
   const map: Record<string, string> = {
     ja: '日文',
@@ -158,18 +440,13 @@ function langLabel(code: string): string {
   return map[code] ?? code;
 }
 
-/** 确保 OpenAI 兼容接口的 base URL 包含 /v1 路径 */
-function normalizeOpenAIBaseUrl(url: string): string {
-  if (!url) {
-    return 'https://api.openai.com/v1';
+/** 数组按大小分块 */
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
   }
-  const trimmed = url.replace(/\/+$/, '');
-  if (trimmed.endsWith('/v1')) {
-    return trimmed;
-  }
-  const normalized = `${trimmed}/v1`;
-  console.log(`[translation] URL 规范化: ${url} → ${normalized}`);
-  return normalized;
+  return chunks;
 }
 
 /** 从系统偏好中获取提供商配置 */

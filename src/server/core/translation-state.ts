@@ -88,7 +88,6 @@ export interface TranslationPipelineState {
   // 阶段产物
   segments: TranslationSegment[];
   draftParagraphs: ParagraphDraft[];
-  reviewResult: TranslationReviewResult | null;
 
   // 翻译结果
   translatedTitle: string | null;
@@ -96,7 +95,6 @@ export interface TranslationPipelineState {
 
   // 模型路由
   translatorModelId: string | null;
-  reviewerModelId: string | null;
 
   // 元信息
   tokenUsageJson: string | null;
@@ -120,9 +118,6 @@ export type TranslationPipelineEventType =
   | 'translating_started'
   | 'translating_progress'
   | 'translating_completed'
-  | 'reviewing_started'
-  | 'reviewing_completed'
-  | 'rework_required'
   | 'assembling_completed'
   | 'chapter_completed'
   | 'chapter_failed'
@@ -140,7 +135,6 @@ export interface TranslationPipelineEvent {
     completed: number;
     total: number;
   };
-  reviewResult?: TranslationReviewResult;
   errorMessage?: string;
   timestamp: string;
 }

@@ -229,14 +229,13 @@ function TranslationPreferencesSection({ onNotice }: { onNotice: (n: NoticeInput
   const [sourceLang, setSourceLang] = useState('ja');
   const [targetLang, setTargetLang] = useState('zh-CN');
   const [concurrency, setConcurrency] = useState(2);
-  const [qualityThreshold, setQualityThreshold] = useState(0.8);
   const [autoRejectUntranslated, setAutoRejectUntranslated] = useState(true);
   const [defaultExport, setDefaultExport] = useState<'original' | 'translated' | 'bilingual'>('original');
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [availableChatModels, setAvailableChatModels] = useState<Array<{ providerLabel: string; providerId: string; modelId: string; modelLabel: string }>>([]);
   const [translateModelKey, setTranslateModelKey] = useState('');
-  const [reviewModelKey, setReviewModelKey] = useState('');
+  const [enableLlmLog, setEnableLlmLog] = useState(false);
 
   // Load existing prefs on mount
   if (!loaded) {
@@ -249,9 +248,10 @@ function TranslationPreferencesSection({ onNotice }: { onNotice: (n: NoticeInput
         setSourceLang(prefs.config.sourceLang);
         setTargetLang(prefs.config.targetLang);
         setConcurrency(prefs.config.translationConcurrency);
-        setQualityThreshold(prefs.config.qualityThreshold);
         setAutoRejectUntranslated(prefs.config.autoRejectUntranslatedTerms);
         setDefaultExport(prefs.config.defaultExportMode);
+        setTranslateModelKey(prefs.config.preferredTranslationModelKey ?? '');
+        setEnableLlmLog(prefs.config.enableLlmInteractionLog ?? false);
 
         // 提取所有启用且有 chat 能力的模型
         const models: typeof availableChatModels = [];
@@ -283,7 +283,8 @@ function TranslationPreferencesSection({ onNotice }: { onNotice: (n: NoticeInput
         sourceLang,
         targetLang,
         translationConcurrency: concurrency,
-        qualityThreshold,
+        preferredTranslationModelKey: translateModelKey || null,
+        enableLlmInteractionLog: enableLlmLog,
         autoRejectUntranslatedTerms: autoRejectUntranslated,
         defaultExportMode: defaultExport,
       });
@@ -308,35 +309,35 @@ function TranslationPreferencesSection({ onNotice }: { onNotice: (n: NoticeInput
           <LanguagePicker value={targetLang} onChange={setTargetLang} placeholder="zh-CN" />
         </label>
         <label>
-          <span>翻译并发数</span>
-          <input type="number" min={1} max={8} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value) || 1)} />
-        </label>
-        <label>
-          <span>质量阈值 (0-1)</span>
-          <input type="number" min={0} max={1} step={0.05} value={qualityThreshold} onChange={(e) => setQualityThreshold(Number(e.target.value) || 0.8)} />
+          <span>每批段落数</span>
+          <input type="number" min={1} max={20} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value) || 1)} title="一次 LLM 请求中打包翻译的段落数量。越大越省 API 调用，但单次请求变长。" />
         </label>
       </div>
 
       {/* 可用模型提示 */}
       <div className="card" style={{ marginTop: '0.75rem' }}>
-        <p className="label">可用翻译模型</p>
+        <p className="label">默认翻译模型</p>
         {availableChatModels.length === 0 ? (
           <p className="panel-note" style={{ color: 'var(--danger)' }}>
-            ⚠️ 尚未配置可用的翻译模型。请先在「大模型服务提供商」中启用至少一个带有 chat 能力的模型，否则翻译将无法执行。
+            ⚠️ 尚未配置可用的翻译模型。请先在「大模型服务提供商」中启用至少一个带有 chat 能力的模型。
           </p>
         ) : (
           <>
-            <p className="panel-note">
-              以下模型已启用并可自动用于翻译。系统会优先使用配置的第一个 chat 模型。
-            </p>
-            <div className="tag-row" style={{ marginTop: '0.35rem' }}>
-              {availableChatModels.slice(0, 6).map((m) => (
-                <span key={`${m.providerId}:${m.modelId}`} className="tag">{m.providerLabel} / {m.modelLabel}</span>
-              ))}
-              {availableChatModels.length > 6 ? (
-                <span className="tag">+{availableChatModels.length - 6} 更多</span>
-              ) : null}
-            </div>
+            <label style={{ marginTop: '0.35rem', display: 'block' }}>
+              <span style={{ fontSize: '0.82rem', opacity: 0.7 }}>指定全局默认翻译模型（留空则自动选择第一个可用的 chat 模型）</span>
+              <select
+                value={translateModelKey}
+                onChange={(e) => setTranslateModelKey(e.target.value)}
+                style={{ width: '100%', marginTop: '0.25rem', minHeight: '44px' }}
+              >
+                <option value="">自动选择</option>
+                {availableChatModels.map((m) => (
+                  <option key={`${m.providerId}:${m.modelId}`} value={`${m.providerId}:${m.modelId}`}>
+                    {m.providerLabel} / {m.modelLabel}
+                  </option>
+                ))}
+              </select>
+            </label>
           </>
         )}
       </div>
@@ -344,6 +345,11 @@ function TranslationPreferencesSection({ onNotice }: { onNotice: (n: NoticeInput
       <label className="checkbox-field" style={{ marginTop: '0.75rem' }}>
         <input type="checkbox" checked={autoRejectUntranslated} onChange={(e) => setAutoRejectUntranslated(e.target.checked)} />
         <span>术语缺译时阻断正文翻译流程</span>
+      </label>
+
+      <label className="checkbox-field" style={{ marginTop: '0.5rem' }}>
+        <input type="checkbox" checked={enableLlmLog} onChange={(e) => setEnableLlmLog(e.target.checked)} />
+        <span>保存 LLM 交互日志（存储于 .data/llm-logs/，按日滚动保留 7 天）</span>
       </label>
 
       <div style={{ marginTop: '0.75rem' }}>
@@ -369,7 +375,7 @@ function TranslationPreferencesSection({ onNotice }: { onNotice: (n: NoticeInput
       </div>
 
       <p className="panel-note" style={{ marginTop: '0.75rem' }}>
-        提示：翻译和审校模型位置在「大模型服务提供商」中统一管理。启用至少一个 chat 模型后，翻译即可正常工作。
+        提示：翻译模型位置在「大模型服务提供商」中统一管理。启用至少一个 chat 模型后，翻译即可正常工作。
       </p>
     </div>
   );

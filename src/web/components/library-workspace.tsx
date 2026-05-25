@@ -10,6 +10,7 @@ import type { LibraryModel } from '../services/library-model';
 import {
   buildLibraryExportDownloadUrl,
   type LibraryExportFormat,
+  type TranslationExportMode,
 } from '../services/api';
 import {
   buildTextPreview,
@@ -95,6 +96,7 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
   const [readerTypographyDirty, setReaderTypographyDirty] = useState(false);
   const [isPageNavOpen, setIsPageNavOpen] = useState(false);
   const [isTranslationPanelOpen, setIsTranslationPanelOpen] = useState(false);
+  const [exportTranslationMode, setExportTranslationMode] = useState<TranslationExportMode>('original');
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -1449,6 +1451,27 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
               <p className="library-card-copy">
                 下面的说明主要是帮你判断哪种更适合自己。示例描述的是导出后的阅读感觉，不用纠结文件名细节。
               </p>
+
+              {model.translationBuild && model.translationBuild.translatedChapters > 0 ? (
+                <div style={{ marginTop: '0.75rem' }}>
+                  <span className="label" style={{ marginBottom: '0.25rem', display: 'block' }}>翻译导出模式</span>
+                  <div className="chip-row">
+                    {(['original', 'translated', 'bilingual'] as TranslationExportMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={`preset-chip${exportTranslationMode === mode ? ' active' : ''}`}
+                        onClick={() => setExportTranslationMode(mode)}
+                      >
+                        {mode === 'original' ? '原文' : mode === 'translated' ? '纯译文' : '双语对照'}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="panel-note" style={{ marginTop: '0.25rem' }}>
+                    {exportTranslationMode === 'translated' ? '导出后只包含翻译内容' : exportTranslationMode === 'bilingual' ? '段落交替显示原文与译文' : '导出原文，不含翻译'}
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             <div className="export-option-list">
@@ -1478,7 +1501,14 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
                   <div className="action-row wrap">
                     <a
                       className="primary-link"
-                      href={buildLibraryExportDownloadUrl(detail.sourceId, detail.metadata.novelId, option.format)}
+                      href={buildLibraryExportDownloadUrl(
+                        detail.sourceId,
+                        detail.metadata.novelId,
+                        option.format,
+                        exportTranslationMode,
+                        model.translationLanguages?.sourceLang,
+                        model.translationLanguages?.targetLang,
+                      )}
                     >
                       下载 {option.format.toUpperCase()}
                     </a>

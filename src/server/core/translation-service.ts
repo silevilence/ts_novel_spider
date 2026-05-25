@@ -28,6 +28,8 @@ import type {
 } from './translation-runner';
 import { createTranslationPipelineGraph } from './translation-pipeline';
 import type { TranslationPipelineState } from './translation-state';
+import { TranslationHistoryManager } from './translation/nodes/history-manager';
+import { LlmInteractionLogger } from './translation/nodes/llm-logger';
 
 /** 翻译配置（库层面组合全局默认与单本覆盖） */
 export interface TranslationProfile {
@@ -37,9 +39,7 @@ export interface TranslationProfile {
   targetLang: string;
   termExtractionModel: { providerId?: string; modelId?: string } | null;
   translationModels: Array<{ providerId?: string; modelId?: string; maxConcurrency: number }>;
-  reviewModel: { providerId?: string; modelId?: string } | null;
   translationConcurrency: number;
-  qualityThreshold: number;
   autoRejectUntranslatedTerms: boolean;
   defaultExportMode: TranslationExportMode;
   configLocked: boolean;
@@ -52,9 +52,7 @@ export interface TranslationProfileInput {
   targetLang?: string;
   termExtractionModel?: { providerId?: string; modelId?: string } | null;
   translationModels?: Array<{ providerId?: string; modelId?: string; maxConcurrency?: number }>;
-  reviewModel?: { providerId?: string; modelId?: string } | null;
   translationConcurrency?: number;
-  qualityThreshold?: number;
   autoRejectUntranslatedTerms?: boolean;
   defaultExportMode?: TranslationExportMode;
 }
@@ -68,8 +66,11 @@ export interface TranslationBuild {
   startedAt: string | null;
   completedAt: string | null;
   translatedChapters: number;
-  reviewedChapters: number;
   failedChapters: number;
+  currentChapterParagraphs: number;
+  currentChapterTranslatedParagraphs: number;
+  totalTranslatedParagraphs: number;
+  totalParagraphEstimate?: number;
   glossaryVersion: number;
   profileVersion: number;
   updatedAt: string | null;
@@ -129,9 +130,7 @@ export class TranslationService {
           ...m,
           maxConcurrency: global.translationConcurrency,
         })),
-        reviewModel: global.reviewModel,
         translationConcurrency: global.translationConcurrency,
-        qualityThreshold: global.qualityThreshold,
         autoRejectUntranslatedTerms: global.autoRejectUntranslatedTerms,
         defaultExportMode: global.defaultExportMode,
         configLocked: false,
@@ -147,9 +146,7 @@ export class TranslationService {
       targetLang: profile.targetLang,
       termExtractionModel: profile.termExtractionModel,
       translationModels: profile.translationModels,
-      reviewModel: profile.reviewModel,
       translationConcurrency: profile.translationConcurrency,
-      qualityThreshold: profile.qualityThreshold,
       autoRejectUntranslatedTerms: profile.autoRejectUntranslatedTerms,
       defaultExportMode: profile.defaultExportMode,
       configLocked: profile.configLocked,
@@ -189,17 +186,9 @@ export class TranslationService {
             maxConcurrency: m.maxConcurrency ?? 1,
           }))
         : existing?.translationModels ?? [],
-      reviewModel: input.reviewModel !== undefined
-        ? (input.reviewModel
-          ? {
-              providerId: input.reviewModel.providerId ?? '',
-              modelId: input.reviewModel.modelId ?? '',
-              maxConcurrency: 1,
-            }
-          : null)
-        : (existing?.reviewModel ?? null),
+      reviewModel: null,
       translationConcurrency: input.translationConcurrency ?? existing?.translationConcurrency ?? global.translationConcurrency,
-      qualityThreshold: input.qualityThreshold ?? existing?.qualityThreshold ?? global.qualityThreshold,
+      qualityThreshold: 0,
       autoRejectUntranslatedTerms: input.autoRejectUntranslatedTerms ?? existing?.autoRejectUntranslatedTerms ?? global.autoRejectUntranslatedTerms,
       defaultExportMode: input.defaultExportMode ?? existing?.defaultExportMode ?? global.defaultExportMode,
       configLocked: existing?.configLocked ?? false,
@@ -225,8 +214,11 @@ export class TranslationService {
       startedAt: build.startedAt,
       completedAt: build.completedAt,
       translatedChapters: build.translatedChapters,
-      reviewedChapters: build.reviewedChapters,
       failedChapters: build.failedChapters,
+      currentChapterParagraphs: build.currentChapterParagraphs,
+      currentChapterTranslatedParagraphs: build.currentChapterTranslatedParagraphs,
+      totalTranslatedParagraphs: build.totalTranslatedParagraphs,
+      totalParagraphEstimate: build.totalParagraphEstimate,
       glossaryVersion: build.glossaryVersion,
       profileVersion: build.profileVersion,
       updatedAt: build.updatedAt,
@@ -353,7 +345,7 @@ export class TranslationService {
       completedAt: new Date().toISOString(),
       modelStatsJson: existing.modelStatsJson,
       translatedChapters: existing.translatedChapters,
-      reviewedChapters: existing.reviewedChapters,
+      reviewedChapters: 0,
       failedChapters: existing.failedChapters,
       glossaryVersion: existing.glossaryVersion,
       profileVersion: existing.profileVersion,
@@ -368,8 +360,10 @@ export class TranslationService {
       startedAt: build.startedAt,
       completedAt: build.completedAt,
       translatedChapters: build.translatedChapters,
-      reviewedChapters: build.reviewedChapters,
       failedChapters: build.failedChapters,
+      currentChapterParagraphs: build.currentChapterParagraphs,
+      currentChapterTranslatedParagraphs: build.currentChapterTranslatedParagraphs,
+      totalTranslatedParagraphs: build.totalTranslatedParagraphs,
       glossaryVersion: build.glossaryVersion,
       profileVersion: build.profileVersion,
       updatedAt: build.updatedAt,
@@ -377,7 +371,7 @@ export class TranslationService {
   }
 
   /** 启动翻译任务——自动恢复僵尸构建后重新开始 */
-  startTranslation(sourceId: string, novelId: string, modelOverride?: string): TranslationBuild {
+  startTranslation(sourceId: string, novelId: string, modelOverride?: string, fromScratch?: boolean): TranslationBuild {
     const profile = this.getTranslationProfile(sourceId, novelId);
     if (!profile) {
       throw new Error('请先在系统偏好中配置翻译默认值。');
@@ -398,7 +392,7 @@ export class TranslationService {
         completedAt: new Date().toISOString(),
         modelStatsJson: existingBuild.modelStatsJson,
         translatedChapters: existingBuild.translatedChapters,
-        reviewedChapters: existingBuild.reviewedChapters,
+        reviewedChapters: 0,
         failedChapters: existingBuild.failedChapters,
         glossaryVersion: existingBuild.glossaryVersion,
         profileVersion: existingBuild.profileVersion,
@@ -418,17 +412,23 @@ export class TranslationService {
       throw new Error('当前没有已下载的章节，请先抓取章节内容后再启动翻译。');
     }
 
-    // 如果之前有暂停，跳过已翻译的章节
-    const isResuming = existingBuild?.status === 'paused';
-    const remainingChapterIds = isResuming
+    // 如果之前有暂停/完成且有已翻译章节，跳过已翻译的章节继续翻译
+    const canResume = !fromScratch && existingBuild && (existingBuild.status === 'paused' || existingBuild.status === 'completed');
+    const remainingChapterIds = canResume
       ? downloadedChapters.filter((c) => {
           const t = this.#repository.getChapterTranslation(sourceId, novelId, c.id, profile.sourceLang, profile.targetLang);
-          return !t || t.status !== 'completed';
+          const skip = t && t.status === 'completed';
+          if (skip) console.log(`[translation] 跳过已完成章节: 第 ${c.index} 章「${c.title}」(status=${t!.status})`);
+          return !skip;
         }).map((c) => c.id)
       : downloadedChapters.map((c) => c.id);
 
-    const startedTranslated = isResuming ? (existingBuild?.translatedChapters ?? 0) : 0;
-    const startedFailed = isResuming ? (existingBuild?.failedChapters ?? 0) : 0;
+    console.log(`[translation] ${canResume ? '继续翻译' : '全新翻译'}：下载 ${downloadedChapters.length} 章，剩余 ${remainingChapterIds.length} 章`);
+
+    const isResuming = canResume;
+
+    const startedTranslated = canResume ? (existingBuild?.translatedChapters ?? 0) : 0;
+    const startedFailed = canResume ? (existingBuild?.failedChapters ?? 0) : 0;
 
     if (remainingChapterIds.length === 0) {
       throw new Error('所有章节均已翻译完成，无需继续。');
@@ -446,17 +446,22 @@ export class TranslationService {
       errorMessage: null,
       startedAt: new Date().toISOString(),
       completedAt: null,
-      modelStatsJson: '[]',
-      translatedChapters: 0,
+      modelStatsJson: JSON.stringify({ runStartedAt: new Date().toISOString() }),
+      // 恢复时保留旧计数，避免从头计数导致总数重复
+      translatedChapters: isResuming ? startedTranslated : 0,
       reviewedChapters: 0,
-      failedChapters: 0,
+      failedChapters: isResuming ? startedFailed : 0,
       glossaryVersion,
       profileVersion,
+      currentChapterTitle: remainingChapterIds[0] ?? null,
+      currentChapterParagraphs: 0,
+      currentChapterTranslatedParagraphs: 0,
+      totalTranslatedParagraphs: isResuming ? (existingBuild?.totalTranslatedParagraphs ?? 0) : 0,
     });
 
     // 在后台启动章节翻译
     queueMicrotask(() => {
-      void this.processChapters(sourceId, novelId, remainingChapterIds, profile.sourceLang, profile.targetLang, glossaryVersion, profileVersion, startedTranslated, startedFailed, modelOverride);
+      void this.processChapters(sourceId, novelId, remainingChapterIds, profile.sourceLang, profile.targetLang, glossaryVersion, profileVersion, startedTranslated, startedFailed, canResume ? (existingBuild?.totalTranslatedParagraphs ?? 0) : 0, modelOverride);
     });
 
     return {
@@ -468,8 +473,10 @@ export class TranslationService {
       startedAt: build.startedAt,
       completedAt: build.completedAt,
       translatedChapters: build.translatedChapters,
-      reviewedChapters: build.reviewedChapters,
       failedChapters: build.failedChapters,
+      currentChapterParagraphs: build.currentChapterParagraphs,
+      currentChapterTranslatedParagraphs: build.currentChapterTranslatedParagraphs,
+      totalTranslatedParagraphs: build.totalTranslatedParagraphs,
       glossaryVersion: build.glossaryVersion,
       profileVersion: build.profileVersion,
       updatedAt: build.updatedAt,
@@ -486,28 +493,73 @@ export class TranslationService {
     profileVersion: number,
     startTranslated = 0,
     startFailed = 0,
+    startTotalParagraphs = 0,
     modelOverride?: string,
   ): Promise<void> {
     const terms = this.#repository.listTranslationTerms(sourceId, novelId);
     const profile = this.getTranslationProfile(sourceId, novelId);
-    const qualityThreshold = profile?.qualityThreshold ?? 0.8;
+    const paragraphsPerBatch = profile?.translationConcurrency ?? 2;
+    const historyManager = new TranslationHistoryManager();
+    const llmLogger = new LlmInteractionLogger(
+      undefined,
+      this.#preferences.getTranslationState().config.enableLlmInteractionLog,
+    );
 
     const abortKey = `${sourceId}:${novelId}`;
     const ac = new AbortController();
     this.#abortControllers.set(abortKey, ac);
 
+    let translated = startTranslated;
+    let failed = startFailed;
+    let totalParagraphsDone = startTotalParagraphs;
+    const runStartedAt = Date.now();
+
+    // 闭包中引用的可变进度状态
+    let progressChapterTitle = '';
+    let progressChapterEstParagraphs = 0;
+
+    // 预估总段数
+    let totalParagraphEstimate = 0;
+    for (const cid of chapterIds) {
+      try {
+        const ch = this.#repository.getChapter(sourceId, novelId, cid);
+        if (ch?.content) totalParagraphEstimate += ch.content.split(/\n\s*\n/).filter((p: string) => p.trim().length > 0).length;
+      } catch { /* ignore */ }
+    }
+
+    console.log(`[translation] 开始翻译 ${sourceId}/${novelId}，共 ${chapterIds.length} 章，约 ${totalParagraphEstimate} 段，语言对 ${sourceLang}→${targetLang}`);
+
     const pipeline = createTranslationPipelineGraph({
       preferences: this.#preferences,
       repository: this.#repository,
-      qualityThreshold,
+      historyManager,
+      paragraphsPerBatch,
+      llmLogger,
       abortSignal: ac.signal,
+      onBatchProgress: (_batchParagraphs, totalCompleted) => {
+        const nowTotal = totalParagraphsDone + totalCompleted;
+        try {
+          this.#repository.saveTranslationBuild({
+            sourceId, novelId, status: 'running', stage: 'translating',
+            progressPercent: chapterIds.length > 0 ? Math.round(((translated + failed) / chapterIds.length) * 100) : 0,
+            message: `正在翻译… (${totalCompleted}/${progressChapterEstParagraphs}段)`,
+            errorMessage: null,
+            startedAt: new Date(runStartedAt).toISOString(), completedAt: null,
+            modelStatsJson: JSON.stringify({ runStartedAt }),
+            translatedChapters: translated, reviewedChapters: 0, failedChapters: failed,
+            glossaryVersion, profileVersion,
+            currentChapterTitle: progressChapterTitle,
+            currentChapterParagraphs: progressChapterEstParagraphs,
+            currentChapterTranslatedParagraphs: totalCompleted,
+            totalTranslatedParagraphs: nowTotal,
+            totalParagraphEstimate,
+          });
+        } catch { /* ignore */ }
+      },
       ...(modelOverride ? { modelOverride } : {}),
     });
 
-    let translated = startTranslated;
-    let failed = startFailed;
-
-    console.log(`[translation] 开始翻译 ${sourceId}/${novelId}，共 ${chapterIds.length} 章，语言对 ${sourceLang}→${targetLang}`);
+    console.log(`[translation] 开始翻译 ${sourceId}/${novelId}，共 ${chapterIds.length} 章，约 ${totalParagraphEstimate} 段，语言对 ${sourceLang}→${targetLang}`);
 
     for (const chapterId of chapterIds) {
       if (ac.signal.aborted) { console.log(`[translation] 翻译已取消`); break; }
@@ -534,11 +586,9 @@ export class TranslationService {
           })),
           segments: [],
           draftParagraphs: [],
-          reviewResult: null,
           translatedTitle: null,
           finalParagraphs: [],
           translatorModelId: null,
-          reviewerModelId: null,
           tokenUsageJson: null,
           sourceContentHash: contentHash,
           glossaryVersion, profileVersion,
@@ -549,6 +599,27 @@ export class TranslationService {
         };
 
         console.log(`[translation] 调用 LLM 翻译第 ${chapter.index} 章「${chapter.title}」...`);
+
+        // 更新段落进度：新章节开始，当前段数为预估段数
+        const estParagraphs = chapter.content.split(/\n\s*\n/).filter((p: string) => p.trim().length > 0).length;
+        progressChapterTitle = chapter.title;
+        progressChapterEstParagraphs = estParagraphs;
+        this.#repository.saveTranslationBuild({
+          sourceId, novelId, status: 'running', stage: 'translating',
+          progressPercent: chapterIds.length > 0 ? Math.round(((translated + failed) / chapterIds.length) * 100) : 0,
+          message: `正在翻译第 ${chapter.index} 章…`,
+          errorMessage: null,
+          startedAt: new Date(runStartedAt).toISOString(), completedAt: null,
+          modelStatsJson: JSON.stringify({ runStartedAt }),
+          translatedChapters: translated, reviewedChapters: 0, failedChapters: failed,
+          glossaryVersion, profileVersion,
+          currentChapterTitle: chapter.title,
+          currentChapterParagraphs: estParagraphs,
+          currentChapterTranslatedParagraphs: 0,
+          totalTranslatedParagraphs: totalParagraphsDone,
+          totalParagraphEstimate,
+        });
+
         await pipeline.invoke(state);
 
         const saved = this.#repository.getChapterTranslation(sourceId, novelId, chapterId, sourceLang, targetLang);
@@ -596,11 +667,12 @@ export class TranslationService {
       }
 
       const total = translated + failed;
-      // 获取当前章节的段落翻译信息
-      let paraInfo = '';
+      // 获取当前章节的段落信息
+      let chapterParagraphs = 0;
       try {
         const paras = this.#repository.listChapterTranslationParagraphs(sourceId, novelId, chapterId);
-        if (paras.length > 0) paraInfo = ` (${paras.length}段)`;
+        chapterParagraphs = paras.length;
+        totalParagraphsDone += chapterParagraphs;
       } catch { /* ignore */ }
 
       this.#repository.saveTranslationBuild({
@@ -608,16 +680,22 @@ export class TranslationService {
         status: 'running',
         stage: 'translating',
         progressPercent: chapterIds.length > 0 ? Math.round((total / chapterIds.length) * 100) : 0,
-        message: `已译 ${translated}/${chapterIds.length} 章${paraInfo}`,
+        message: `已译 ${translated}/${chapterIds.length} 章 (${chapterParagraphs}段)`,
         errorMessage: null,
-        startedAt: new Date().toISOString(),
+        startedAt: new Date(runStartedAt).toISOString(),
         completedAt: null,
-        modelStatsJson: '[]',
+        modelStatsJson: JSON.stringify({ runStartedAt }),
         translatedChapters: translated,
         reviewedChapters: 0,
         failedChapters: failed,
         glossaryVersion,
         profileVersion,
+        // 显示刚完成的章节的段落进度（满格）
+        currentChapterTitle: chapter.title,
+        currentChapterParagraphs: chapterParagraphs,
+        currentChapterTranslatedParagraphs: chapterParagraphs,
+        totalTranslatedParagraphs: totalParagraphsDone,
+        totalParagraphEstimate,
       });
 
       this.#repository.appendTranslationBuildLog({
@@ -638,14 +716,18 @@ export class TranslationService {
       progressPercent: 100,
       message: `翻译完成：${translated} 章成功，${failed} 章失败`,
       errorMessage: null,
-      startedAt: new Date().toISOString(),
+      startedAt: new Date(runStartedAt).toISOString(),
       completedAt: new Date().toISOString(),
-      modelStatsJson: '[]',
+      modelStatsJson: JSON.stringify({ runStartedAt }),
       translatedChapters: translated,
       reviewedChapters: 0,
       failedChapters: failed,
       glossaryVersion,
       profileVersion,
+      currentChapterTitle: null,
+      currentChapterParagraphs: 0,
+      currentChapterTranslatedParagraphs: 0,
+      totalTranslatedParagraphs: totalParagraphsDone,
     });
   }
 }

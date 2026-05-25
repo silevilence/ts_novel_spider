@@ -1,12 +1,13 @@
 import { StateGraph, Annotation, START, END } from '@langchain/langgraph';
 
-import type { TranslationPipelineState, TranslationSegment, ParagraphDraft, TranslationReviewResult, TranslationTermEntry } from './translation-state';
+import type { TranslationPipelineState, TranslationSegment, ParagraphDraft, TranslationTermEntry } from './translation-state';
+import type { TranslationHistoryManager } from './translation/nodes/history-manager';
+import type { LlmInteractionLogger } from './translation/nodes/llm-logger';
 import type { SystemPreferencesService } from './system-preferences';
 import type { SqliteNovelRepository } from './novel-repository';
 
 import { segmentNode } from './translation/nodes/segment-node';
 import { translateNode } from './translation/nodes/translate-node';
-import { reviewNode } from './translation/nodes/review-node';
 import { assembleNode } from './translation/nodes/assemble-node';
 import { finalizeNode } from './translation/nodes/finalize-node';
 
@@ -14,9 +15,13 @@ import { finalizeNode } from './translation/nodes/finalize-node';
 export interface TranslationPipelineRuntime {
   preferences: SystemPreferencesService;
   repository: SqliteNovelRepository;
-  qualityThreshold: number;
+  historyManager: TranslationHistoryManager;
+  paragraphsPerBatch: number;
+  llmLogger?: LlmInteractionLogger;
   modelOverride?: string;
   abortSignal?: AbortSignal;
+  /** 每批翻译完成后的回调（段落数，累计总段数） */
+  onBatchProgress?: (batchParagraphs: number, totalCompleted: number) => void;
 }
 
 /**
@@ -68,10 +73,6 @@ const TranslationState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => [],
   }),
-  reviewResult: Annotation<TranslationReviewResult | null>({
-    reducer: (_prev, next) => next,
-    default: () => null,
-  }),
   translatedTitle: Annotation<string | null>({
     reducer: (_prev, next) => next,
     default: () => null,
@@ -81,10 +82,6 @@ const TranslationState = Annotation.Root({
     default: () => [],
   }),
   translatorModelId: Annotation<string | null>({
-    reducer: (_prev, next) => next,
-    default: () => null,
-  }),
-  reviewerModelId: Annotation<string | null>({
     reducer: (_prev, next) => next,
     default: () => null,
   }),
@@ -126,10 +123,9 @@ const TranslationState = Annotation.Root({
  * 构建单章翻译的 LangGraph 状态图。
  *
  * 节点顺序：
- *   START -> segment -> translate -> review
- *     review 条件路由：
- *       - 若需要重译（reviewResult.requiresRework）→ 回到 translate
- *       - 否则 → assemble → finalize → END
+ *   START -> segment -> translate -> assemble -> finalize -> END
+ *
+ * 注意：审校（review）节点暂未启用，预留给将来的多 Agent 翻译架构。
  */
 export function createTranslationPipelineGraph(runtime: TranslationPipelineRuntime) {
   const graph = new StateGraph(TranslationState)
@@ -138,10 +134,7 @@ export function createTranslationPipelineGraph(runtime: TranslationPipelineRunti
       return segmentNode(state);
     })
     .addNode('translate', async (state: TranslationPipelineState) => {
-      return translateNode(state, runtime.preferences, runtime.modelOverride, runtime.abortSignal);
-    })
-    .addNode('review', async (state: TranslationPipelineState) => {
-      return reviewNode(state, runtime.preferences, runtime.qualityThreshold);
+      return translateNode(state, runtime.preferences, runtime.historyManager, runtime.paragraphsPerBatch, runtime.llmLogger, runtime.onBatchProgress, runtime.modelOverride, runtime.abortSignal);
     })
     .addNode('assemble', async (state: TranslationPipelineState) => {
       return assembleNode(state);
@@ -150,25 +143,10 @@ export function createTranslationPipelineGraph(runtime: TranslationPipelineRunti
       return finalizeNode(state, runtime.repository);
     })
 
-    // 边界路由
+    // 边界路由：segment -> translate -> assemble -> finalize
     .addEdge(START, 'segment')
     .addEdge('segment', 'translate')
-    .addEdge('translate', 'review')
-    .addConditionalEdges(
-      'review',
-      (state: TranslationPipelineState): string => {
-        if (state.pauseRequested) {
-          return 'finalize';
-        }
-        if (state.errorMessage) {
-          return 'finalize';
-        }
-        if (state.reviewResult?.requiresRework && state.retryCount < state.maxRetries) {
-          return 'translate';
-        }
-        return 'assemble';
-      },
-    )
+    .addEdge('translate', 'assemble')
     .addEdge('assemble', 'finalize')
     .addEdge('finalize', END);
 
@@ -177,14 +155,14 @@ export function createTranslationPipelineGraph(runtime: TranslationPipelineRunti
 
 /**
  * 从全局 LLM 偏好中解析翻译模型。
- * 遍历 provider 找到第一个启用且已配置的 chat 模型，返回 `{ providerId, modelId }`。
+ * 优先级：用户手动指定 > 全局默认翻译模型 > 第一个启用的 chat 模型。
  * 如果没有找到，返回 null。
  */
 export function resolveTranslationModel(
   preferences: SystemPreferencesService,
   modelOverride?: string,
 ): { providerId: string; modelId: string } | null {
-  // 如果指定了模型覆写，优先使用
+  // 1. 用户手动指定（来自翻译启动面板的模型选择器）
   if (modelOverride) {
     const [overrideProviderId, overrideModelId] = modelOverride.split(':');
     if (overrideProviderId && overrideModelId) {
@@ -192,7 +170,27 @@ export function resolveTranslationModel(
       return { providerId: overrideProviderId!, modelId: overrideModelId! };
     }
   }
+
   const llmState = preferences.getLlmState();
+
+  // 2. 全局翻译偏好中指定的默认模型
+  const translationPrefs = preferences.getTranslationState().config;
+  if (translationPrefs.preferredTranslationModelKey) {
+    const [prefProviderId, prefModelId] = translationPrefs.preferredTranslationModelKey.split(':');
+    if (prefProviderId && prefModelId) {
+      const prefProvider = llmState.providers.find((p) => p.id === prefProviderId && p.enabled && p.isConfigured);
+      if (prefProvider) {
+        const prefModel = prefProvider.models.find((m) => m.id === prefModelId && m.enabled && m.isConfigured);
+        if (prefModel && prefModel.resolvedCapabilities.includes('chat')) {
+          console.log(`[translation] 使用全局默认翻译模型: ${prefProviderId}/${prefModelId}`);
+          return { providerId: prefProviderId!, modelId: prefModelId! };
+        }
+        console.log(`[translation] 全局默认翻译模型 ${prefProviderId}/${prefModelId} 不可用（未启用/未配置/非 chat），回退自动选择`);
+      }
+    }
+  }
+
+  // 3. 自动选择：第一个启用且已配置的 chat 模型
   for (const provider of llmState.providers) {
     if (!provider.enabled || !provider.isConfigured) {
       continue;
@@ -204,7 +202,7 @@ export function resolveTranslationModel(
       }
 
       if (model.resolvedCapabilities.includes('chat')) {
-        console.log(`[translation] 选中翻译模型: ${provider.id}/${model.modelId} (capabilities: ${model.resolvedCapabilities.join(',')})`);
+        console.log(`[translation] 自动选中翻译模型: ${provider.id}/${model.modelId} (capabilities: ${model.resolvedCapabilities.join(',')})`);
         return { providerId: provider.id, modelId: model.id };
       }
       console.log(`[translation] 跳过模型 ${provider.id}/${model.modelId}: enabled=${model.enabled} configured=${model.isConfigured} capabilities=${model.resolvedCapabilities.join(',')}`);
@@ -220,45 +218,4 @@ export function resolveTranslationModel(
   }
 
   return null;
-}
-
-/**
- * 从全局 LLM 偏好中解析审校模型。
- * 优先返回一个不同于 translateModel 的 chat 模型。
- * 如果无法区分翻译/审校模型，返回翻译模型本身。
- */
-export function resolveReviewModel(
-  preferences: SystemPreferencesService,
-  translateModel: { providerId: string; modelId: string } | null,
-): { providerId: string; modelId: string } | null {
-  const llmState = preferences.getLlmState();
-
-  const candidates: Array<{ providerId: string; modelId: string }> = [];
-  for (const provider of llmState.providers) {
-    if (!provider.enabled || !provider.isConfigured) {
-      continue;
-    }
-
-    for (const model of provider.models) {
-      if (!model.enabled || !model.isConfigured) {
-        continue;
-      }
-
-      if (model.resolvedCapabilities.includes('chat')) {
-        candidates.push({ providerId: provider.id, modelId: model.id });
-      }
-    }
-  }
-
-  // 优先选择非翻译模型
-  if (candidates.length >= 2 && translateModel) {
-    const different = candidates.find(
-      (c) => c.providerId !== translateModel.providerId || c.modelId !== translateModel.modelId,
-    );
-    if (different) {
-      return different;
-    }
-  }
-
-  return candidates[0] ?? null;
 }

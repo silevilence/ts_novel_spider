@@ -642,8 +642,11 @@ export interface TranslationBuildPayload {
     startedAt: string | null;
     completedAt: string | null;
     translatedChapters: number;
-    reviewedChapters: number;
     failedChapters: number;
+    currentChapterParagraphs: number;
+    currentChapterTranslatedParagraphs: number;
+    totalTranslatedParagraphs: number;
+    totalParagraphEstimate: number;
   };
 }
 
@@ -651,13 +654,18 @@ export async function startLibraryTranslation(
   sourceId: string,
   novelId: string,
   modelOverride?: string,
+  fromScratch?: boolean,
 ): Promise<TranslationBuildPayload> {
+  const body: Record<string, unknown> = {};
+  if (modelOverride) body.modelOverride = modelOverride;
+  if (fromScratch) body.fromScratch = true;
+
   const response = await fetch(
     `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/start`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(modelOverride ? { modelOverride } : {}),
+      body: JSON.stringify(body),
     },
   );
 
@@ -750,9 +758,9 @@ export interface TranslationPreferencesPayload {
     targetLang: string;
     termExtractionModel: { providerId?: string; modelId?: string } | null;
     translationModels: Array<{ providerId?: string; modelId?: string }>;
-    reviewModel: { providerId?: string; modelId?: string } | null;
     translationConcurrency: number;
-    qualityThreshold: number;
+    preferredTranslationModelKey: string | null;
+    enableLlmInteractionLog: boolean;
     autoRejectUntranslatedTerms: boolean;
     defaultExportMode: TranslationExportMode;
   };

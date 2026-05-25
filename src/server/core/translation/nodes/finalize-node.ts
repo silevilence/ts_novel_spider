@@ -7,12 +7,19 @@ import type { SqliteNovelRepository } from '../../novel-repository';
  * 写入：
  * - chapter_translations（章节翻译汇总记录）
  * - chapter_translation_paragraphs（段落级原文-译文绑定）
- * - chapter_translation_qa（质量审查记录）
+ *
+ * 注意：审校（QA）功能暂未启用，预留给将来的多 Agent 翻译架构。
  */
 export async function finalizeNode(
   state: TranslationPipelineState,
   repository: SqliteNovelRepository,
 ): Promise<Partial<TranslationPipelineState>> {
+  // 如果已被暂停或取消，不持久化（保留草稿供恢复）
+  if (state.pauseRequested) {
+    console.log(`[translation] finalizeNode: 翻译已暂停，跳过持久化`);
+    return {};
+  }
+
   if (state.finalParagraphs.length === 0 && state.draftParagraphs.length > 0) {
     // 有草稿但未组装——先尝试组装
     return state;
@@ -24,8 +31,6 @@ export async function finalizeNode(
     return { errorMessage: '无翻译结果可保存。' };
   }
 
-  // 计算综合质量分
-  const overallQualityScore = state.reviewResult?.overallScore ?? null;
   const hasValidTranslations = paragraphs.some((p) => p.translatedText && p.translatedText.trim().length > 0);
 
   if (!hasValidTranslations) {
@@ -33,8 +38,12 @@ export async function finalizeNode(
   }
 
   try {
-    const status = state.errorMessage ? 'failed' as const : 'completed' as const;
-    console.log(`[translation] finalizeNode: saving chapter ${state.chapterId} with status=${status}, paragraphs=${paragraphs.length}, errorMessage=${state.errorMessage ?? 'null'}`);
+    // 状态判定：只要有任何段落译文有效就视为成功，缺失部分记入日志
+    const status = hasValidTranslations ? 'completed' as const : 'failed' as const;
+    const totalParagraphs = paragraphs.length;
+    const validCount = paragraphs.filter((p) => p.translatedText && p.translatedText.trim().length > 0).length;
+    const partialNote = validCount < totalParagraphs ? ` (${validCount}/${totalParagraphs} 段有效)` : '';
+    console.log(`[translation] finalizeNode: saving chapter ${state.chapterId} with status=${status}, paragraphs=${paragraphs.length}, valid=${validCount}${partialNote}${state.errorMessage ? ', warn: ' + state.errorMessage : ''}`);
 
     repository.saveChapterTranslation({
       sourceId: state.sourceId,
@@ -44,9 +53,9 @@ export async function finalizeNode(
       targetLang: state.targetLang,
       translatedTitle: state.translatedTitle,
       status,
-      overallQualityScore,
+      overallQualityScore: null,
       translatorModelId: state.translatorModelId,
-      reviewerModelId: state.reviewerModelId,
+      reviewerModelId: null,
       tokenUsageJson: state.tokenUsageJson,
       sourceContentHash: state.sourceContentHash,
       glossaryVersion: state.glossaryVersion,
@@ -68,21 +77,7 @@ export async function finalizeNode(
       })),
     );
 
-    // 保存 QA 记录
-    if (state.reviewResult && state.reviewResult.issues.length > 0) {
-      repository.replaceChapterTranslationQa(
-        state.sourceId,
-        state.novelId,
-        state.chapterId,
-        state.reviewResult.issues.map((issue) => ({
-          checkType: issue.type,
-          score: 0,
-          severity: issue.severity,
-          suggestion: issue.suggestion,
-          paragraphIndices: issue.paragraphIndices,
-        })),
-      );
-    }
+    // 审校（QA）功能暂未启用——不写入 chapter_translation_qa 表
 
     return {};
   } catch (error) {

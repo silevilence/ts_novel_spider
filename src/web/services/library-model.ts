@@ -29,6 +29,7 @@ import {
   deleteLibraryReaderTypography,
   updateLibraryReadingProgress,
   type TranslationExportMode,
+  type TranslationBuildPayload,
 } from './api';
 import { SseTaskLogBridge } from './task-log-bridge';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
@@ -49,8 +50,11 @@ export interface TranslationBuildState {
   startedAt: string | null;
   completedAt: string | null;
   translatedChapters: number;
-  reviewedChapters: number;
   failedChapters: number;
+  currentChapterParagraphs: number;
+  currentChapterTranslatedParagraphs: number;
+  totalTranslatedParagraphs: number;
+  totalParagraphEstimate: number;
 }
 
 export interface LibraryModel {
@@ -122,9 +126,11 @@ export interface LibraryModel {
   /** 翻译构建是否忙碌 */
   translationBusy: boolean;
   /** 启动翻译任务 */
-  startTranslation: (modelOverride?: string) => Promise<void>;
+  startTranslation: (modelOverride?: string, fromScratch?: boolean) => Promise<void>;
   /** 取消翻译任务 */
   cancelTranslation: () => Promise<void>;
+  /** 从 API 同步翻译构建状态（供轮询使用） */
+  syncTranslationBuild: () => Promise<TranslationBuildPayload | null>;
 }
 
 interface UseLibraryModelOptions {
@@ -942,11 +948,11 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     }
   }, [translationViewMode]);
 
-  async function handleStartTranslation(modelOverride?: string) {
+  async function handleStartTranslation(modelOverride?: string, fromScratch?: boolean) {
     if (!location.sourceId || !location.novelId) return;
     setTranslationBusy(true);
     try {
-      const payload = await startLibraryTranslation(location.sourceId, location.novelId, modelOverride);
+      const payload = await startLibraryTranslation(location.sourceId, location.novelId, modelOverride, fromScratch);
       setTranslationBuild(payload.translation as TranslationBuildState);
       publishNotice({ tone: 'success', title: '翻译任务已启动', message: payload.translation.message ?? '后台正在处理翻译。' });
     } catch (error) {
@@ -964,6 +970,17 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     } catch (error) {
       publishNotice({ tone: 'error', title: '取消失败', message: error instanceof Error ? error.message : 'cancel failed' });
     } finally { setTranslationBusy(false); }
+  }
+
+  async function handleSyncTranslationBuild(): Promise<TranslationBuildPayload | null> {
+    if (!location.sourceId || !location.novelId) return null;
+    try {
+      const payload = await fetchLibraryTranslationBuild(location.sourceId, location.novelId);
+      setTranslationBuild(payload.translation as TranslationBuildState);
+      return payload;
+    } catch {
+      return null;
+    }
   }
 
   return {
@@ -1010,6 +1027,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     translationBusy,
     startTranslation: handleStartTranslation,
     cancelTranslation: handleCancelTranslation,
+    syncTranslationBuild: handleSyncTranslationBuild,
   };
 }
 

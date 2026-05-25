@@ -231,9 +231,9 @@ export interface TranslationPreferencesInput {
   targetLang?: TranslationLanguageCode;
   termExtractionModel?: TranslationDefaultModelRouteInput | null;
   translationModels?: TranslationDefaultModelRouteInput[];
-  reviewModel?: TranslationDefaultModelRouteInput | null;
   translationConcurrency?: number;
-  qualityThreshold?: number;
+  preferredTranslationModelKey?: string | null;
+  enableLlmInteractionLog?: boolean;
   autoRejectUntranslatedTerms?: boolean;
   defaultExportMode?: TranslationExportMode;
 }
@@ -243,9 +243,9 @@ export interface TranslationPreferencesConfig {
   targetLang: TranslationLanguageCode;
   termExtractionModel: TranslationDefaultModelRouteInput | null;
   translationModels: TranslationDefaultModelRouteInput[];
-  reviewModel: TranslationDefaultModelRouteInput | null;
   translationConcurrency: number;
-  qualityThreshold: number;
+  preferredTranslationModelKey: string | null;
+  enableLlmInteractionLog: boolean;
   autoRejectUntranslatedTerms: boolean;
   defaultExportMode: TranslationExportMode;
 }
@@ -264,9 +264,9 @@ export const TRANSLATION_DEFAULTS: TranslationPreferencesConfig = {
   targetLang: 'zh-CN',
   termExtractionModel: null,
   translationModels: [],
-  reviewModel: null,
   translationConcurrency: 2,
-  qualityThreshold: 0.8,
+  preferredTranslationModelKey: null,
+  enableLlmInteractionLog: false,
   autoRejectUntranslatedTerms: true,
   defaultExportMode: 'original',
 };
@@ -278,12 +278,6 @@ export function normalizeTranslationPreferencesInput(input: TranslationPreferenc
       ? buildModelRouteFromInput(input.termExtractionModel as Record<string, unknown>)
       : TRANSLATION_DEFAULTS.termExtractionModel);
 
-  const reviewModel = input.reviewModel === null
-    ? null
-    : (typeof input.reviewModel === 'object' && input.reviewModel !== null
-      ? buildModelRouteFromInput(input.reviewModel as Record<string, unknown>)
-      : TRANSLATION_DEFAULTS.reviewModel);
-
   return {
     sourceLang: typeof input.sourceLang === 'string' ? input.sourceLang.trim() || TRANSLATION_DEFAULTS.sourceLang : TRANSLATION_DEFAULTS.sourceLang,
     targetLang: typeof input.targetLang === 'string' ? input.targetLang.trim() || TRANSLATION_DEFAULTS.targetLang : TRANSLATION_DEFAULTS.targetLang,
@@ -291,13 +285,15 @@ export function normalizeTranslationPreferencesInput(input: TranslationPreferenc
     translationModels: Array.isArray(input.translationModels)
       ? input.translationModels.filter((m): m is TranslationDefaultModelRouteInput => typeof m === 'object' && m !== null)
       : [],
-    reviewModel,
     translationConcurrency: typeof input.translationConcurrency === 'number' && Number.isFinite(input.translationConcurrency)
       ? Math.max(1, Math.trunc(input.translationConcurrency))
       : TRANSLATION_DEFAULTS.translationConcurrency,
-    qualityThreshold: typeof input.qualityThreshold === 'number' && Number.isFinite(input.qualityThreshold)
-      ? Math.max(0, Math.min(1, input.qualityThreshold))
-      : TRANSLATION_DEFAULTS.qualityThreshold,
+    preferredTranslationModelKey: input.preferredTranslationModelKey === null || typeof input.preferredTranslationModelKey === 'string'
+      ? input.preferredTranslationModelKey ?? null
+      : TRANSLATION_DEFAULTS.preferredTranslationModelKey,
+    enableLlmInteractionLog: typeof input.enableLlmInteractionLog === 'boolean'
+      ? input.enableLlmInteractionLog
+      : TRANSLATION_DEFAULTS.enableLlmInteractionLog,
     autoRejectUntranslatedTerms: typeof input.autoRejectUntranslatedTerms === 'boolean'
       ? input.autoRejectUntranslatedTerms
       : TRANSLATION_DEFAULTS.autoRejectUntranslatedTerms,

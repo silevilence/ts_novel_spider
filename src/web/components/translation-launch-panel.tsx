@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 
 import type { LibraryModel, TranslationBuildState } from '../services/library-model';
-import { fetchLlmProvidersPreferences, buildLibraryExportDownloadUrl, fetchLibraryTranslationBuild, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
+import { fetchLlmProvidersPreferences, buildLibraryExportDownloadUrl, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
 
 interface TranslationLaunchPanelProps {
   model: LibraryModel;
@@ -28,19 +28,18 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
     }, () => {});
   }, []);
 
-  // 轮询翻译构建状态（运行时每2秒更新）
+  // 轮询翻译构建状态（运行时每3秒更新，驱动进度条和日志）
   useEffect(() => {
     if (!model.detail?.novel || !(model.translationBuild?.status === 'running' || model.translationBuild?.status === 'queued')) return;
-    const { sourceId } = model.detail.novel;
-    const { novelId } = model.detail.novel.metadata;
     const timer = setInterval(() => {
-      fetchLibraryTranslationBuild(sourceId, novelId).then((p) => {
+      model.syncTranslationBuild?.().then((p) => {
+        if (!p) return;
         const msg = `已译 ${p.translation.translatedChapters} 章 / 失败 ${p.translation.failedChapters} 章`;
         setLogs((prev) => {
           if (prev.length > 0 && prev[prev.length - 1]!.msg === msg) return prev;
           return [...prev.slice(-50), { time: new Date().toLocaleTimeString('zh-CN'), msg }];
         });
-      }, () => {});
+      }).catch(() => {});
     }, 3000);
     return () => clearInterval(timer);
   }, [model.translationBuild?.status, model.detail?.novel]);
@@ -66,7 +65,6 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
           {build ? (
             <>
               <span className="status-badge ok">已译 {build.translatedChapters}</span>
-              <span className="status-badge state-indexed">已审 {build.reviewedChapters}</span>
               {build.failedChapters > 0 ? <span className="status-badge state-failed">失败 {build.failedChapters}</span> : null}
             </>
           ) : null}
@@ -88,9 +86,30 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
               <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.15rem' }}>
                 当前：{build.message || '准备中…'}
               </div>
-              <div className="progress-track" style={{ margin: '0', height: '3px', background: 'rgba(255,140,66,0.2)' }}>
-                <div className="progress-fill" style={{ width: '50%', background: 'var(--accent)', animation: 'pulse 1.5s ease-in-out infinite' }} />
-              </div>
+              {/* 段落级实时进度 */}
+              {build.currentChapterParagraphs > 0 ? (
+                <div style={{ marginBottom: '0.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', marginBottom: '0.1rem' }}>
+                    <span className="label">段落 {build.currentChapterTranslatedParagraphs}/{build.currentChapterParagraphs}</span>
+                    <span className="label">{build.currentChapterParagraphs > 0 ? Math.round((build.currentChapterTranslatedParagraphs / build.currentChapterParagraphs) * 100) : 0}%</span>
+                  </div>
+                  <div className="progress-track" style={{ margin: '0', height: '3px', background: 'rgba(255,140,66,0.2)' }}>
+                    <div className="progress-fill" style={{ width: `${build.currentChapterParagraphs > 0 ? Math.round((build.currentChapterTranslatedParagraphs / build.currentChapterParagraphs) * 100) : 0}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
+                  </div>
+                </div>
+              ) : (
+                <div className="progress-track" style={{ margin: '0', height: '3px', background: 'rgba(255,140,66,0.2)' }}>
+                  <div className="progress-fill" style={{ width: '30%', background: 'var(--accent)', animation: 'pulse 1.5s ease-in-out infinite' }} />
+                </div>
+              )}
+              {/* 速率与时间估算 */}
+              {build.startedAt ? (
+                <SpeedEstimate
+                  totalParagraphs={build.totalTranslatedParagraphs}
+                  startedAt={build.startedAt}
+                  totalEstimate={build.totalParagraphEstimate || 0}
+                />
+              ) : null}
             </>
           ) : null}
         </div>
@@ -130,14 +149,14 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
             </button>
             {(isPaused || isDone) ? (
               <button type="button" className="ghost-button subtle"
-                onClick={async () => { if (model.cancelTranslation) await model.cancelTranslation(); void model.startTranslation(selectedModel); }}
+                onClick={() => { void model.startTranslation(selectedModel, true); }}
                 disabled={model.translationBusy || !detail || detail.stats.downloaded === 0}>
                 从头开始
               </button>
             ) : null}
           </>
         ) : (
-          <span className="primary-button" style={{ opacity: 0.5, cursor: 'not-allowed', textAlign: 'center' }}>翻译中…</span>
+          <span className="ghost-button" style={{ cursor: 'default', textAlign: 'center', minWidth: '100px' }}>翻译中…</span>
         )}
 
         {langs ? (
@@ -180,5 +199,51 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** 翻译速率估算组件：段/秒、已用时、预计剩余（基于段落总数估算） */
+function SpeedEstimate({ totalParagraphs, startedAt, totalEstimate }: { totalParagraphs: number; startedAt: string; totalEstimate: number }) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 2000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const elapsedMs = now - new Date(startedAt).getTime();
+  const elapsedSec = Math.max(elapsedMs / 1000, 0.5);
+  const speed = totalParagraphs > 0 ? totalParagraphs / elapsedSec : 0;
+
+  const formatDuration = (ms: number): string => {
+    if (ms <= 0) return '0秒';
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}时${m}分${s}秒`;
+    if (m > 0) return `${m}分${s}秒`;
+    return `${s}秒`;
+  };
+
+  // 根据段落总数估算剩余时间
+  let etaText: string | null = null;
+  if (totalEstimate > 0 && totalParagraphs > 0 && speed > 0) {
+    const remaining = totalEstimate - totalParagraphs;
+    if (remaining > 0) {
+      etaText = formatDuration((remaining / speed) * 1000);
+    }
+  }
+
+  return (
+    <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.25rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+      {totalParagraphs > 0 && speed > 0 ? (
+        <span>速率：{speed >= 1 ? speed.toFixed(1) : speed.toFixed(2)} 段/秒</span>
+      ) : (
+        <span>速率：准备中…</span>
+      )}
+      <span>已用时：{formatDuration(elapsedMs)}</span>
+      {etaText ? <span>预计剩余：{etaText}</span> : null}
+    </div>
   );
 }

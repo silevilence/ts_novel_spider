@@ -607,10 +607,10 @@ function resolveChapterExportContent(context: ExportRenderContext, chapter: Stor
       .join('\n\n');
   }
 
-  // bilingual mode
+  // bilingual mode：仅当译文有效且与原文不同时才显示双语对照
   return translatedParagraphs
     .map((tp) => {
-      if (tp.translatedText) {
+      if (tp.translatedText && tp.translatedText !== tp.sourceText && tp.translatedText.trim().length > 0) {
         return `${tp.sourceText}\n\n${tp.translatedText}`;
       }
       return tp.sourceText;

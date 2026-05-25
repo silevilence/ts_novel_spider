@@ -558,7 +558,8 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
       const { sourceId, novelId } = request.params;
       const body = (request.body ?? {}) as Record<string, unknown>;
       const modelOverride = typeof body.modelOverride === 'string' ? body.modelOverride : undefined;
-      const build = service.startLibraryTranslation(sourceId, novelId, modelOverride);
+      const fromScratch = body.fromScratch === true;
+      const build = service.startLibraryTranslation(sourceId, novelId, modelOverride, fromScratch);
 
       response.status(202).json({
         translation: build,

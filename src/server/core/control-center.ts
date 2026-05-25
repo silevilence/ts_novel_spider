@@ -627,8 +627,8 @@ export class ControlCenterService {
     return this.#translation.listMissingTerms(sourceId, novelId);
   }
 
-  startLibraryTranslation(sourceId: string, novelId: string, modelOverride?: string): TranslationBuild {
-    return this.#translation.startTranslation(sourceId, novelId, modelOverride);
+  startLibraryTranslation(sourceId: string, novelId: string, modelOverride?: string, fromScratch?: boolean): TranslationBuild {
+    return this.#translation.startTranslation(sourceId, novelId, modelOverride, fromScratch);
   }
 
   cancelLibraryTranslation(sourceId: string, novelId: string): TranslationBuild | null {

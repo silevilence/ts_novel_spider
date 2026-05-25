@@ -7,7 +7,6 @@ export interface TranslationTaskProgress {
   totalChapters: number;
   queuedChapters: number;
   translatedChapters: number;
-  reviewedChapters: number;
   failedChapters: number;
   percent: number;
   currentChapterTitle: string | null;

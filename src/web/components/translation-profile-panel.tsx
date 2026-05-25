@@ -62,7 +62,7 @@ export function TranslationProfilePanel({ model, onNotify }: TranslationProfileP
           <h3>翻译配置摘要</h3>
           <p className="panel-note">
             当前翻译流水线依赖「系统偏好」中的全局翻译默认值和已配置的 LLM 模型。
-            如需修改语言对、翻译模型、审校阈值等参数，请前往「系统偏好 → 翻译默认值」。
+            如需修改语言对、翻译模型等参数，请前往「系统偏好 → 翻译默认值」。
             翻译配置一旦有产物将自动锁定，需先清除翻译数据才能修改。
           </p>
         </div>
