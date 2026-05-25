@@ -3,7 +3,7 @@
 ## 1. 项目概述 (Project Overview)
 
 - **核心定位**：基于 TypeScript 的自动化小说爬虫与多格式导出工具。
-- **主要功能**：通过 Web 管控界面调度爬虫，抓取小说内容并持久化至本地 SQLite，支持离线阅读与多格式导出（Markdown、EPUB、TXT）。
+- **主要功能**：通过 Web 管控界面调度爬虫，抓取小说内容并持久化至本地 SQLite，支持离线阅读、多格式导出（Markdown、EPUB、TXT）、AI 翻译与知识图谱分析。
 - **架构模式**：前后端分离但合并部署的 B/S 架构。
   - **前端 (src/web)**：纯视图层，负责参数配置、目录浏览、实时监控与任务调度。
   - **后端 (src/server)**：核心执行层，负责爬虫调度、网页解析、SQLite 持久化、文件导出与 SSE 事件推送。后端任务完全独立于前端会话，前端关闭不影响任务执行。
@@ -14,7 +14,7 @@
 |---|---|
 | 后端 | Node.js ≥ 20, Express 5, `better-sqlite3`, `cheerio` |
 | 前端 | React 19, Vite 6, TypeScript strict 模式 |
-| AI / 图谱 | `ai` (Vercel AI SDK), `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `ai-sdk-ollama`, `neo4j-driver`, `zod`, `jsonrepair` |
+| AI / 图谱 / 翻译 | `ai` (Vercel AI SDK), `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `ai-sdk-ollama`, `@langchain/core`, `@langchain/langgraph`, `neo4j-driver`, `zod`, `jsonrepair` |
 | 导出 | `jszip`（EPUB 打包） |
 | 工程化 | `tsx` (watch + test runner), `concurrently`, Docker multi-stage build |
 
@@ -36,15 +36,21 @@
 │   │   │   ├── spider.ts              # SpiderAdapter 接口 + BaseHtmlSpiderAdapter 抽象类
 │   │   │   ├── spider-runner.ts       # 批量抓取调度器（含并发、重试、异常隔离）
 │   │   │   ├── control-center.ts      # ControlCenterService（任务生命周期、Spider 注册表）
-│   │   │   ├── novel-repository.ts    # SQLite ORM（SqliteNovelRepository，含图谱/偏好/书签等表）
+│   │   │   ├── novel-repository.ts    # SQLite ORM（SqliteNovelRepository，含图谱/偏好/书签/翻译等表）
 │   │   │   ├── offline-library.ts     # 离线书库服务（章节详情、媒体资产、别名、书签、进度）
-│   │   │   ├── export-engine.ts       # 本地导出引擎（Markdown / EPUB / TXT）
+│   │   │   ├── export-engine.ts       # 本地导出引擎（Markdown / EPUB / TXT，含翻译模式）
 │   │   │   ├── network-proxy.ts       # 网络代理服务（持久化至 .data/network-proxy.json）
 │   │   │   ├── logging.ts             # SpiderLogDispatcher + SpiderLogAdapter 接口
-│   │   │   ├── system-preferences.ts  # 系统偏好服务（LLM 配置、Neo4j、阅读排版）
+│   │   │   ├── system-preferences.ts  # 系统偏好服务（LLM 配置、Neo4j、阅读排版、翻译偏好）
 │   │   │   ├── library-intelligence.ts # 知识图谱与 AI 伴读核心服务
 │   │   │   ├── library-intelligence-rag.ts # 图谱提取与 RAG 检索底层实现
-│   │   │   └── library-search.ts      # 本地书库多维度搜索与相关性排序
+│   │   │   ├── library-search.ts      # 本地书库多维度搜索与相关性排序
+│   │   │   ├── translation-pipeline.ts # LangGraph 翻译流水线（分段→翻译→组装→定稿）
+│   │   │   ├── translation-runner.ts  # 翻译任务调度器（并发、重试、异常隔离）
+│   │   │   ├── translation-service.ts # 翻译生命周期管理（启动/取消/进度查询/术语库 CRUD）
+│   │   │   ├── translation-state.ts   # 翻译状态类型定义（段落、草稿、术语条目）
+│   │   │   └── translation/           # 翻译流水线子节点
+│   │   │       └── nodes/             # segment / translate / assemble / review / finalize / history-manager / llm-logger
 │   │   ├── routes/
 │   │   │   ├── control-center.ts  # /api/control 路由
 │   │   │   ├── library.ts         # /api/library 路由
@@ -66,9 +72,13 @@
 │       │   ├── library-intelligence-panel.tsx # AI 伴读对话面板
 │       │   ├── reader-typography-panel.tsx # 阅读器排版偏好
 │       │   ├── font-family-picker.tsx     # 字体族选择器
+│       │   ├── language-picker.tsx        # 翻译源/目标语言选择器
 │       │   ├── network-proxy-panel.tsx    # 网络代理配置
 │       │   ├── notification-center.tsx    # 全局通知吐司
-│       │   └── status-panel.tsx           # 状态摘要卡片
+│       │   ├── reader-fab-bar.tsx         # 阅读器悬浮快捷按钮栏
+│       │   ├── status-panel.tsx           # 状态摘要卡片
+│       │   ├── translation-launch-panel.tsx  # 翻译任务发起面板
+│       │   └── translation-profile-panel.tsx # 翻译配置与进度面板
 │       ├── services/              # API 封装（api.ts）+ 视图模型
 │       ├── App.tsx                # 路由配置入口
 │       └── vite.config.ts
@@ -122,10 +132,11 @@
 
 ### 4.7 系统偏好：SystemPreferencesService
 
-- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理三类全局配置，均持久化至 `.data/system-preferences.json`：
+- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理四类全局配置，均持久化至 `.data/system-preferences.json`：
   - **LLM 提供商配置**（`LlmProviderConfig`）：支持 openai-compatible / anthropic / google-generative-ai / ollama 四种类型，每个提供商可配置多个模型，每个模型可手动或自动映射能力标签（chat / embedding / rerank）。
   - **Neo4j 图数据库连接**（`Neo4jConfig`）：URI、用户名、密码，支持连接验证。
   - **阅读器排版偏好**（`ReaderTypographyConfig`）：全局默认字体族、字号、行高、段间距。
+  - **翻译偏好**（`TranslationPreferencesConfig`）：默认源语言、目标语言、翻译模型、段落并发数等。
 - LLM API Key 以明文存储于 JSON 文件中，注意安全边界。
 - 模型能力检测通过发送轻量 API 请求验证，结果缓存在内存中。
 
@@ -137,6 +148,7 @@
 - 构建过程可暂停/恢复，状态持久化至 SQLite。每个小说可独立配置抽取模型池与并发数。
 - AI 伴读采用混合检索：元数据 + 图谱子图 + 章节块（关键词评分 + 向量余弦相似度 + 可选重排序）。
 - OpenAI 兼容接口需确保 base URL 包含 `/v1` 路径（若原始 URL 无 path 则自动补齐）。
+- 支持将本地图谱数据同步至 Neo4j 图数据库（`POST .../graph/sync-neo4j`），用于与外部工具联动分析。
 - 图谱功能为 **实验性**，未经用户明确要求不得主动启用或宣传为稳定功能。
 
 ### 4.9 书库搜索：LibrarySearch
@@ -144,6 +156,24 @@
 - `searchLibraryNovels()`（`src/server/core/library-search.ts`）实现结构化查询解析器。
 - 支持字段限定搜索（`name:`、`author:`、`tag:`、`site:`、`alias:` 等），逻辑运算符 `+`（与）、`,`（或）、`-`（非），以及括号分组。
 - 搜索结果按相关性评分降序排列，同分按更新时间倒序。
+
+### 4.10 翻译流水线：TranslationService
+
+- `TranslationService`（`src/server/core/translation-service.ts`）管理翻译任务的全生命周期：启动、取消、进度查询、术语库管理。
+- `TranslationRunner`（`src/server/core/translation-runner.ts`）负责调度翻译任务，控制并发数与重试策略，单章失败不阻塞整体任务。
+- `TranslationPipeline`（`src/server/core/translation-pipeline.ts`）使用 LangGraph 实现分段→翻译→组装→定稿的流水线。
+- 流水线子节点位于 `src/server/core/translation/nodes/`：
+  - `segment-node.ts`：按自然段拆分原文
+  - `translate-node.ts`：调用 LLM 逐段翻译（含术语注入与上下文历史管理）
+  - `assemble-node.ts`：组装译文章节级结构
+  - `finalize-node.ts`：落盘译文至 SQLite
+  - `history-manager.ts`：管理翻译上下文窗口（按 Token 数截断历史记录）
+  - `llm-logger.ts`：记录 LLM 交互日志，便于调试与审计
+- 翻译状态类型定义在 `src/server/core/translation-state.ts`，涵盖段落草稿（`ParagraphDraft`）、章节翻译进度、术语条目（`TranslationTermEntry`）。
+- 每本小说拥有独立的术语库，支持 CRUD 操作（`GET/POST/PUT/DELETE .../translate/terms`）。
+- 翻译任务支持 `fromScratch` 参数从零重译，可覆盖指定模型（`modelOverride`）。
+- 导出引擎（`export-engine.ts`）支持三种翻译导出模式：`original`（原文）、`translated`（纯译文）、`bilingual`（双语对照），通过 `?mode=` 查询参数控制。
+- 翻译相关测试集中在 `src/server/core/translation.test.ts`，应使用 SQLite 内存数据库，**不得**依赖真实 LLM 调用。
 
 ## 5. API 路由速查 (API Routes)
 
@@ -162,6 +192,7 @@
 | GET/PUT | `/api/control/preferences/neo4j` | 读取/更新 Neo4j 连接配置 |
 | POST | `/api/control/preferences/neo4j/validate` | 验证 Neo4j 连接 |
 | GET/PUT | `/api/control/preferences/reader-typography` | 读取/更新全局阅读排版偏好 |
+| GET/PUT | `/api/control/preferences/translation` | 读取/更新翻译偏好配置 |
 | GET | `/api/library/novels` | 书库列表（支持 `?q=` 搜索） |
 | GET | `/api/library/novels/:sourceId/:novelId` | 书库单本详情（含知识图谱状态） |
 | GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId` | 章节内容 |
@@ -172,6 +203,7 @@
 | POST | `/api/library/novels/:sourceId/:novelId/graph/pause` | 暂停图谱构建 |
 | POST | `/api/library/novels/:sourceId/:novelId/graph/resume` | 恢复图谱构建 |
 | DELETE | `/api/library/novels/:sourceId/:novelId/graph` | 清除图谱数据 |
+| POST | `/api/library/novels/:sourceId/:novelId/graph/sync-neo4j` | 同步本地图谱至 Neo4j |
 | POST | `/api/library/novels/:sourceId/:novelId/assistant/chat` | AI 伴读问答 |
 | POST | `/api/library/novels/:sourceId/:novelId/aliases` | 创建书籍别名 |
 | PUT | `/api/library/novels/:sourceId/:novelId/aliases/:aliasId` | 更新别名 |
@@ -185,6 +217,15 @@
 | POST | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId/media/:mediaId/cache` | 缓存单张图片 |
 | POST | `/api/library/novels/:sourceId/:novelId/media/cache` | 批量缓存全书图片 |
 | GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId/media/:mediaId/file` | 获取缓存图片文件 |
+| POST | `/api/library/novels/:sourceId/:novelId/translate/start` | 启动翻译任务 |
+| POST | `/api/library/novels/:sourceId/:novelId/translate/cancel` | 取消翻译任务 |
+| GET | `/api/library/novels/:sourceId/:novelId/translate/build` | 获取翻译任务状态与进度 |
+| GET/PUT | `/api/library/novels/:sourceId/:novelId/translate/profile` | 读取/更新翻译配置 |
+| GET | `/api/library/novels/:sourceId/:novelId/translate/chapters/:chapterId` | 获取章节翻译详情 |
+| GET | `/api/library/novels/:sourceId/:novelId/translate/terms` | 获取术语库列表 |
+| POST | `/api/library/novels/:sourceId/:novelId/translate/terms` | 创建术语条目 |
+| PUT | `/api/library/novels/:sourceId/:novelId/translate/terms/:termId` | 更新术语条目 |
+| DELETE | `/api/library/novels/:sourceId/:novelId/translate/terms/:termId` | 删除术语条目 |
 
 ## 6. 编码规范 (Coding Standards)
 
@@ -216,4 +257,5 @@
 - **知识图谱与 AI 伴读**：相关功能为实验性，未经用户明确要求不得主动启用。新增图谱相关代码时需同步更新 `novel-repository.ts` 中的表结构与迁移逻辑。图谱构建测试应使用 SQLite 内存数据库，不得依赖真实 Neo4j 或 LLM 调用。
 - **系统偏好**：新增偏好字段需在 `SystemPreferencesService` 中定义接口与持久化逻辑，并在前端 `SystemPreferences` 组件中提供对应 UI。偏好迁移策略（新增字段默认值）需在 `system-preferences.ts` 中显式处理。
 - **书库搜索**：搜索语法变更需同步更新 `library-search.ts` 中的分词器与解析器，并补充测试覆盖。
+- **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
