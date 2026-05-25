@@ -647,6 +647,21 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
                                 placeholder={selectedProvider.type === 'anthropic' ? 'claude-sonnet-4-5' : selectedProvider.type === 'google-generative-ai' ? 'gemini-2.5-flash' : selectedProvider.type === 'ollama' ? 'llama3.2 / bge-reranker-v2-m3' : 'gpt-4o-mini'}
                               />
                             </label>
+                            {resolvedCapabilities.includes('chat') ? (
+                              <label>
+                                <span>上下文 Token 上限（0=不限制，按条目数截断）</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={10000}
+                                  value={model.contextWindowTokens ?? 0}
+                                  onChange={(event) =>
+                                    updateModelField(setDraft, selectedProvider.id, model.id, 'contextWindowTokens', Number(event.target.value) || 0)
+                                  }
+                                  placeholder="如 DeepSeek V3 填 1000000"
+                                />
+                              </label>
+                            ) : null}
                             <label>
                               <span>能力来源</span>
                               <select

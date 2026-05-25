@@ -26,7 +26,7 @@ import type {
   TranslationTaskStatus,
   TranslationChapterFailure,
 } from './translation-runner';
-import { createTranslationPipelineGraph } from './translation-pipeline';
+import { createTranslationPipelineGraph, resolveTranslationModel } from './translation-pipeline';
 import type { TranslationPipelineState } from './translation-state';
 import { TranslationHistoryManager } from './translation/nodes/history-manager';
 import { LlmInteractionLogger } from './translation/nodes/llm-logger';
@@ -499,7 +499,23 @@ export class TranslationService {
     const terms = this.#repository.listTranslationTerms(sourceId, novelId);
     const profile = this.getTranslationProfile(sourceId, novelId);
     const paragraphsPerBatch = profile?.translationConcurrency ?? 2;
-    const historyManager = new TranslationHistoryManager(200); // DeepSeek 1M 上下文可容纳大量历史
+
+    // 解析翻译模型的上下文窗口设置（若配置了则按 Token 截断，否则按条目数）
+    let contextWindowTokens = 0;
+    try {
+      const llmState = this.#preferences.getLlmState();
+      const modelRoute = resolveTranslationModel(this.#preferences, modelOverride);
+      if (modelRoute) {
+        const provider = llmState.providers.find((p) => p.id === modelRoute.providerId);
+        const model = provider?.models.find((m) => m.id === modelRoute.modelId);
+        contextWindowTokens = model?.contextWindowTokens ?? 0;
+      }
+    } catch { /* ignore */ }
+
+    const historyManager = new TranslationHistoryManager(
+      contextWindowTokens > 0 ? 999999 : 200, // Token 模式：极大条目数，由 Token 限制控制
+      contextWindowTokens,
+    );
     const llmLogger = new LlmInteractionLogger(
       undefined,
       this.#preferences.getTranslationState().config.enableLlmInteractionLog,

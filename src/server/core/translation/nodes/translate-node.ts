@@ -198,17 +198,42 @@ async function translateBatch(
       });
       const callDuration = Date.now() - callStart;
 
-      // 打印 DeepSeek 缓存命中信息（若有）
+      // 打印 DeepSeek 缓存命中信息
+      // @ai-sdk/deepseek 会放在 providerMetadata.deepseek 中；
+      // 用 createOpenAI 时字段在原始响应的 response.body.usage 中
       try {
-        const usage = (result as unknown as Record<string, unknown>).usage as Record<string, unknown> | undefined;
-        if (usage) {
-          const hit = usage.prompt_cache_hit_tokens as number | undefined;
-          const miss = usage.prompt_cache_miss_tokens as number | undefined;
-          if (typeof hit === 'number' || typeof miss === 'number') {
-            const total = (hit ?? 0) + (miss ?? 0);
-            const rate = total > 0 ? Math.round(((hit ?? 0) / total) * 100) : 0;
-            console.log(`[translation] DS Cache: hit=${hit ?? '?'} miss=${miss ?? '?'} total=${total} rate=${rate}%`);
+        const raw = result as unknown as Record<string, unknown>;
+        const providerMeta = raw.providerMetadata as Record<string, Record<string, number>> | undefined;
+        let hit: number | undefined;
+        let miss: number | undefined;
+
+        // 路径 1: providerMetadata.deepseek / providerMetadata.<name>
+        if (providerMeta) {
+          for (const key of Object.keys(providerMeta)) {
+            const val = providerMeta[key];
+            if (val && typeof val.promptCacheHitTokens === 'number') {
+              hit = val.promptCacheHitTokens;
+              miss = val.promptCacheMissTokens as number | undefined;
+              break;
+            }
           }
+        }
+
+        // 路径 2: response.body.usage.prompt_cache_hit_tokens（原始 HTTP 响应）
+        if (typeof hit !== 'number') {
+          const resp = raw.response as Record<string, unknown> | undefined;
+          const body = resp?.body as Record<string, unknown> | undefined;
+          const usage = body?.usage as Record<string, number> | undefined;
+          if (usage) {
+            hit = usage.prompt_cache_hit_tokens;
+            miss = usage.prompt_cache_miss_tokens;
+          }
+        }
+
+        if (typeof hit === 'number' || typeof miss === 'number') {
+          const total = (hit ?? 0) + (miss ?? 0);
+          const rate = total > 0 ? Math.round(((hit ?? 0) / total) * 100) : 0;
+          console.log(`[translation] DS Cache: hit=${hit ?? '?'} miss=${miss ?? '?'} total=${total} rate=${rate}%`);
         }
       } catch { /* ignore */ }
 

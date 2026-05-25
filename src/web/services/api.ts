@@ -51,6 +51,7 @@ export interface UpdateLlmModelInput {
   capabilityMode: ModelCapabilityMode;
   capabilities: ModelCapability[];
   defaultFor: ModelCapability[];
+  contextWindowTokens?: number;
 }
 
 export interface UpdateLlmProviderInput {

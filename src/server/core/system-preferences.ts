@@ -24,6 +24,7 @@ export interface LlmModelConfigInput {
   capabilityMode?: ModelCapabilityMode;
   capabilities?: ModelCapability[];
   defaultFor?: ModelCapability[];
+  contextWindowTokens?: number;
 }
 
 export interface LlmProviderConfigInput {
@@ -45,6 +46,7 @@ interface StoredLlmModelConfig {
   capabilityMode: ModelCapabilityMode;
   capabilities: ModelCapability[];
   defaultFor: ModelCapability[];
+  contextWindowTokens: number;
 }
 
 interface StoredLlmProviderConfig {
@@ -633,6 +635,7 @@ function normalizeProviderInputs(inputs: LlmProviderConfigInput[]): StoredLlmPro
             capabilityMode: modelInput.capabilityMode ?? 'manual',
             capabilities: normalizeCapabilities(modelInput.capabilities ?? ['chat']),
             defaultFor: normalizeCapabilities(modelInput.defaultFor ?? []),
+            contextWindowTokens: modelInput.contextWindowTokens ?? 0,
           })),
         ),
       };
