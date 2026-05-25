@@ -4,6 +4,7 @@ import { LlmProviderPanel } from './llm-provider-panel';
 import { Neo4jPanel } from './neo4j-panel';
 import { NetworkProxyPanel } from './network-proxy-panel';
 import { ReaderTypographyPanel } from './reader-typography-panel';
+import { LanguagePicker } from './language-picker';
 import type {
   ControlCenterModel,
   NoticeInput,
@@ -21,8 +22,9 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
   const [llmOpen, setLlmOpen] = useState(false);
   const [neo4jOpen, setNeo4jOpen] = useState(false);
   const [readerOpen, setReaderOpen] = useState(false);
+  const [translationOpen, setTranslationOpen] = useState(false);
 
-  const foldStates = [crawlOpen, proxyOpen, llmOpen, neo4jOpen, readerOpen];
+  const foldStates = [crawlOpen, proxyOpen, llmOpen, neo4jOpen, readerOpen, translationOpen];
   const allExpanded = foldStates.every(Boolean);
   const allCollapsed = foldStates.every((open) => !open);
 
@@ -33,6 +35,7 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
     setLlmOpen(next);
     setNeo4jOpen(next);
     setReaderOpen(next);
+    setTranslationOpen(next);
   }
 
   return (
@@ -199,6 +202,175 @@ export function SystemPreferences({ model, onOpenControl, onNotify }: SystemPref
           </div>
         ) : null}
       </section>
+
+      <section className="fold-card">
+        <div className="fold-header">
+          <div>
+            <p className="eyebrow">翻译默认值</p>
+            <h2>全局翻译偏好</h2>
+            <p className="panel-note">为新建翻译任务设定默认语言对、模型路径和质量阈值。每本书可以在详情页单独覆盖。</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={() => setTranslationOpen((current) => !current)}>
+            {translationOpen ? '收起' : '展开'}
+          </button>
+        </div>
+
+        {translationOpen ? (
+          <div className="fold-content">
+            <TranslationPreferencesSection onNotice={onNotify} />
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function TranslationPreferencesSection({ onNotice }: { onNotice: (n: NoticeInput) => void }) {
+  const [sourceLang, setSourceLang] = useState('ja');
+  const [targetLang, setTargetLang] = useState('zh-CN');
+  const [concurrency, setConcurrency] = useState(2);
+  const [qualityThreshold, setQualityThreshold] = useState(0.8);
+  const [autoRejectUntranslated, setAutoRejectUntranslated] = useState(true);
+  const [defaultExport, setDefaultExport] = useState<'original' | 'translated' | 'bilingual'>('original');
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [availableChatModels, setAvailableChatModels] = useState<Array<{ providerLabel: string; providerId: string; modelId: string; modelLabel: string }>>([]);
+  const [translateModelKey, setTranslateModelKey] = useState('');
+  const [reviewModelKey, setReviewModelKey] = useState('');
+
+  // Load existing prefs on mount
+  if (!loaded) {
+    setLoaded(true);
+    Promise.all([
+      import('../services/api').then(({ fetchTranslationPreferences }) => fetchTranslationPreferences()),
+      import('../services/api').then(({ fetchLlmProvidersPreferences }) => fetchLlmProvidersPreferences()),
+    ]).then(
+      ([prefs, llmPayload]) => {
+        setSourceLang(prefs.config.sourceLang);
+        setTargetLang(prefs.config.targetLang);
+        setConcurrency(prefs.config.translationConcurrency);
+        setQualityThreshold(prefs.config.qualityThreshold);
+        setAutoRejectUntranslated(prefs.config.autoRejectUntranslatedTerms);
+        setDefaultExport(prefs.config.defaultExportMode);
+
+        // 提取所有启用且有 chat 能力的模型
+        const models: typeof availableChatModels = [];
+        for (const p of llmPayload.providers) {
+          if (!p.enabled) continue;
+          for (const m of p.models) {
+            if (!m.enabled || !m.modelId) continue;
+            if (m.resolvedCapabilities.includes('chat')) {
+              models.push({
+                providerLabel: p.label,
+                providerId: p.id,
+                modelId: m.modelId,
+                modelLabel: m.label || m.modelId,
+              });
+            }
+          }
+        }
+        setAvailableChatModels(models);
+      },
+      () => {},
+    );
+  }
+
+  async function handleSave() {
+    setBusy(true);
+    try {
+      const { updateTranslationPreferences } = await import('../services/api');
+      await updateTranslationPreferences({
+        sourceLang,
+        targetLang,
+        translationConcurrency: concurrency,
+        qualityThreshold,
+        autoRejectUntranslatedTerms: autoRejectUntranslated,
+        defaultExportMode: defaultExport,
+      });
+      onNotice({ tone: 'success', title: '已保存', message: '全局翻译默认值已更新。' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存失败';
+      onNotice({ tone: 'error', title: '保存失败', message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="panel preferences-panel">
+      <div className="preferences-grid">
+        <label>
+          <span>源语言</span>
+          <LanguagePicker value={sourceLang} onChange={setSourceLang} placeholder="ja" />
+        </label>
+        <label>
+          <span>目标语言</span>
+          <LanguagePicker value={targetLang} onChange={setTargetLang} placeholder="zh-CN" />
+        </label>
+        <label>
+          <span>翻译并发数</span>
+          <input type="number" min={1} max={8} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value) || 1)} />
+        </label>
+        <label>
+          <span>质量阈值 (0-1)</span>
+          <input type="number" min={0} max={1} step={0.05} value={qualityThreshold} onChange={(e) => setQualityThreshold(Number(e.target.value) || 0.8)} />
+        </label>
+      </div>
+
+      {/* 可用模型提示 */}
+      <div className="card" style={{ marginTop: '0.75rem' }}>
+        <p className="label">可用翻译模型</p>
+        {availableChatModels.length === 0 ? (
+          <p className="panel-note" style={{ color: 'var(--danger)' }}>
+            ⚠️ 尚未配置可用的翻译模型。请先在「大模型服务提供商」中启用至少一个带有 chat 能力的模型，否则翻译将无法执行。
+          </p>
+        ) : (
+          <>
+            <p className="panel-note">
+              以下模型已启用并可自动用于翻译。系统会优先使用配置的第一个 chat 模型。
+            </p>
+            <div className="tag-row" style={{ marginTop: '0.35rem' }}>
+              {availableChatModels.slice(0, 6).map((m) => (
+                <span key={`${m.providerId}:${m.modelId}`} className="tag">{m.providerLabel} / {m.modelLabel}</span>
+              ))}
+              {availableChatModels.length > 6 ? (
+                <span className="tag">+{availableChatModels.length - 6} 更多</span>
+              ) : null}
+            </div>
+          </>
+        )}
+      </div>
+
+      <label className="checkbox-field" style={{ marginTop: '0.75rem' }}>
+        <input type="checkbox" checked={autoRejectUntranslated} onChange={(e) => setAutoRejectUntranslated(e.target.checked)} />
+        <span>术语缺译时阻断正文翻译流程</span>
+      </label>
+
+      <div style={{ marginTop: '0.75rem' }}>
+        <span className="label">默认导出模式</span>
+        <div className="chip-row" style={{ marginTop: '0.25rem' }}>
+          {(['original', 'translated', 'bilingual'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={`preset-chip${defaultExport === mode ? ' active' : ''}`}
+              onClick={() => setDefaultExport(mode)}
+            >
+              {mode === 'original' ? '原文' : mode === 'translated' ? '纯译文' : '双语对照'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="action-row" style={{ marginTop: '1rem' }}>
+        <button type="button" className="primary-button" disabled={busy} onClick={handleSave}>
+          {busy ? '保存中…' : '保存翻译默认值'}
+        </button>
+      </div>
+
+      <p className="panel-note" style={{ marginTop: '0.75rem' }}>
+        提示：翻译和审校模型位置在「大模型服务提供商」中统一管理。启用至少一个 chat 模型后，翻译即可正常工作。
+      </p>
     </div>
   );
 }

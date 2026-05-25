@@ -215,6 +215,109 @@ export function resolveEffectiveReaderTypography(
   };
 }
 
+// ── 翻译全局偏好 ──
+
+export type TranslationLanguageCode = string;
+export type TranslationExportMode = 'original' | 'translated' | 'bilingual';
+export type TranslationLanguagePreset = 'ja→zh-CN';
+
+export interface TranslationDefaultModelRouteInput {
+  providerId?: string;
+  modelId?: string;
+}
+
+export interface TranslationPreferencesInput {
+  sourceLang?: TranslationLanguageCode;
+  targetLang?: TranslationLanguageCode;
+  termExtractionModel?: TranslationDefaultModelRouteInput | null;
+  translationModels?: TranslationDefaultModelRouteInput[];
+  reviewModel?: TranslationDefaultModelRouteInput | null;
+  translationConcurrency?: number;
+  qualityThreshold?: number;
+  autoRejectUntranslatedTerms?: boolean;
+  defaultExportMode?: TranslationExportMode;
+}
+
+export interface TranslationPreferencesConfig {
+  sourceLang: TranslationLanguageCode;
+  targetLang: TranslationLanguageCode;
+  termExtractionModel: TranslationDefaultModelRouteInput | null;
+  translationModels: TranslationDefaultModelRouteInput[];
+  reviewModel: TranslationDefaultModelRouteInput | null;
+  translationConcurrency: number;
+  qualityThreshold: number;
+  autoRejectUntranslatedTerms: boolean;
+  defaultExportMode: TranslationExportMode;
+}
+
+export interface TranslationPreferencesState {
+  config: TranslationPreferencesConfig;
+  updatedAt: string | null;
+}
+
+export const TRANSLATION_LANGUAGE_PRESETS: Record<TranslationLanguagePreset, { sourceLang: TranslationLanguageCode; targetLang: TranslationLanguageCode }> = {
+  'ja→zh-CN': { sourceLang: 'ja', targetLang: 'zh-CN' },
+};
+
+export const TRANSLATION_DEFAULTS: TranslationPreferencesConfig = {
+  sourceLang: 'ja',
+  targetLang: 'zh-CN',
+  termExtractionModel: null,
+  translationModels: [],
+  reviewModel: null,
+  translationConcurrency: 2,
+  qualityThreshold: 0.8,
+  autoRejectUntranslatedTerms: true,
+  defaultExportMode: 'original',
+};
+
+export function normalizeTranslationPreferencesInput(input: TranslationPreferencesInput): TranslationPreferencesConfig {
+  const termExtractionModel = input.termExtractionModel === null
+    ? null
+    : (typeof input.termExtractionModel === 'object' && input.termExtractionModel !== null
+      ? buildModelRouteFromInput(input.termExtractionModel as Record<string, unknown>)
+      : TRANSLATION_DEFAULTS.termExtractionModel);
+
+  const reviewModel = input.reviewModel === null
+    ? null
+    : (typeof input.reviewModel === 'object' && input.reviewModel !== null
+      ? buildModelRouteFromInput(input.reviewModel as Record<string, unknown>)
+      : TRANSLATION_DEFAULTS.reviewModel);
+
+  return {
+    sourceLang: typeof input.sourceLang === 'string' ? input.sourceLang.trim() || TRANSLATION_DEFAULTS.sourceLang : TRANSLATION_DEFAULTS.sourceLang,
+    targetLang: typeof input.targetLang === 'string' ? input.targetLang.trim() || TRANSLATION_DEFAULTS.targetLang : TRANSLATION_DEFAULTS.targetLang,
+    termExtractionModel,
+    translationModels: Array.isArray(input.translationModels)
+      ? input.translationModels.filter((m): m is TranslationDefaultModelRouteInput => typeof m === 'object' && m !== null)
+      : [],
+    reviewModel,
+    translationConcurrency: typeof input.translationConcurrency === 'number' && Number.isFinite(input.translationConcurrency)
+      ? Math.max(1, Math.trunc(input.translationConcurrency))
+      : TRANSLATION_DEFAULTS.translationConcurrency,
+    qualityThreshold: typeof input.qualityThreshold === 'number' && Number.isFinite(input.qualityThreshold)
+      ? Math.max(0, Math.min(1, input.qualityThreshold))
+      : TRANSLATION_DEFAULTS.qualityThreshold,
+    autoRejectUntranslatedTerms: typeof input.autoRejectUntranslatedTerms === 'boolean'
+      ? input.autoRejectUntranslatedTerms
+      : TRANSLATION_DEFAULTS.autoRejectUntranslatedTerms,
+    defaultExportMode: input.defaultExportMode === 'original' || input.defaultExportMode === 'translated' || input.defaultExportMode === 'bilingual'
+      ? input.defaultExportMode
+      : TRANSLATION_DEFAULTS.defaultExportMode,
+  };
+}
+
+function buildModelRouteFromInput(raw: Record<string, unknown>): TranslationDefaultModelRouteInput {
+  const result: TranslationDefaultModelRouteInput = {};
+  if (typeof raw.providerId === 'string') {
+    result.providerId = raw.providerId;
+  }
+  if (typeof raw.modelId === 'string') {
+    result.modelId = raw.modelId;
+  }
+  return result;
+}
+
 export function normalizeReaderTypographyInput(input: ReaderTypographyConfigInput): ReaderTypographyConfig {
   return {
     fontSize: typeof input.fontSize === 'number' ? clampFontSize(input.fontSize) : READER_TYPOGRAPHY_DEFAULTS.fontSize,
@@ -258,6 +361,7 @@ interface PersistedSystemPreferences {
   llmProviders: LlmProviderConfigInput[];
   neo4j: Neo4jConfigInput & { updatedAt?: string | null };
   readerTypography?: ReaderTypographyConfigInput;
+  translation?: TranslationPreferencesInput;
   updatedAt: string | null;
 }
 
@@ -274,6 +378,8 @@ export class SystemPreferencesService {
   #neo4jValidation: Neo4jValidationResult | null = null;
   #readerTypography: ReaderTypographyConfig;
   #readerTypographyUpdatedAt: string | null = null;
+  #translation: TranslationPreferencesConfig;
+  #translationUpdatedAt: string | null = null;
   #updatedAt: string | null;
 
   constructor(options: SystemPreferencesServiceOptions = {}) {
@@ -290,6 +396,8 @@ export class SystemPreferencesService {
     };
     this.#readerTypography = normalizeReaderTypographyInput(persisted?.readerTypography ?? {});
     this.#readerTypographyUpdatedAt = persisted?.readerTypography ? (persisted.updatedAt ?? null) : null;
+    this.#translation = normalizeTranslationPreferencesInput(persisted?.translation ?? {});
+    this.#translationUpdatedAt = persisted?.translation ? (persisted.updatedAt ?? null) : null;
     this.#updatedAt = persisted?.updatedAt ?? null;
   }
 
@@ -307,7 +415,7 @@ export class SystemPreferencesService {
     this.#llmProviders = normalizeProviderInputs(inputs);
     this.#llmValidations = filterValidations(this.#llmValidations, this.#llmProviders);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
     return this.getLlmState();
   }
 
@@ -415,7 +523,7 @@ export class SystemPreferencesService {
     };
     this.#neo4jValidation = null;
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
     return this.getNeo4jState();
   }
 
@@ -465,8 +573,23 @@ export class SystemPreferencesService {
     this.#readerTypography = normalizeReaderTypographyInput(input);
     this.#readerTypographyUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
     return this.getReaderTypography();
+  }
+
+  getTranslationState(): TranslationPreferencesState {
+    return {
+      config: { ...this.#translation },
+      updatedAt: this.#translationUpdatedAt,
+    };
+  }
+
+  updateTranslationPreferences(input: TranslationPreferencesInput): TranslationPreferencesState {
+    this.#translation = normalizeTranslationPreferencesInput(input);
+    this.#translationUpdatedAt = new Date().toISOString();
+    this.touch();
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
+    return this.getTranslationState();
   }
 
   private touch(): void {
@@ -1209,6 +1332,7 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       llmProviders?: unknown;
       neo4j?: unknown;
       readerTypography?: unknown;
+      translation?: unknown;
       updatedAt?: unknown;
     };
 
@@ -1249,6 +1373,10 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       result.readerTypography = readerTypography;
     }
 
+    if (isRecord(parsed.translation)) {
+      result.translation = parsed.translation as TranslationPreferencesInput;
+    }
+
     return result;
   } catch {
     return null;
@@ -1261,6 +1389,7 @@ function persistPreferences(
   neo4jConfig: Neo4jConfig,
   updatedAt: string | null,
   readerTypography?: ReaderTypographyConfig,
+  translation?: TranslationPreferencesConfig,
 ): void {
   if (!storageFilePath) {
     return;
@@ -1282,6 +1411,10 @@ function persistPreferences(
 
   if (readerTypography) {
     payload.readerTypography = readerTypography;
+  }
+
+  if (translation) {
+    payload.translation = translation;
   }
 
   fs.writeFileSync(

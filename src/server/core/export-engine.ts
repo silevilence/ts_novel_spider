@@ -10,6 +10,14 @@ export const LIBRARY_EXPORT_FORMATS = ['markdown', 'txt', 'epub'] as const;
 
 export type LibraryExportFormat = (typeof LIBRARY_EXPORT_FORMATS)[number];
 
+export const LIBRARY_EXPORT_TRANSLATION_MODES = ['original', 'translated', 'bilingual'] as const;
+
+export type LibraryExportTranslationMode = (typeof LIBRARY_EXPORT_TRANSLATION_MODES)[number];
+
+export function isLibraryExportTranslationMode(value: unknown): value is LibraryExportTranslationMode {
+  return typeof value === 'string' && (LIBRARY_EXPORT_TRANSLATION_MODES as readonly string[]).includes(value);
+}
+
 export interface GeneratedLibraryExport {
   format: LibraryExportFormat;
   fileName: string;
@@ -33,6 +41,14 @@ interface PreparedMediaAsset {
   mediaType: string;
 }
 
+/** 段落级翻译数据（注入导出上下文） */
+export interface TranslatedParagraph {
+  paragraphIndex: number;
+  sourceText: string;
+  translatedText: string | null;
+  confidence: number | null;
+}
+
 interface ExportRenderContext {
   snapshot: StoredNovelSnapshot;
   chapters: StoredChapterRecord[];
@@ -43,6 +59,10 @@ interface ExportRenderContext {
     chapters: StoredChapterRecord[];
   }>;
   assetsByChapterId: Map<string, PreparedMediaAsset[]>;
+  /** 导出语言模式：original（默认）、translated、bilingual */
+  translationMode: LibraryExportTranslationMode;
+  /** 章节 ID → 段落翻译列表 */
+  translatedParagraphsByChapterId: Map<string, TranslatedParagraph[]>;
 }
 
 interface StrategyOutput {
@@ -61,6 +81,11 @@ const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?
 const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
 const CHAPTER_SECTION_DIVIDER = '---';
 
+export interface ExportTranslationOptions {
+  mode: LibraryExportTranslationMode;
+  translatedParagraphsByChapterId: Map<string, TranslatedParagraph[]>;
+}
+
 export class LocalExportEngine {
   readonly #outputRoot: string;
   readonly #assetService: OfflineLibraryAssetService;
@@ -77,14 +102,18 @@ export class LocalExportEngine {
     fs.mkdirSync(this.#outputRoot, { recursive: true });
   }
 
-  async generate(snapshot: StoredNovelSnapshot, format: LibraryExportFormat): Promise<GeneratedLibraryExport> {
+  async generate(
+    snapshot: StoredNovelSnapshot,
+    format: LibraryExportFormat,
+    translation?: ExportTranslationOptions,
+  ): Promise<GeneratedLibraryExport> {
     const strategy = this.#strategies.get(format);
 
     if (!strategy) {
       throw new Error(`Unsupported export format: ${format}`);
     }
 
-    const context = this.prepareContext(snapshot);
+    const context = this.prepareContext(snapshot, translation);
     const output = await strategy.generate(context);
     const outputDirectory = path.join(this.#outputRoot, snapshot.sourceId, snapshot.metadata.novelId);
     const filePath = path.join(outputDirectory, output.fileName);
@@ -102,7 +131,10 @@ export class LocalExportEngine {
     };
   }
 
-  private prepareContext(snapshot: StoredNovelSnapshot): ExportRenderContext {
+  private prepareContext(
+    snapshot: StoredNovelSnapshot,
+    translation?: ExportTranslationOptions,
+  ): ExportRenderContext {
     const chapters = snapshot.chapters.filter((chapter) => typeof chapter.content === 'string' && chapter.content.trim().length > 0);
 
     if (chapters.length === 0) {
@@ -137,6 +169,8 @@ export class LocalExportEngine {
       chapters,
       volumeGroups,
       assetsByChapterId,
+      translationMode: translation?.mode ?? 'original',
+      translatedParagraphsByChapterId: translation?.translatedParagraphsByChapterId ?? new Map(),
     };
   }
 }
@@ -348,6 +382,10 @@ function renderMarkdownDocument(context: ExportRenderContext): string {
     lines.push(`- 标签：${context.snapshot.metadata.tags.join(' / ')}`);
   }
 
+  if (context.translationMode !== 'original') {
+    lines.push(`- 导出模式：${context.translationMode === 'translated' ? '纯译文' : '双语对照'}`);
+  }
+
   lines.push('', '## 简介', '', context.snapshot.metadata.description || '暂无简介。', '');
 
   for (const volume of context.volumeGroups) {
@@ -355,8 +393,10 @@ function renderMarkdownDocument(context: ExportRenderContext): string {
 
     for (const chapter of volume.chapters) {
       const assets = context.assetsByChapterId.get(chapter.id) ?? [];
+      const content = resolveChapterExportContent(context, chapter);
+
       lines.push(`### ${formatChapterHeading(chapter)}`, '');
-      lines.push(rewriteMarkdownContent(chapter.content ?? '', assets), '');
+      lines.push(rewriteMarkdownContent(content, assets), '');
     }
   }
 
@@ -374,7 +414,8 @@ function renderPlainTextDocument(context: ExportRenderContext): string {
 
   context.chapters.forEach((chapter, index) => {
     const chapterTitle = formatChapterHeading(chapter);
-    const paragraphs = splitParagraphs(chapter.content ?? '').map(normalizePlainParagraph);
+    const content = resolveChapterExportContent(context, chapter);
+    const paragraphs = splitParagraphs(content).map(normalizePlainParagraph);
     lines.push(chapterTitle);
     lines.push(...paragraphs);
 
@@ -413,9 +454,15 @@ function renderEpubChapter(
   chapterNumber: number,
 ): string {
   const assets = context.assetsByChapterId.get(chapter.id) ?? [];
-  const body = splitParagraphs(chapter.content ?? '')
+  const content = resolveChapterExportContent(context, chapter);
+  const body = splitParagraphs(content)
     .map((paragraph) => renderEpubParagraph(paragraph, assets))
     .join('\n      ');
+  const modeNote = context.translationMode === 'bilingual'
+    ? '<p class="meta">双语对照 · 原文<span style="opacity:0.55"> / 译文</span></p>'
+    : context.translationMode === 'translated'
+      ? '<p class="meta">译文</p>'
+      : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
@@ -427,6 +474,7 @@ function renderEpubChapter(
     <article>
       <h1>${escapeXml(formatChapterHeading(chapter))}</h1>
       <p class="meta">${escapeXml(volumeTitle)}</p>
+      ${modeNote}
       ${body}
     </article>
   </body>
@@ -534,6 +582,40 @@ function groupChaptersByVolume(chapters: StoredChapterRecord[]): Array<{
   }
 
   return groups;
+}
+
+/**
+ * 根据导出翻译模式解析章节内容。
+ *
+ * - `original`：返回原始章节内容。
+ * - `translated`：按段落拼接译文；无译文的段落保留原文。
+ * - `bilingual`：逐段输出「原文\n译文」对照格式。
+ */
+function resolveChapterExportContent(context: ExportRenderContext, chapter: StoredChapterRecord): string {
+  if (context.translationMode === 'original') {
+    return chapter.content ?? '';
+  }
+
+  const translatedParagraphs = context.translatedParagraphsByChapterId.get(chapter.id);
+  if (!translatedParagraphs || translatedParagraphs.length === 0) {
+    return chapter.content ?? '';
+  }
+
+  if (context.translationMode === 'translated') {
+    return translatedParagraphs
+      .map((tp) => tp.translatedText ?? tp.sourceText)
+      .join('\n\n');
+  }
+
+  // bilingual mode
+  return translatedParagraphs
+    .map((tp) => {
+      if (tp.translatedText) {
+        return `${tp.sourceText}\n\n${tp.translatedText}`;
+      }
+      return tp.sourceText;
+    })
+    .join('\n\n');
 }
 
 function rewriteMarkdownContent(content: string, assets: PreparedMediaAsset[]): string {

@@ -1547,6 +1547,47 @@ button:focus-visible {
   width: 100%;
 }
 
+.reader-fab-bar {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: var(--z-fab);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.65rem;
+}
+
+.reader-fab-item {
+  min-width: 88px;
+  min-height: var(--button-min-height);
+  padding: 0.75rem 1rem;
+  border-radius: var(--button-radius);
+  border: 1px solid rgba(158, 177, 196, 0.22);
+  background: rgba(5, 16, 27, 0.94);
+  color: var(--ink);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.36);
+  cursor: pointer;
+  transition: var(--button-transition);
+  font: inherit;
+  font-size: 0.92rem;
+}
+
+.reader-fab-item:hover {
+  border-color: var(--accent);
+  background: rgba(8, 24, 39, 0.98);
+  transform: translateY(-1px);
+}
+
+.reader-fab-item.accent {
+  background: linear-gradient(135deg, rgba(255, 140, 66, 0.96), rgba(127, 208, 255, 0.88));
+  color: #07131f;
+  font-weight: 700;
+  border-color: transparent;
+  box-shadow: 0 18px 42px rgba(2, 10, 18, 0.34);
+}
+
+/* ── 旧 FAB 样式保留为过渡（后续可移除） ── */
 .reader-directory-fab {
   position: fixed;
   right: 1.5rem;
@@ -1861,9 +1902,16 @@ button:focus-visible {
     align-items: stretch;
   }
 
-  .reader-directory-fab {
+  .reader-fab-bar {
     right: 1rem;
     bottom: 1rem;
+    gap: 0.5rem;
+  }
+
+  .reader-fab-item {
+    min-width: 72px;
+    padding: 0.65rem 0.85rem;
+    font-size: 0.85rem;
   }
 
   .page-nav-fab {
@@ -1897,6 +1945,69 @@ button:focus-visible {
 
   .toolbar-search {
     min-width: 100%;
+  }
+
+  .language-picker {
+    position: relative;
+  }
+
+  .language-picker-suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    margin: 4px 0 0;
+    padding: 0.4rem;
+    border-radius: 16px;
+    border: 1px solid var(--line-strong);
+    background: rgba(6, 18, 30, 0.98);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
+    list-style: none;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
+  .language-picker-option {
+    width: 100%;
+    display: flex;
+    gap: 0.65rem;
+    align-items: center;
+    min-height: 38px;
+    padding: 0.45rem 0.75rem;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--ink);
+    font-size: 0.92rem;
+    cursor: pointer;
+    justify-content: flex-start;
+  }
+
+  .language-picker-option:hover {
+    background: rgba(12, 30, 47, 0.88);
+    border-color: var(--line);
+  }
+
+  .language-picker-option.active {
+    border-color: rgba(255, 140, 66, 0.35);
+    background: rgba(255, 140, 66, 0.1);
+  }
+
+  .language-code {
+    font-weight: 700;
+    color: var(--accent-strong);
+    min-width: 52px;
+  }
+
+  .language-label {
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .translation-status-panel {
+    border-color: rgba(255, 140, 66, 0.2);
+    background: linear-gradient(180deg, rgba(15, 30, 45, 0.92), rgba(10, 24, 38, 0.86));
   }
 
   .intelligence-grid {
@@ -2827,8 +2938,8 @@ button:focus-visible {
 .assistant-fab {
   position: fixed;
   right: 1.3rem;
-  bottom: 1.4rem;
-  z-index: 40;
+  bottom: 13rem;
+  z-index: var(--z-fab);
   min-width: 88px;
   background: linear-gradient(135deg, rgba(255, 140, 66, 0.96), rgba(127, 208, 255, 0.88));
   color: #07131f;
@@ -3353,7 +3464,7 @@ button:focus-visible {
 .reader-typography-fab {
   position: fixed;
   right: 1.5rem;
-  bottom: 5rem;
+  bottom: 9.5rem;
   z-index: 11;
   min-width: 88px;
   border: 1px solid rgba(158, 177, 196, 0.22);
@@ -3452,9 +3563,9 @@ button:focus-visible {
 /* ── 移动端适配 ── */
 
 @media (max-width: 720px) {
-  .reader-typography-fab {
+  .reader-fab-bar {
     right: 0.85rem;
-    bottom: 4.25rem;
+    bottom: 0.85rem;
   }
 
   .reader-typography-drawer {

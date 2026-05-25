@@ -192,6 +192,138 @@ export interface StoredKnowledgeGraphChunkRow {
   updatedAt: string;
 }
 
+// ── 翻译流水线 ──
+
+export type TranslationLanguageCode = string;
+
+export type TranslationBuildStatus = 'idle' | 'queued' | 'running' | 'paused' | 'completed' | 'failed';
+export type TranslationBuildStage = 'idle' | 'extracting_terms' | 'translating_terms' | 'segmenting' | 'translating' | 'reviewing' | 'assembling' | 'completed' | 'failed';
+export type TranslationChapterStatus = 'pending' | 'segmenting' | 'translating' | 'reviewing' | 'assembling' | 'completed' | 'failed';
+export type TranslationExportMode = 'original' | 'translated' | 'bilingual';
+
+export interface TranslationModelRoute {
+  providerId: string;
+  modelId: string;
+  maxConcurrency: number;
+}
+
+export interface StoredTranslationProfileInput {
+  sourceId: string;
+  novelId: string;
+  sourceLang: TranslationLanguageCode;
+  targetLang: TranslationLanguageCode;
+  termExtractionModel: TranslationModelRoute | null;
+  translationModels: TranslationModelRoute[];
+  reviewModel: TranslationModelRoute | null;
+  translationConcurrency: number;
+  qualityThreshold: number;
+  autoRejectUntranslatedTerms: boolean;
+  defaultExportMode: TranslationExportMode;
+  configLocked: boolean;
+  lockedAt: string | null;
+}
+
+export interface StoredTranslationProfileRow extends StoredTranslationProfileInput {
+  updatedAt: string;
+}
+
+export interface StoredTranslationTermRow {
+  id: string;
+  sourceId: string;
+  novelId: string;
+  sourceTerm: string;
+  targetTerm: string | null;
+  entityType: string | null;
+  note: string | null;
+  extractedFromChapterId: string | null;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredTranslationBuildRow {
+  status: TranslationBuildStatus;
+  stage: TranslationBuildStage;
+  progressPercent: number;
+  message: string;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  modelStatsJson: string;
+  translatedChapters: number;
+  reviewedChapters: number;
+  failedChapters: number;
+  glossaryVersion: number;
+  profileVersion: number;
+  updatedAt: string | null;
+}
+
+export type StoredTranslationBuildLogLevel = 'info' | 'warn' | 'error';
+
+export interface StoredTranslationBuildLogRow {
+  id: string;
+  stage: TranslationBuildStage;
+  level: StoredTranslationBuildLogLevel;
+  message: string;
+  createdAt: string;
+}
+
+export interface StoredTranslationBuildCheckpointRow {
+  chapterId: string;
+  chapterIndex: number;
+  stage: TranslationChapterStatus;
+  pipelineStateJson: string;
+  warningMessage: string | null;
+  updatedAt: string;
+}
+
+export interface StoredChapterTranslationRow {
+  sourceId: string;
+  novelId: string;
+  chapterId: string;
+  sourceLang: TranslationLanguageCode;
+  targetLang: TranslationLanguageCode;
+  translatedTitle: string | null;
+  status: TranslationChapterStatus;
+  overallQualityScore: number | null;
+  translatorModelId: string | null;
+  reviewerModelId: string | null;
+  tokenUsageJson: string | null;
+  sourceContentHash: string;
+  glossaryVersion: number;
+  profileVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredChapterTranslationParagraphRow {
+  id: string;
+  sourceId: string;
+  novelId: string;
+  chapterId: string;
+  paragraphIndex: number;
+  sourceText: string;
+  translatedText: string | null;
+  confidence: number | null;
+  appliedTermIds: string[];
+  modelId: string | null;
+  updatedAt: string;
+}
+
+export interface StoredChapterTranslationQaRow {
+  id: string;
+  sourceId: string;
+  novelId: string;
+  chapterId: string;
+  checkType: string;
+  score: number;
+  severity: string;
+  suggestion: string | null;
+  paragraphIndices: number[];
+  resolved: boolean;
+  createdAt: string;
+}
+
 interface ChapterRow {
   source_id: string;
   novel_id: string;
@@ -371,6 +503,126 @@ interface KnowledgeGraphChunkRow {
   keyword_hints_json: string;
   embedding_json: string | null;
   updated_at: string;
+}
+
+// ── 翻译流水线内部行 ──
+
+interface TranslationProfileRow {
+  source_id: string;
+  novel_id: string;
+  source_lang: string;
+  target_lang: string;
+  term_extraction_model_json: string | null;
+  translation_models_json: string;
+  review_model_json: string | null;
+  translation_concurrency: number;
+  quality_threshold: number;
+  auto_reject_untranslated_terms: number;
+  default_export_mode: string;
+  config_locked: number;
+  locked_at: string | null;
+  updated_at: string;
+}
+
+interface TranslationTermRow {
+  term_id: string;
+  source_id: string;
+  novel_id: string;
+  source_term: string;
+  target_term: string | null;
+  entity_type: string | null;
+  note: string | null;
+  extracted_from_chapter_id: string | null;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface TranslationBuildRow {
+  source_id: string;
+  novel_id: string;
+  status: string;
+  stage: string;
+  progress_percent: number;
+  message: string;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  model_stats_json: string;
+  translated_chapters: number;
+  reviewed_chapters: number;
+  failed_chapters: number;
+  glossary_version: number;
+  profile_version: number;
+  updated_at: string;
+}
+
+interface TranslationBuildLogRow {
+  log_id: string;
+  source_id: string;
+  novel_id: string;
+  stage: string;
+  level: string;
+  message: string;
+  created_at: string;
+}
+
+interface TranslationBuildCheckpointRow {
+  source_id: string;
+  novel_id: string;
+  chapter_id: string;
+  chapter_index: number;
+  stage: string;
+  pipeline_state_json: string;
+  warning_message: string | null;
+  updated_at: string;
+}
+
+interface ChapterTranslationRow {
+  source_id: string;
+  novel_id: string;
+  chapter_id: string;
+  source_lang: string;
+  target_lang: string;
+  translated_title: string | null;
+  status: string;
+  overall_quality_score: number | null;
+  translator_model_id: string | null;
+  reviewer_model_id: string | null;
+  token_usage_json: string | null;
+  source_content_hash: string;
+  glossary_version: number;
+  profile_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ChapterTranslationParagraphRow {
+  paragraph_id: string;
+  source_id: string;
+  novel_id: string;
+  chapter_id: string;
+  paragraph_index: number;
+  source_text: string;
+  translated_text: string | null;
+  confidence: number | null;
+  applied_term_ids_json: string;
+  model_id: string | null;
+  updated_at: string;
+}
+
+interface ChapterTranslationQaRow {
+  qa_id: string;
+  source_id: string;
+  novel_id: string;
+  chapter_id: string;
+  check_type: string;
+  score: number;
+  severity: string;
+  suggestion: string | null;
+  paragraph_indices_json: string;
+  resolved: number;
+  created_at: string;
 }
 
 export class SqliteNovelRepository {
@@ -1753,6 +2005,807 @@ export class SqliteNovelRepository {
       .run(limit);
   }
 
+  // ── 翻译流水线 CRUD ──
+
+  getTranslationProfile(sourceId: string, novelId: string): StoredTranslationProfileRow | null {
+    const row = this.#database
+      .prepare(
+        `
+          SELECT
+            source_id, novel_id, source_lang, target_lang,
+            term_extraction_model_json, translation_models_json, review_model_json,
+            translation_concurrency, quality_threshold, auto_reject_untranslated_terms,
+            default_export_mode, config_locked, locked_at, updated_at
+          FROM novel_translation_profiles
+          WHERE source_id = ? AND novel_id = ?
+        `,
+      )
+      .get(sourceId, novelId) as TranslationProfileRow | undefined;
+
+    return row ? mapTranslationProfileRow(row) : null;
+  }
+
+  saveTranslationProfile(input: StoredTranslationProfileInput): StoredTranslationProfileRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const updatedAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_translation_profiles (
+            source_id, novel_id, source_lang, target_lang,
+            term_extraction_model_json, translation_models_json, review_model_json,
+            translation_concurrency, quality_threshold, auto_reject_untranslated_terms,
+            default_export_mode, config_locked, locked_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, novel_id) DO UPDATE SET
+            source_lang = excluded.source_lang,
+            target_lang = excluded.target_lang,
+            term_extraction_model_json = excluded.term_extraction_model_json,
+            translation_models_json = excluded.translation_models_json,
+            review_model_json = excluded.review_model_json,
+            translation_concurrency = excluded.translation_concurrency,
+            quality_threshold = excluded.quality_threshold,
+            auto_reject_untranslated_terms = excluded.auto_reject_untranslated_terms,
+            default_export_mode = excluded.default_export_mode,
+            config_locked = excluded.config_locked,
+            locked_at = excluded.locked_at,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId, input.novelId, input.sourceLang, input.targetLang,
+        input.termExtractionModel ? JSON.stringify(input.termExtractionModel) : null,
+        JSON.stringify(input.translationModels),
+        input.reviewModel ? JSON.stringify(input.reviewModel) : null,
+        input.translationConcurrency, input.qualityThreshold,
+        input.autoRejectUntranslatedTerms ? 1 : 0,
+        input.defaultExportMode,
+        input.configLocked ? 1 : 0, input.lockedAt,
+        updatedAt,
+      );
+
+    const profile = this.getTranslationProfile(input.sourceId, input.novelId);
+    if (!profile) {
+      throw new Error(`Failed to load translation profile for ${input.sourceId}/${input.novelId}.`);
+    }
+    return profile;
+  }
+
+  getTranslationBuild(sourceId: string, novelId: string): StoredTranslationBuildRow | null {
+    const row = this.#database
+      .prepare(
+        `
+          SELECT
+            source_id, novel_id, status, stage, progress_percent, message, error_message,
+            started_at, completed_at, model_stats_json, translated_chapters, reviewed_chapters,
+            failed_chapters, glossary_version, profile_version, updated_at
+          FROM novel_translation_builds
+          WHERE source_id = ? AND novel_id = ?
+        `,
+      )
+      .get(sourceId, novelId) as TranslationBuildRow | undefined;
+
+    return row ? mapTranslationBuildRow(row) : null;
+  }
+
+  saveTranslationBuild(input: {
+    sourceId: string;
+    novelId: string;
+    status: TranslationBuildStatus;
+    stage: TranslationBuildStage;
+    progressPercent: number;
+    message: string;
+    errorMessage: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    modelStatsJson: string;
+    translatedChapters: number;
+    reviewedChapters: number;
+    failedChapters: number;
+    glossaryVersion: number;
+    profileVersion: number;
+  }): StoredTranslationBuildRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const updatedAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_translation_builds (
+            source_id, novel_id, status, stage, progress_percent, message, error_message,
+            started_at, completed_at, model_stats_json, translated_chapters, reviewed_chapters,
+            failed_chapters, glossary_version, profile_version, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, novel_id) DO UPDATE SET
+            status = excluded.status, stage = excluded.stage,
+            progress_percent = excluded.progress_percent, message = excluded.message,
+            error_message = excluded.error_message, started_at = excluded.started_at,
+            completed_at = excluded.completed_at, model_stats_json = excluded.model_stats_json,
+            translated_chapters = excluded.translated_chapters,
+            reviewed_chapters = excluded.reviewed_chapters,
+            failed_chapters = excluded.failed_chapters,
+            glossary_version = excluded.glossary_version,
+            profile_version = excluded.profile_version,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId, input.novelId, input.status, input.stage,
+        input.progressPercent, input.message, input.errorMessage,
+        input.startedAt, input.completedAt, input.modelStatsJson,
+        input.translatedChapters, input.reviewedChapters, input.failedChapters,
+        input.glossaryVersion, input.profileVersion, updatedAt,
+      );
+
+    const build = this.getTranslationBuild(input.sourceId, input.novelId);
+    if (!build) {
+      throw new Error(`Failed to load translation build state for ${input.sourceId}/${input.novelId}.`);
+    }
+    return build;
+  }
+
+  listTranslationTerms(sourceId: string, novelId: string): StoredTranslationTermRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            term_id, source_id, novel_id, source_term, target_term, entity_type, note,
+            extracted_from_chapter_id, priority, created_at, updated_at
+          FROM novel_translation_terms
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY priority DESC, source_term COLLATE NOCASE ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapTranslationTermRow(row as TranslationTermRow));
+  }
+
+  createTranslationTerm(input: {
+    sourceId: string;
+    novelId: string;
+    sourceTerm: string;
+    targetTerm?: string | null;
+    entityType?: string | null;
+    note?: string | null;
+    extractedFromChapterId?: string | null;
+    priority?: number;
+  }): StoredTranslationTermRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const termId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_translation_terms (
+            term_id, source_id, novel_id, source_term, target_term, entity_type, note,
+            extracted_from_chapter_id, priority, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        termId, input.sourceId, input.novelId, input.sourceTerm.trim(),
+        input.targetTerm?.trim() ?? null, input.entityType?.trim() ?? null,
+        input.note?.trim() ?? null, input.extractedFromChapterId ?? null,
+        input.priority ?? 0, timestamp, timestamp,
+      );
+
+    const createdTerm = this.listTranslationTerms(input.sourceId, input.novelId).find((t) => t.id === termId);
+    if (!createdTerm) {
+      throw new Error(`Failed to load translation term ${termId} after creation.`);
+    }
+    return createdTerm;
+  }
+
+  updateTranslationTerm(
+    sourceId: string,
+    novelId: string,
+    termId: string,
+    updates: {
+      targetTerm?: string | null;
+      entityType?: string | null;
+      note?: string | null;
+      priority?: number;
+    },
+  ): StoredTranslationTermRow | null {
+    const timestamp = new Date().toISOString();
+    const existing = this.listTranslationTerms(sourceId, novelId).find((t) => t.id === termId);
+    if (!existing) {
+      return null;
+    }
+
+    this.#database
+      .prepare(
+        `
+          UPDATE novel_translation_terms
+          SET
+            target_term = ?, entity_type = ?, note = ?, priority = ?,
+            updated_at = ?
+          WHERE term_id = ? AND source_id = ? AND novel_id = ?
+        `,
+      )
+      .run(
+        'targetTerm' in updates ? (updates.targetTerm?.trim() ?? null) : existing.targetTerm,
+        'entityType' in updates ? (updates.entityType?.trim() ?? null) : existing.entityType,
+        'note' in updates ? (updates.note?.trim() ?? null) : existing.note,
+        'priority' in updates ? (updates.priority ?? existing.priority) : existing.priority,
+        timestamp,
+        termId, sourceId, novelId,
+      );
+
+    return this.listTranslationTerms(sourceId, novelId).find((t) => t.id === termId) ?? null;
+  }
+
+  deleteTranslationTerm(sourceId: string, novelId: string, termId: string): boolean {
+    const result = this.#database
+      .prepare('DELETE FROM novel_translation_terms WHERE term_id = ? AND source_id = ? AND novel_id = ?')
+      .run(termId, sourceId, novelId);
+
+    return result.changes > 0;
+  }
+
+  /** 批量创建或更新术语——去重源词，保留已有译词优先 */
+  upsertTranslationTerms(sourceId: string, novelId: string, terms: Array<{
+    sourceTerm: string;
+    targetTerm?: string | null;
+    entityType?: string | null;
+    note?: string | null;
+    extractedFromChapterId?: string | null;
+    priority?: number;
+  }>): { created: number; updated: number; skipped: number } {
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    const existing = this.listTranslationTerms(sourceId, novelId);
+    const existingMap = new Map(existing.map((t) => [t.sourceTerm, t]));
+
+    for (const input of terms) {
+      const sourceTerm = input.sourceTerm.trim();
+      if (!sourceTerm) {
+        continue;
+      }
+
+      const found = existingMap.get(sourceTerm);
+      if (found) {
+        if (!found.targetTerm && input.targetTerm) {
+          this.updateTranslationTerm(sourceId, novelId, found.id, { targetTerm: input.targetTerm });
+          updated++;
+        } else {
+          skipped++;
+        }
+      } else {
+        this.createTranslationTerm({
+          sourceId, novelId, sourceTerm: input.sourceTerm,
+          ...(input.targetTerm !== undefined ? { targetTerm: input.targetTerm } : {}),
+          ...(input.entityType !== undefined ? { entityType: input.entityType } : {}),
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.extractedFromChapterId !== undefined ? { extractedFromChapterId: input.extractedFromChapterId } : {}),
+          ...(input.priority !== undefined ? { priority: input.priority } : {}),
+        });
+        created++;
+      }
+    }
+
+    return { created, updated, skipped };
+  }
+
+  /** 查找所有缺失译文的术语 */
+  listMissingTranslationTerms(sourceId: string, novelId: string): StoredTranslationTermRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            term_id, source_id, novel_id, source_term, target_term, entity_type, note,
+            extracted_from_chapter_id, priority, created_at, updated_at
+          FROM novel_translation_terms
+          WHERE source_id = ? AND novel_id = ? AND target_term IS NULL
+          ORDER BY priority DESC, source_term COLLATE NOCASE ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapTranslationTermRow(row as TranslationTermRow));
+  }
+
+  listTranslationBuildLogs(sourceId: string, novelId: string, limit = 200): StoredTranslationBuildLogRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT log_id, source_id, novel_id, stage, level, message, created_at
+          FROM novel_translation_build_logs
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY created_at DESC, log_id DESC
+          LIMIT ?
+        `,
+      )
+      .all(sourceId, novelId, limit)
+      .map((row: unknown) => mapTranslationBuildLogRow(row as TranslationBuildLogRow))
+      .reverse();
+  }
+
+  appendTranslationBuildLog(input: {
+    sourceId: string;
+    novelId: string;
+    stage: TranslationBuildStage;
+    level: StoredTranslationBuildLogLevel;
+    message: string;
+  }): StoredTranslationBuildLogRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const logId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_translation_build_logs (log_id, source_id, novel_id, stage, level, message, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(logId, input.sourceId, input.novelId, input.stage, input.level, input.message, createdAt);
+
+    return { id: logId, stage: input.stage, level: input.level, message: input.message, createdAt };
+  }
+
+  clearTranslationBuildLogs(sourceId: string, novelId: string): void {
+    this.#database
+      .prepare('DELETE FROM novel_translation_build_logs WHERE source_id = ? AND novel_id = ?')
+      .run(sourceId, novelId);
+  }
+
+  listTranslationBuildCheckpoints(sourceId: string, novelId: string): StoredTranslationBuildCheckpointRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT source_id, novel_id, chapter_id, chapter_index, stage, pipeline_state_json, warning_message, updated_at
+          FROM novel_translation_build_checkpoints
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY chapter_index ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row: unknown) => mapTranslationBuildCheckpointRow(row as TranslationBuildCheckpointRow));
+  }
+
+  saveTranslationBuildCheckpoint(input: {
+    sourceId: string;
+    novelId: string;
+    chapterId: string;
+    chapterIndex: number;
+    stage: TranslationChapterStatus;
+    pipelineStateJson: string;
+    warningMessage: string | null;
+  }): void {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const updatedAt = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO novel_translation_build_checkpoints (
+            source_id, novel_id, chapter_id, chapter_index, stage, pipeline_state_json, warning_message, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, novel_id, chapter_id) DO UPDATE SET
+            chapter_index = excluded.chapter_index, stage = excluded.stage,
+            pipeline_state_json = excluded.pipeline_state_json,
+            warning_message = excluded.warning_message, updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId, input.novelId, input.chapterId, input.chapterIndex,
+        input.stage, input.pipelineStateJson, input.warningMessage, updatedAt,
+      );
+  }
+
+  clearTranslationBuildCheckpoints(sourceId: string, novelId: string): void {
+    this.#database
+      .prepare('DELETE FROM novel_translation_build_checkpoints WHERE source_id = ? AND novel_id = ?')
+      .run(sourceId, novelId);
+  }
+
+  getChapterTranslation(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+    sourceLang: string,
+    targetLang: string,
+  ): StoredChapterTranslationRow | null {
+    const row = this.#database
+      .prepare(
+        `
+          SELECT
+            source_id, novel_id, chapter_id, source_lang, target_lang, translated_title,
+            status, overall_quality_score, translator_model_id, reviewer_model_id,
+            token_usage_json, source_content_hash, glossary_version, profile_version,
+            created_at, updated_at
+          FROM chapter_translations
+          WHERE source_id = ? AND novel_id = ? AND chapter_id = ? AND source_lang = ? AND target_lang = ?
+        `,
+      )
+      .get(sourceId, novelId, chapterId, sourceLang, targetLang) as ChapterTranslationRow | undefined;
+
+    return row ? mapChapterTranslationRow(row) : null;
+  }
+
+  saveChapterTranslation(input: {
+    sourceId: string;
+    novelId: string;
+    chapterId: string;
+    sourceLang: string;
+    targetLang: string;
+    translatedTitle?: string | null;
+    status: TranslationChapterStatus;
+    overallQualityScore?: number | null;
+    translatorModelId?: string | null;
+    reviewerModelId?: string | null;
+    tokenUsageJson?: string | null;
+    sourceContentHash: string;
+    glossaryVersion: number;
+    profileVersion: number;
+  }): StoredChapterTranslationRow {
+    this.assertNovelExists(input.sourceId, input.novelId);
+
+    const timestamp = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+          INSERT INTO chapter_translations (
+            source_id, novel_id, chapter_id, source_lang, target_lang, translated_title,
+            status, overall_quality_score, translator_model_id, reviewer_model_id,
+            token_usage_json, source_content_hash, glossary_version, profile_version,
+            created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, novel_id, chapter_id, source_lang, target_lang) DO UPDATE SET
+            translated_title = excluded.translated_title, status = excluded.status,
+            overall_quality_score = excluded.overall_quality_score,
+            translator_model_id = excluded.translator_model_id,
+            reviewer_model_id = excluded.reviewer_model_id,
+            token_usage_json = excluded.token_usage_json,
+            source_content_hash = excluded.source_content_hash,
+            glossary_version = excluded.glossary_version,
+            profile_version = excluded.profile_version,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        input.sourceId, input.novelId, input.chapterId, input.sourceLang, input.targetLang,
+        input.translatedTitle ?? null, input.status, input.overallQualityScore ?? null,
+        input.translatorModelId ?? null, input.reviewerModelId ?? null,
+        input.tokenUsageJson ?? null, input.sourceContentHash,
+        input.glossaryVersion, input.profileVersion,
+        timestamp, timestamp,
+      );
+
+    const translation = this.getChapterTranslation(input.sourceId, input.novelId, input.chapterId, input.sourceLang, input.targetLang);
+    if (!translation) {
+      throw new Error(`Failed to load chapter translation for ${input.sourceId}/${input.novelId}/${input.chapterId}.`);
+    }
+    return translation;
+  }
+
+  listChapterTranslationParagraphs(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+  ): StoredChapterTranslationParagraphRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            paragraph_id, source_id, novel_id, chapter_id, paragraph_index,
+            source_text, translated_text, confidence, applied_term_ids_json, model_id, updated_at
+          FROM chapter_translation_paragraphs
+          WHERE source_id = ? AND novel_id = ? AND chapter_id = ?
+          ORDER BY paragraph_index ASC
+        `,
+      )
+      .all(sourceId, novelId, chapterId)
+      .map((row: unknown) => mapChapterTranslationParagraphRow(row as ChapterTranslationParagraphRow));
+  }
+
+  saveChapterTranslationParagraph(input: {
+    sourceId: string;
+    novelId: string;
+    chapterId: string;
+    paragraphIndex: number;
+    sourceText: string;
+    translatedText?: string | null;
+    confidence?: number | null;
+    appliedTermIds?: string[];
+    modelId?: string | null;
+  }): StoredChapterTranslationParagraphRow {
+    const paragraphId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+
+    this.#database
+      .prepare(
+        `
+          INSERT INTO chapter_translation_paragraphs (
+            paragraph_id, source_id, novel_id, chapter_id, paragraph_index,
+            source_text, translated_text, confidence, applied_term_ids_json, model_id, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(paragraph_id) DO UPDATE SET
+            paragraph_index = excluded.paragraph_index,
+            source_text = excluded.source_text,
+            translated_text = excluded.translated_text,
+            confidence = excluded.confidence,
+            applied_term_ids_json = excluded.applied_term_ids_json,
+            model_id = excluded.model_id,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        paragraphId, input.sourceId, input.novelId, input.chapterId, input.paragraphIndex,
+        input.sourceText, input.translatedText ?? null, input.confidence ?? null,
+        JSON.stringify(input.appliedTermIds ?? []), input.modelId ?? null, timestamp,
+      );
+
+    return {
+      id: paragraphId,
+      sourceId: input.sourceId,
+      novelId: input.novelId,
+      chapterId: input.chapterId,
+      paragraphIndex: input.paragraphIndex,
+      sourceText: input.sourceText,
+      translatedText: input.translatedText ?? null,
+      confidence: input.confidence ?? null,
+      appliedTermIds: input.appliedTermIds ?? [],
+      modelId: input.modelId ?? null,
+      updatedAt: timestamp,
+    };
+  }
+
+  /** 批量替换章节段落翻译（事务内先删后写） */
+  replaceChapterTranslationParagraphs(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+    paragraphs: Array<{
+      paragraphIndex: number;
+      sourceText: string;
+      translatedText?: string | null;
+      confidence?: number | null;
+      appliedTermIds?: string[];
+      modelId?: string | null;
+    }>,
+  ): StoredChapterTranslationParagraphRow[] {
+    this.assertNovelExists(sourceId, novelId);
+
+    const timestamp = new Date().toISOString();
+    const insertStmt = this.#database.prepare(
+      `
+        INSERT INTO chapter_translation_paragraphs (
+          paragraph_id, source_id, novel_id, chapter_id, paragraph_index,
+          source_text, translated_text, confidence, applied_term_ids_json, model_id, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    );
+
+    const results: StoredChapterTranslationParagraphRow[] = [];
+    const transaction = this.#database.transaction(() => {
+      this.#database
+        .prepare('DELETE FROM chapter_translation_paragraphs WHERE source_id = ? AND novel_id = ? AND chapter_id = ?')
+        .run(sourceId, novelId, chapterId);
+
+      for (const p of paragraphs) {
+        const paragraphId = crypto.randomUUID();
+        insertStmt.run(
+          paragraphId, sourceId, novelId, chapterId, p.paragraphIndex,
+          p.sourceText, p.translatedText ?? null, p.confidence ?? null,
+          JSON.stringify(p.appliedTermIds ?? []), p.modelId ?? null, timestamp,
+        );
+        results.push({
+          id: paragraphId,
+          sourceId, novelId, chapterId,
+          paragraphIndex: p.paragraphIndex,
+          sourceText: p.sourceText,
+          translatedText: p.translatedText ?? null,
+          confidence: p.confidence ?? null,
+          appliedTermIds: p.appliedTermIds ?? [],
+          modelId: p.modelId ?? null,
+          updatedAt: timestamp,
+        });
+      }
+    });
+
+    transaction();
+    return results;
+  }
+
+  listChapterTranslationQa(sourceId: string, novelId: string, chapterId: string): StoredChapterTranslationQaRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            qa_id, source_id, novel_id, chapter_id, check_type, score, severity,
+            suggestion, paragraph_indices_json, resolved, created_at
+          FROM chapter_translation_qa
+          WHERE source_id = ? AND novel_id = ? AND chapter_id = ?
+          ORDER BY severity DESC, score ASC, created_at ASC
+        `,
+      )
+      .all(sourceId, novelId, chapterId)
+      .map((row: unknown) => mapChapterTranslationQaRow(row as ChapterTranslationQaRow));
+  }
+
+  createChapterTranslationQa(input: {
+    sourceId: string;
+    novelId: string;
+    chapterId: string;
+    checkType: string;
+    score: number;
+    severity: string;
+    suggestion?: string | null;
+    paragraphIndices?: number[];
+  }): StoredChapterTranslationQaRow {
+    const qaId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+
+    this.#database
+      .prepare(
+        `
+          INSERT INTO chapter_translation_qa (
+            qa_id, source_id, novel_id, chapter_id, check_type, score, severity,
+            suggestion, paragraph_indices_json, resolved, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        `,
+      )
+      .run(
+        qaId, input.sourceId, input.novelId, input.chapterId,
+        input.checkType, input.score, input.severity,
+        input.suggestion ?? null, JSON.stringify(input.paragraphIndices ?? []), createdAt,
+      );
+
+    return {
+      id: qaId,
+      sourceId: input.sourceId,
+      novelId: input.novelId,
+      chapterId: input.chapterId,
+      checkType: input.checkType,
+      score: input.score,
+      severity: input.severity,
+      suggestion: input.suggestion ?? null,
+      paragraphIndices: input.paragraphIndices ?? [],
+      resolved: false,
+      createdAt,
+    };
+  }
+
+  resolveChapterTranslationQa(sourceId: string, novelId: string, qaId: string): boolean {
+    const result = this.#database
+      .prepare('UPDATE chapter_translation_qa SET resolved = 1 WHERE qa_id = ? AND source_id = ? AND novel_id = ?')
+      .run(qaId, sourceId, novelId);
+
+    return result.changes > 0;
+  }
+
+  /** 批量替换章节 QA 记录（事务内先删后写） */
+  replaceChapterTranslationQa(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+    items: Array<{
+      checkType: string;
+      score: number;
+      severity: string;
+      suggestion?: string | null;
+      paragraphIndices?: number[];
+    }>,
+  ): StoredChapterTranslationQaRow[] {
+    this.assertNovelExists(sourceId, novelId);
+
+    const createdAt = new Date().toISOString();
+    const insertStmt = this.#database.prepare(
+      `
+        INSERT INTO chapter_translation_qa (
+          qa_id, source_id, novel_id, chapter_id, check_type, score, severity,
+          suggestion, paragraph_indices_json, resolved, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+      `,
+    );
+
+    const results: StoredChapterTranslationQaRow[] = [];
+    const transaction = this.#database.transaction(() => {
+      this.#database
+        .prepare('DELETE FROM chapter_translation_qa WHERE source_id = ? AND novel_id = ? AND chapter_id = ?')
+        .run(sourceId, novelId, chapterId);
+
+      for (const item of items) {
+        const qaId = crypto.randomUUID();
+        insertStmt.run(
+          qaId, sourceId, novelId, chapterId, item.checkType, item.score, item.severity,
+          item.suggestion ?? null, JSON.stringify(item.paragraphIndices ?? []), createdAt,
+        );
+        results.push({
+          id: qaId, sourceId, novelId, chapterId,
+          checkType: item.checkType, score: item.score, severity: item.severity,
+          suggestion: item.suggestion ?? null,
+          paragraphIndices: item.paragraphIndices ?? [],
+          resolved: false,
+          createdAt,
+        });
+      }
+    });
+
+    transaction();
+    return results;
+  }
+
+  listResumableTranslationBuilds(): Array<{ sourceId: string; novelId: string; build: StoredTranslationBuildRow }> {
+    return this.#database
+      .prepare(
+        `
+          SELECT source_id, novel_id, status, stage, progress_percent, message, error_message, started_at, completed_at, model_stats_json, translated_chapters, reviewed_chapters, failed_chapters, glossary_version, profile_version, updated_at
+          FROM novel_translation_builds
+          WHERE status IN ('queued', 'running')
+          ORDER BY updated_at ASC
+        `,
+      )
+      .all()
+      .map((row) => {
+        const build = row as TranslationBuildRow;
+        return {
+          sourceId: build.source_id,
+          novelId: build.novel_id,
+          build: mapTranslationBuildRow(build),
+        };
+      });
+  }
+
+  clearTranslationData(sourceId: string, novelId: string): void {
+    this.assertNovelExists(sourceId, novelId);
+
+    const transaction = this.#database.transaction(() => {
+      this.#database.prepare('DELETE FROM chapter_translation_qa WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM chapter_translation_paragraphs WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM chapter_translations WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM novel_translation_build_checkpoints WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM novel_translation_build_logs WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+    });
+
+    transaction();
+  }
+
+  /** 查找因术语库更新而需要重译的章节（术语版本号不匹配的已完成翻译章节） */
+  listTranslationAffectedChapters(sourceId: string, novelId: string): Array<{
+    chapterId: string;
+    chapterIndex: number;
+    currentGlossaryVersion: number;
+    storedGlossaryVersion: number;
+  }> {
+    return this.#database
+      .prepare(
+        `
+          SELECT chapter_id, chapter_index, glossary_version
+          FROM chapters c
+          JOIN chapter_translations ct USING (source_id, novel_id, chapter_id)
+          WHERE ct.source_id = ? AND ct.novel_id = ? AND ct.status = 'completed' AND ct.glossary_version < (
+            SELECT MAX(glossary_version) FROM novel_translation_builds WHERE source_id = ? AND novel_id = ?
+          )
+          ORDER BY chapter_index ASC
+        `,
+      )
+      .all(sourceId, novelId, sourceId, novelId)
+      .map((row: unknown) => {
+        const r = row as { chapter_id: string; chapter_index: number; glossary_version: number };
+        return {
+          chapterId: r.chapter_id,
+          chapterIndex: r.chapter_index,
+          currentGlossaryVersion: 0,
+          storedGlossaryVersion: r.glossary_version,
+        };
+      });
+  }
+
   private migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS novels (
@@ -1993,6 +3046,154 @@ export class SqliteNovelRepository {
         PRIMARY KEY (source_id, novel_id),
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
       );
+
+      -- 翻译流水线
+
+      CREATE TABLE IF NOT EXISTS novel_translation_profiles (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        source_lang TEXT NOT NULL DEFAULT 'ja',
+        target_lang TEXT NOT NULL DEFAULT 'zh-CN',
+        term_extraction_model_json TEXT,
+        translation_models_json TEXT NOT NULL DEFAULT '[]',
+        review_model_json TEXT,
+        translation_concurrency INTEGER NOT NULL DEFAULT 2,
+        quality_threshold REAL NOT NULL DEFAULT 0.8,
+        auto_reject_untranslated_terms INTEGER NOT NULL DEFAULT 1,
+        default_export_mode TEXT NOT NULL DEFAULT 'original',
+        config_locked INTEGER NOT NULL DEFAULT 0,
+        locked_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_translation_terms (
+        term_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        source_term TEXT NOT NULL,
+        target_term TEXT,
+        entity_type TEXT,
+        note TEXT,
+        extracted_from_chapter_id TEXT,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (source_id, novel_id, source_term),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_translation_builds (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        progress_percent INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        error_message TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        model_stats_json TEXT NOT NULL DEFAULT '[]',
+        translated_chapters INTEGER NOT NULL DEFAULT 0,
+        reviewed_chapters INTEGER NOT NULL DEFAULT 0,
+        failed_chapters INTEGER NOT NULL DEFAULT 0,
+        glossary_version INTEGER NOT NULL DEFAULT 0,
+        profile_version INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_translation_build_logs (
+        log_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        level TEXT NOT NULL,
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_translation_build_checkpoints (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        chapter_index INTEGER NOT NULL,
+        stage TEXT NOT NULL,
+        pipeline_state_json TEXT NOT NULL,
+        warning_message TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id, chapter_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS chapter_translations (
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        source_lang TEXT NOT NULL,
+        target_lang TEXT NOT NULL,
+        translated_title TEXT,
+        status TEXT NOT NULL,
+        overall_quality_score REAL,
+        translator_model_id TEXT,
+        reviewer_model_id TEXT,
+        token_usage_json TEXT,
+        source_content_hash TEXT NOT NULL,
+        glossary_version INTEGER NOT NULL DEFAULT 0,
+        profile_version INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id, chapter_id, source_lang, target_lang),
+        FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS chapter_translation_paragraphs (
+        paragraph_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        paragraph_index INTEGER NOT NULL,
+        source_text TEXT NOT NULL,
+        translated_text TEXT,
+        confidence REAL,
+        applied_term_ids_json TEXT NOT NULL DEFAULT '[]',
+        model_id TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS chapter_translation_qa (
+        qa_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        check_type TEXT NOT NULL,
+        score REAL NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'low',
+        suggestion TEXT,
+        paragraph_indices_json TEXT NOT NULL DEFAULT '[]',
+        resolved INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_novel_translation_terms_lookup
+        ON novel_translation_terms(source_id, novel_id, priority DESC, source_term COLLATE NOCASE ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_novel_translation_build_logs_lookup
+        ON novel_translation_build_logs(source_id, novel_id, created_at ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_chapter_translations_lookup
+        ON chapter_translations(source_id, novel_id, status, chapter_id);
+
+      CREATE INDEX IF NOT EXISTS idx_chapter_translation_paragraphs_lookup
+        ON chapter_translation_paragraphs(source_id, novel_id, chapter_id, paragraph_index ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_chapter_translation_qa_lookup
+        ON chapter_translation_qa(source_id, novel_id, chapter_id, check_type);
     `);
   }
 
@@ -2316,6 +3517,166 @@ function mapKnowledgeGraphChunkRow(row: KnowledgeGraphChunkRow): StoredKnowledge
     embedding: row.embedding_json ? JSON.parse(row.embedding_json) as number[] : null,
     updatedAt: row.updated_at,
   };
+}
+
+// ── 翻译流水线映射函数 ──
+
+function mapTranslationProfileRow(row: TranslationProfileRow): StoredTranslationProfileRow {
+  return {
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    sourceLang: row.source_lang,
+    targetLang: row.target_lang,
+    termExtractionModel: row.term_extraction_model_json ? JSON.parse(row.term_extraction_model_json) as TranslationModelRoute : null,
+    translationModels: parseTranslationModelRoutesJson(row.translation_models_json),
+    reviewModel: row.review_model_json ? JSON.parse(row.review_model_json) as TranslationModelRoute : null,
+    translationConcurrency: row.translation_concurrency,
+    qualityThreshold: row.quality_threshold,
+    autoRejectUntranslatedTerms: row.auto_reject_untranslated_terms !== 0,
+    defaultExportMode: row.default_export_mode as TranslationExportMode,
+    configLocked: row.config_locked !== 0,
+    lockedAt: row.locked_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapTranslationTermRow(row: TranslationTermRow): StoredTranslationTermRow {
+  return {
+    id: row.term_id,
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    sourceTerm: row.source_term,
+    targetTerm: row.target_term,
+    entityType: row.entity_type,
+    note: row.note,
+    extractedFromChapterId: row.extracted_from_chapter_id,
+    priority: row.priority,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapTranslationBuildRow(row: TranslationBuildRow): StoredTranslationBuildRow {
+  return {
+    status: row.status as TranslationBuildStatus,
+    stage: row.stage as TranslationBuildStage,
+    progressPercent: row.progress_percent,
+    message: row.message,
+    errorMessage: row.error_message,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    modelStatsJson: row.model_stats_json,
+    translatedChapters: row.translated_chapters,
+    reviewedChapters: row.reviewed_chapters,
+    failedChapters: row.failed_chapters,
+    glossaryVersion: row.glossary_version,
+    profileVersion: row.profile_version,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapTranslationBuildLogRow(row: TranslationBuildLogRow): StoredTranslationBuildLogRow {
+  return {
+    id: row.log_id,
+    stage: row.stage as TranslationBuildStage,
+    level: row.level as StoredTranslationBuildLogLevel,
+    message: row.message,
+    createdAt: row.created_at,
+  };
+}
+
+function mapTranslationBuildCheckpointRow(row: TranslationBuildCheckpointRow): StoredTranslationBuildCheckpointRow {
+  return {
+    chapterId: row.chapter_id,
+    chapterIndex: row.chapter_index,
+    stage: row.stage as TranslationChapterStatus,
+    pipelineStateJson: row.pipeline_state_json,
+    warningMessage: row.warning_message,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapChapterTranslationRow(row: ChapterTranslationRow): StoredChapterTranslationRow {
+  return {
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    chapterId: row.chapter_id,
+    sourceLang: row.source_lang,
+    targetLang: row.target_lang,
+    translatedTitle: row.translated_title,
+    status: row.status as TranslationChapterStatus,
+    overallQualityScore: row.overall_quality_score,
+    translatorModelId: row.translator_model_id,
+    reviewerModelId: row.reviewer_model_id,
+    tokenUsageJson: row.token_usage_json,
+    sourceContentHash: row.source_content_hash,
+    glossaryVersion: row.glossary_version,
+    profileVersion: row.profile_version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapChapterTranslationParagraphRow(row: ChapterTranslationParagraphRow): StoredChapterTranslationParagraphRow {
+  return {
+    id: row.paragraph_id,
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    chapterId: row.chapter_id,
+    paragraphIndex: row.paragraph_index,
+    sourceText: row.source_text,
+    translatedText: row.translated_text,
+    confidence: row.confidence,
+    appliedTermIds: JSON.parse(row.applied_term_ids_json) as string[],
+    modelId: row.model_id,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapChapterTranslationQaRow(row: ChapterTranslationQaRow): StoredChapterTranslationQaRow {
+  return {
+    id: row.qa_id,
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    chapterId: row.chapter_id,
+    checkType: row.check_type,
+    score: row.score,
+    severity: row.severity,
+    suggestion: row.suggestion,
+    paragraphIndices: JSON.parse(row.paragraph_indices_json) as number[],
+    resolved: row.resolved !== 0,
+    createdAt: row.created_at,
+  };
+}
+
+function parseTranslationModelRoutesJson(value: string): TranslationModelRoute[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return [];
+      }
+
+      const record = entry as Record<string, unknown>;
+      if (typeof record.providerId !== 'string' || typeof record.modelId !== 'string') {
+        return [];
+      }
+
+      return [{
+        providerId: record.providerId,
+        modelId: record.modelId,
+        maxConcurrency: typeof record.maxConcurrency === 'number' && Number.isFinite(record.maxConcurrency)
+          ? Math.trunc(record.maxConcurrency)
+          : 1,
+      }];
+    });
+  } catch {
+    return [];
+  }
 }
 
 function buildNovelKey(sourceId: string, novelId: string): string {

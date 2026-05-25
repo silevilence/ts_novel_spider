@@ -630,12 +630,153 @@ export async function deleteLibraryBookmark(
   );
 }
 
+// ── 翻译任务 ──
+
+export interface TranslationBuildPayload {
+  translation: {
+    status: string;
+    stage: string;
+    progressPercent: number;
+    message: string;
+    errorMessage: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    translatedChapters: number;
+    reviewedChapters: number;
+    failedChapters: number;
+  };
+}
+
+export async function startLibraryTranslation(
+  sourceId: string,
+  novelId: string,
+  modelOverride?: string,
+): Promise<TranslationBuildPayload> {
+  const response = await fetch(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/start`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(modelOverride ? { modelOverride } : {}),
+    },
+  );
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Translation start failed');
+  }
+
+  return (await response.json()) as TranslationBuildPayload;
+}
+
+export async function cancelLibraryTranslation(
+  sourceId: string,
+  novelId: string,
+): Promise<TranslationBuildPayload> {
+  const response = await fetch(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/cancel`,
+    { method: 'POST' },
+  );
+  if (!response.ok) throw await buildRequestError(response, 'Translation cancel failed');
+  return (await response.json()) as TranslationBuildPayload;
+}
+
+export async function fetchLibraryTranslationBuild(
+  sourceId: string,
+  novelId: string,
+): Promise<TranslationBuildPayload> {
+  return requestJson<TranslationBuildPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/build`,
+  );
+}
+
+export async function fetchLibraryTranslationChapter(
+  sourceId: string,
+  novelId: string,
+  chapterId: string,
+  sourceLang: string,
+  targetLang: string,
+): Promise<{
+  chapterId: string;
+  status: string;
+  overallQualityScore: number | null;
+  paragraphs: Array<{
+    paragraphIndex: number;
+    sourceText: string;
+    translatedText: string | null;
+    confidence: number | null;
+  }>;
+} | null> {
+  const url = `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/chapters/${encodeURIComponent(chapterId)}?sourceLang=${encodeURIComponent(sourceLang)}&targetLang=${encodeURIComponent(targetLang)}`;
+  try {
+    return await requestJson(url) as {
+      chapterId: string;
+      status: string;
+      overallQualityScore: number | null;
+      paragraphs: Array<{
+        paragraphIndex: number;
+        sourceText: string;
+        translatedText: string | null;
+        confidence: number | null;
+      }>;
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function buildLibraryExportDownloadUrl(
   sourceId: string,
   novelId: string,
   format: LibraryExportFormat,
+  mode?: string,
+  sourceLang?: string,
+  targetLang?: string,
 ): string {
-  return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/exports/${encodeURIComponent(format)}/download`;
+  const params = new URLSearchParams();
+  if (mode) params.set('mode', mode);
+  if (sourceLang) params.set('sourceLang', sourceLang);
+  if (targetLang) params.set('targetLang', targetLang);
+  const qs = params.toString();
+  return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/exports/${encodeURIComponent(format)}/download${qs ? `?${qs}` : ''}`;
+}
+
+// ── 翻译 ──
+
+export type TranslationExportMode = 'original' | 'translated' | 'bilingual';
+
+export interface TranslationPreferencesPayload {
+  config: {
+    sourceLang: string;
+    targetLang: string;
+    termExtractionModel: { providerId?: string; modelId?: string } | null;
+    translationModels: Array<{ providerId?: string; modelId?: string }>;
+    reviewModel: { providerId?: string; modelId?: string } | null;
+    translationConcurrency: number;
+    qualityThreshold: number;
+    autoRejectUntranslatedTerms: boolean;
+    defaultExportMode: TranslationExportMode;
+  };
+  updatedAt: string | null;
+}
+
+export async function fetchTranslationPreferences(): Promise<TranslationPreferencesPayload> {
+  return requestJson<TranslationPreferencesPayload>('/api/control/preferences/translation');
+}
+
+export async function updateTranslationPreferences(
+  input: Record<string, unknown>,
+): Promise<TranslationPreferencesPayload> {
+  const response = await fetch('/api/control/preferences/translation', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Translation preferences update failed');
+  }
+
+  return (await response.json()) as TranslationPreferencesPayload;
 }
 
 async function requestJson<TPayload>(url: string, init?: RequestInit): Promise<TPayload> {

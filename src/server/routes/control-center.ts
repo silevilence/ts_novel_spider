@@ -24,6 +24,8 @@ import type {
   ReaderTypographyConfig,
   ReaderTypographyConfigInput,
   ReaderTypographyState,
+  TranslationPreferencesConfig,
+  TranslationPreferencesInput,
 } from '../core/system-preferences';
 import type { NovelMetadata, ResolvedChapterState, SpiderRunFailure } from '../core/spider';
 
@@ -278,6 +280,21 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     } catch (error) {
       response.status(400).json({
         message: error instanceof Error ? error.message : 'Invalid reader typography preferences request.',
+      });
+    }
+  });
+
+  router.get('/preferences/translation', (_request, response) => {
+    response.json(serializeTranslationPreferences(service.getTranslationPreferences()));
+  });
+
+  router.put('/preferences/translation', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as TranslationPreferencesInput;
+      response.json(serializeTranslationPreferences(service.updateTranslationPreferences(body)));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid translation preferences request.',
       });
     }
   });
@@ -798,4 +815,11 @@ function parseReaderTypographyBody(body: UpdateReaderTypographyRequestBody): Rea
   }
 
   return input;
+}
+
+function serializeTranslationPreferences(state: { config: TranslationPreferencesConfig; updatedAt: string | null }): { config: TranslationPreferencesConfig; updatedAt: string | null } {
+  return {
+    config: state.config,
+    updatedAt: state.updatedAt,
+  };
 }

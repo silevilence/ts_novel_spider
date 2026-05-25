@@ -21,6 +21,8 @@ import {
   type ReaderTypographyConfigInput,
   type ReaderTypographyResolved,
   type ReaderTypographyState,
+  type TranslationPreferencesInput,
+  type TranslationPreferencesState,
   resolveEffectiveReaderTypography,
 } from './system-preferences';
 import {
@@ -47,9 +49,19 @@ import {
   type LibraryKnowledgeGraphState,
 } from './library-intelligence';
 import {
+  TranslationService,
+  type TranslationProfile,
+  type TranslationProfileInput,
+  type TranslationBuild,
+  type TranslationChapterDetail,
+} from './translation-service';
+import type { StoredTranslationTermRow } from './novel-repository';
+import {
   LocalExportEngine,
   type GeneratedLibraryExport,
   type LibraryExportFormat,
+  type LibraryExportTranslationMode,
+  type TranslatedParagraph,
 } from './export-engine';
 import { SqliteNovelRepository, type StoredNovelLibraryRow } from './novel-repository';
 import { SpiderRunner } from './spider-runner';
@@ -198,6 +210,7 @@ export class ControlCenterService {
   readonly #offlineLibrary: OfflineLibraryAssetService;
   readonly #exportEngine: LocalExportEngine;
   readonly #libraryIntelligence: LibraryIntelligenceService;
+  readonly #translation: TranslationService;
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
@@ -222,6 +235,7 @@ export class ControlCenterService {
       preferences: this.#systemPreferences,
       ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     });
+    this.#translation = new TranslationService(this.#repository, this.#systemPreferences);
     this.#registry = new Map(
       (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
     );
@@ -487,11 +501,36 @@ export class ControlCenterService {
     sourceId: string,
     novelId: string,
     format: LibraryExportFormat,
+    translationMode?: LibraryExportTranslationMode,
+    sourceLang?: string,
+    targetLang?: string,
   ): Promise<GeneratedLibraryExport | null> {
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
 
     if (!snapshot) {
       return null;
+    }
+
+    // 如果指定了翻译模式，从 SQLite 加载段落翻译数据
+    if (translationMode && translationMode !== 'original' && sourceLang && targetLang) {
+      const translatedParagraphsByChapterId = new Map<string, TranslatedParagraph[]>();
+
+      for (const chapter of snapshot.chapters) {
+        const paragraphs = this.#repository.listChapterTranslationParagraphs(sourceId, novelId, chapter.id);
+        if (paragraphs.length > 0) {
+          translatedParagraphsByChapterId.set(chapter.id, paragraphs.map((p) => ({
+            paragraphIndex: p.paragraphIndex,
+            sourceText: p.sourceText,
+            translatedText: p.translatedText,
+            confidence: p.confidence,
+          })));
+        }
+      }
+
+      return this.#exportEngine.generate(snapshot, format, {
+        mode: translationMode,
+        translatedParagraphsByChapterId,
+      });
     }
 
     return this.#exportEngine.generate(snapshot, format);
@@ -531,6 +570,69 @@ export class ControlCenterService {
 
   askLibraryAssistant(input: AskLibraryAssistantInput): Promise<LibraryAssistantResponse> {
     return this.#libraryIntelligence.askLibraryAssistant(input);
+  }
+
+  // ── 翻译 ──
+
+  getLibraryTranslationProfile(sourceId: string, novelId: string): TranslationProfile | null {
+    return this.#translation.getTranslationProfile(sourceId, novelId);
+  }
+
+  updateLibraryTranslationProfile(sourceId: string, novelId: string, input: TranslationProfileInput): TranslationProfile | null {
+    return this.#translation.updateTranslationProfile(sourceId, novelId, input);
+  }
+
+  getLibraryTranslationBuild(sourceId: string, novelId: string): TranslationBuild | null {
+    return this.#translation.getTranslationBuild(sourceId, novelId);
+  }
+
+  getLibraryTranslationChapter(
+    sourceId: string,
+    novelId: string,
+    chapterId: string,
+    sourceLang: string,
+    targetLang: string,
+  ): TranslationChapterDetail | null {
+    return this.#translation.getChapterTranslationDetail(sourceId, novelId, chapterId, sourceLang, targetLang);
+  }
+
+  listLibraryTranslationTerms(sourceId: string, novelId: string): StoredTranslationTermRow[] {
+    return this.#translation.listTerms(sourceId, novelId);
+  }
+
+  createLibraryTranslationTerm(sourceId: string, novelId: string, input: {
+    sourceTerm: string;
+    targetTerm?: string | null;
+    entityType?: string | null;
+    note?: string | null;
+    priority?: number;
+  }): StoredTranslationTermRow {
+    return this.#translation.createTerm(sourceId, novelId, input);
+  }
+
+  updateLibraryTranslationTerm(sourceId: string, novelId: string, termId: string, updates: {
+    targetTerm?: string | null;
+    entityType?: string | null;
+    note?: string | null;
+    priority?: number;
+  }): StoredTranslationTermRow | null {
+    return this.#translation.updateTerm(sourceId, novelId, termId, updates);
+  }
+
+  deleteLibraryTranslationTerm(sourceId: string, novelId: string, termId: string): boolean {
+    return this.#translation.deleteTerm(sourceId, novelId, termId);
+  }
+
+  listLibraryMissingTranslationTerms(sourceId: string, novelId: string): StoredTranslationTermRow[] {
+    return this.#translation.listMissingTerms(sourceId, novelId);
+  }
+
+  startLibraryTranslation(sourceId: string, novelId: string, modelOverride?: string): TranslationBuild {
+    return this.#translation.startTranslation(sourceId, novelId, modelOverride);
+  }
+
+  cancelLibraryTranslation(sourceId: string, novelId: string): TranslationBuild | null {
+    return this.#translation.cancelTranslation(sourceId, novelId);
   }
 
   getNetworkProxyState(): NetworkProxyState {
@@ -581,6 +683,14 @@ export class ControlCenterService {
 
   updateReaderTypography(input: ReaderTypographyConfigInput): ReaderTypographyState {
     return this.#systemPreferences.updateReaderTypography(input);
+  }
+
+  getTranslationPreferences(): TranslationPreferencesState {
+    return this.#systemPreferences.getTranslationState();
+  }
+
+  updateTranslationPreferences(input: TranslationPreferencesInput): TranslationPreferencesState {
+    return this.#systemPreferences.updateTranslationPreferences(input);
   }
 
   async previewNovel(input: PreviewNovelInput): Promise<PreviewNovelResult> {

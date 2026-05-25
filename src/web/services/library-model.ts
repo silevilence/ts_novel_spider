@@ -18,11 +18,17 @@ import {
   fetchLibraryReaderTypography,
   fetchNovelPreview,
   fetchTask,
+  fetchTranslationPreferences,
+  startLibraryTranslation,
+  cancelLibraryTranslation,
+  fetchLibraryTranslationBuild,
+  fetchLibraryTranslationChapter,
   updateLibraryAlias,
   updateLibraryBookmark,
   updateLibraryReaderTypography,
   deleteLibraryReaderTypography,
   updateLibraryReadingProgress,
+  type TranslationExportMode,
 } from './api';
 import { SseTaskLogBridge } from './task-log-bridge';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
@@ -33,6 +39,19 @@ import type {
   LibraryReaderTypographyPayload,
 } from '../../server/routes/library';
 import type { NoticeInput } from './control-center-model';
+
+export interface TranslationBuildState {
+  status: string;
+  stage: string;
+  progressPercent: number;
+  message: string;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  translatedChapters: number;
+  reviewedChapters: number;
+  failedChapters: number;
+}
 
 export interface LibraryModel {
   location: AppLocation;
@@ -92,6 +111,20 @@ export interface LibraryModel {
   }) => Promise<void>;
   /** 重置当前书籍的阅读器排版到全局默认 */
   resetReaderTypography: () => Promise<void>;
+  /** 翻译：当前阅读器视图模式 */
+  translationViewMode: TranslationExportMode;
+  /** 切换阅读器翻译视图 */
+  setTranslationViewMode: (mode: TranslationExportMode) => void;
+  /** 翻译：全局默认语言对（用于导出等） */
+  translationLanguages: { sourceLang: string; targetLang: string } | null;
+  /** 翻译：当前书籍的构建状态 */
+  translationBuild: TranslationBuildState | null;
+  /** 翻译构建是否忙碌 */
+  translationBusy: boolean;
+  /** 启动翻译任务 */
+  startTranslation: (modelOverride?: string) => Promise<void>;
+  /** 取消翻译任务 */
+  cancelTranslation: () => Promise<void>;
 }
 
 interface UseLibraryModelOptions {
@@ -120,6 +153,10 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [mediaBusyId, setMediaBusyId] = useState<string | null>(null);
   const [readerTypography, setReaderTypography] = useState<LibraryModel['readerTypography']>(null);
   const [readerTypographyBusy, setReaderTypographyBusy] = useState(false);
+  const [translationViewMode, setTranslationViewMode] = useState<TranslationExportMode>('original');
+  const [translationLanguages, setTranslationLanguages] = useState<LibraryModel['translationLanguages']>(null);
+  const [translationBuild, setTranslationBuild] = useState<TranslationBuildState | null>(null);
+  const [translationBusy, setTranslationBusy] = useState(false);
   const [mediaBatchBusy, setMediaBatchBusy] = useState(false);
   const [mediaBatchProgress, setMediaBatchProgress] = useState<LibraryModel['mediaBatchProgress']>(null);
   const [currentTask, setCurrentTask] = useState<ApiTaskSnapshot | null>(null);
@@ -182,6 +219,23 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
           fetchLibraryNovel(sourceId, novelId),
           fetchLibraryChapter(sourceId, novelId, targetLocation.chapterId),
         ]);
+
+        // 翻译模式：加载翻译段落并替换正文
+        if (translationViewMode !== 'original' && translationLanguages) {
+          const transChapter = await fetchLibraryTranslationChapter(
+            sourceId, novelId, targetLocation.chapterId,
+            translationLanguages.sourceLang, translationLanguages.targetLang,
+          );
+          if (transChapter && transChapter.status === 'completed' && transChapter.paragraphs.length > 0) {
+            const content = buildTranslatedContent(transChapter.paragraphs, translationViewMode);
+            if (content) {
+              chapterPayload.chapter.chapter = {
+                ...chapterPayload.chapter.chapter,
+                content,
+              };
+            }
+          }
+        }
 
         const retainedTask = currentTaskRef.current;
         const nextTask = normalizeLibraryTask(novelPayload.activeTask)
@@ -865,7 +919,52 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     if (location.sourceId && location.novelId) {
       void loadReaderTypography(location.sourceId, location.novelId);
     }
+
+    // 加载全局翻译默认语言对
+    fetchTranslationPreferences().then(
+      (prefs) => setTranslationLanguages({ sourceLang: prefs.config.sourceLang, targetLang: prefs.config.targetLang }),
+      () => setTranslationLanguages(null),
+    );
+
+    // 加载翻译构建状态
+    if (location.sourceId && location.novelId) {
+      fetchLibraryTranslationBuild(location.sourceId, location.novelId).then(
+        (payload) => setTranslationBuild(payload.translation as TranslationBuildState),
+        () => setTranslationBuild(null),
+      );
+    }
   }, [location.sourceId, location.novelId]);
+
+  // 翻译视图模式切换时，重新加载当前章节（以获取双语/译文内容）
+  useEffect(() => {
+    if (location.view === 'reader' && location.sourceId && location.novelId && location.chapterId) {
+      void loadLocation(location);
+    }
+  }, [translationViewMode]);
+
+  async function handleStartTranslation(modelOverride?: string) {
+    if (!location.sourceId || !location.novelId) return;
+    setTranslationBusy(true);
+    try {
+      const payload = await startLibraryTranslation(location.sourceId, location.novelId, modelOverride);
+      setTranslationBuild(payload.translation as TranslationBuildState);
+      publishNotice({ tone: 'success', title: '翻译任务已启动', message: payload.translation.message ?? '后台正在处理翻译。' });
+    } catch (error) {
+      publishNotice({ tone: 'error', title: '翻译启动失败', message: error instanceof Error ? error.message : 'Translation start failed.' });
+    } finally { setTranslationBusy(false); }
+  }
+
+  async function handleCancelTranslation() {
+    if (!location.sourceId || !location.novelId) return;
+    setTranslationBusy(true);
+    try {
+      const payload = await cancelLibraryTranslation(location.sourceId, location.novelId);
+      setTranslationBuild(payload.translation as TranslationBuildState);
+      publishNotice({ tone: 'info', title: '翻译已取消', message: '可以重新选择模型并发起新的翻译任务。' });
+    } catch (error) {
+      publishNotice({ tone: 'error', title: '取消失败', message: error instanceof Error ? error.message : 'cancel failed' });
+    } finally { setTranslationBusy(false); }
+  }
 
   return {
     location,
@@ -904,7 +1003,40 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     readerTypographyBusy,
     updateReaderTypography: handleUpdateReaderTypography,
     resetReaderTypography: handleResetReaderTypography,
+    translationViewMode,
+    setTranslationViewMode,
+    translationLanguages,
+    translationBuild,
+    translationBusy,
+    startTranslation: handleStartTranslation,
+    cancelTranslation: handleCancelTranslation,
   };
+}
+
+/** 根据翻译模式拼接段落内容 */
+function buildTranslatedContent(
+  paragraphs: Array<{ paragraphIndex: number; sourceText: string; translatedText: string | null; confidence: number | null }>,
+  mode: 'translated' | 'bilingual',
+): string | null {
+  if (paragraphs.length === 0) return null;
+
+  if (mode === 'translated') {
+    return paragraphs
+      .map((p) => p.translatedText ?? p.sourceText)
+      .filter((t) => t.length > 0)
+      .join('\n\n') || null;
+  }
+
+  // bilingual
+  return paragraphs
+    .map((p) => {
+      if (p.translatedText && p.translatedText !== p.sourceText) {
+        return `${p.sourceText}\n\n${p.translatedText}`;
+      }
+      return p.sourceText;
+    })
+    .filter((t) => t.length > 0)
+    .join('\n\n') || null;
 }
 
 function normalizeLibraryTask(task: LibraryTaskSnapshot | null): ApiTaskSnapshot | null {

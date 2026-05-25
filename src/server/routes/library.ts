@@ -6,6 +6,7 @@ import {
 } from '../core/control-center';
 import {
   isLibraryExportFormat,
+  isLibraryExportTranslationMode,
   type LibraryExportFormat,
 } from '../core/export-engine';
 import type {
@@ -552,6 +553,180 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     response.json(payload);
   });
 
+  router.post('/novels/:sourceId/:novelId/translate/start', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const modelOverride = typeof body.modelOverride === 'string' ? body.modelOverride : undefined;
+      const build = service.startLibraryTranslation(sourceId, novelId, modelOverride);
+
+      response.status(202).json({
+        translation: build,
+      });
+    } catch (error) {
+      response.status(error instanceof Error && /not found/i.test(error.message) ? 404 : 422).json({
+        message: error instanceof Error ? error.message : 'Translation start failed.',
+      });
+    }
+  });
+
+  router.post('/novels/:sourceId/:novelId/translate/cancel', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const build = service.cancelLibraryTranslation(sourceId, novelId);
+
+    if (!build) {
+      response.status(404).json({
+        message: `No translation build for ${sourceId}/${novelId}.`,
+      });
+      return;
+    }
+
+    response.json({ translation: build });
+  });
+
+  router.get('/novels/:sourceId/:novelId/translate/build', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const build = service.getLibraryTranslationBuild(sourceId, novelId);
+
+    if (!build) {
+      response.status(404).json({
+        message: `No translation build for ${sourceId}/${novelId}.`,
+      });
+      return;
+    }
+
+    response.json({
+      translation: build,
+    });
+  });
+
+  router.get('/novels/:sourceId/:novelId/translate/profile', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const profile = service.getLibraryTranslationProfile(sourceId, novelId);
+
+    if (!profile) {
+      response.status(404).json({
+        message: `No translation profile for ${sourceId}/${novelId}.`,
+      });
+      return;
+    }
+
+    response.json({
+      translation: profile,
+    });
+  });
+
+  router.put('/novels/:sourceId/:novelId/translate/profile', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const profile = service.updateLibraryTranslationProfile(sourceId, novelId, (request.body ?? {}) as Record<string, unknown>);
+
+      if (!profile) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      response.json({
+        translation: profile,
+      });
+    } catch (error) {
+      response.status(error instanceof Error && /锁定/.test(error.message) ? 409 : 422).json({
+        message: error instanceof Error ? error.message : 'Translation profile update failed.',
+      });
+    }
+  });
+
+  router.get('/novels/:sourceId/:novelId/translate/chapters/:chapterId', (request, response) => {
+    const { sourceId, novelId, chapterId } = request.params;
+    const sourceLang = typeof request.query.sourceLang === 'string' ? request.query.sourceLang : 'ja';
+    const targetLang = typeof request.query.targetLang === 'string' ? request.query.targetLang : 'zh-CN';
+    const detail = service.getLibraryTranslationChapter(sourceId, novelId, chapterId, sourceLang, targetLang);
+
+    if (!detail) {
+      response.status(404).json({
+        message: `Translation for chapter ${sourceId}/${novelId}/${chapterId} was not found.`,
+      });
+      return;
+    }
+
+    response.json(detail);
+  });
+
+  router.get('/novels/:sourceId/:novelId/translate/terms', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const terms = service.listLibraryTranslationTerms(sourceId, novelId);
+
+    response.json({
+      terms,
+    });
+  });
+
+  router.post('/novels/:sourceId/:novelId/translate/terms', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const body = request.body as Record<string, unknown>;
+      const term = service.createLibraryTranslationTerm(sourceId, novelId, {
+        sourceTerm: readStringField(body, 'sourceTerm'),
+        ...(body.targetTerm !== undefined ? { targetTerm: typeof body.targetTerm === 'string' ? body.targetTerm : null } : {}),
+        ...(body.entityType !== undefined ? { entityType: typeof body.entityType === 'string' ? body.entityType : null } : {}),
+        ...(body.note !== undefined ? { note: typeof body.note === 'string' ? body.note : null } : {}),
+        ...(body.priority !== undefined ? { priority: typeof body.priority === 'number' ? body.priority : 0 } : {}),
+      });
+
+      response.status(201).json({
+        term,
+      });
+    } catch (error) {
+      response.status(error instanceof Error && /not found/i.test(error.message) ? 404 : 422).json({
+        message: error instanceof Error ? error.message : 'Term creation failed.',
+      });
+    }
+  });
+
+  router.put('/novels/:sourceId/:novelId/translate/terms/:termId', (request, response) => {
+    try {
+      const { sourceId, novelId, termId } = request.params;
+      const body = request.body as Record<string, unknown>;
+      const term = service.updateLibraryTranslationTerm(sourceId, novelId, termId, {
+        ...(body.targetTerm !== undefined ? { targetTerm: typeof body.targetTerm === 'string' ? body.targetTerm : null } : {}),
+        ...(body.entityType !== undefined ? { entityType: typeof body.entityType === 'string' ? body.entityType : null } : {}),
+        ...(body.note !== undefined ? { note: typeof body.note === 'string' ? body.note : null } : {}),
+        ...(typeof body.priority === 'number' ? { priority: body.priority } : {}),
+      });
+
+      if (!term) {
+        response.status(404).json({
+          message: `Translation term ${termId} was not found.`,
+        });
+        return;
+      }
+
+      response.json({
+        term,
+      });
+    } catch (error) {
+      response.status(422).json({
+        message: error instanceof Error ? error.message : 'Term update failed.',
+      });
+    }
+  });
+
+  router.delete('/novels/:sourceId/:novelId/translate/terms/:termId', (request, response) => {
+    const { sourceId, novelId, termId } = request.params;
+    const deleted = service.deleteLibraryTranslationTerm(sourceId, novelId, termId);
+
+    if (!deleted) {
+      response.status(404).json({
+        message: `Translation term ${termId} was not found.`,
+      });
+      return;
+    }
+
+    response.status(204).end();
+  });
+
   router.post('/novels/:sourceId/:novelId/chapters/:chapterId/media/:mediaId/cache', async (request, response) => {
     try {
       const { sourceId, novelId, chapterId, mediaId } = request.params;
@@ -626,7 +801,12 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
         return;
       }
 
-      const artifact = await service.exportLibraryNovel(sourceId, novelId, format);
+      const modeRaw = typeof request.query.mode === 'string' ? request.query.mode : undefined;
+      const mode = modeRaw && isLibraryExportTranslationMode(modeRaw) ? modeRaw : undefined;
+      const sourceLang = typeof request.query.sourceLang === 'string' ? request.query.sourceLang : undefined;
+      const targetLang = typeof request.query.targetLang === 'string' ? request.query.targetLang : undefined;
+
+      const artifact = await service.exportLibraryNovel(sourceId, novelId, format, mode, sourceLang, targetLang);
 
       if (!artifact) {
         response.status(404).json({

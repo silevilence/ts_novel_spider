@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import { ChapterDirectory } from './chapter-directory';
 import { FontFamilyPicker } from './font-family-picker';
 import { LibraryIntelligencePanel } from './library-intelligence-panel';
+import { TranslationProfilePanel } from './translation-profile-panel';
+import { TranslationLaunchPanel } from './translation-launch-panel';
+import { ReaderFabBar } from './reader-fab-bar';
 import type { LibraryModel } from '../services/library-model';
 import {
   buildLibraryExportDownloadUrl,
@@ -91,6 +94,7 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
   } | null>(null);
   const [readerTypographyDirty, setReaderTypographyDirty] = useState(false);
   const [isPageNavOpen, setIsPageNavOpen] = useState(false);
+  const [isTranslationPanelOpen, setIsTranslationPanelOpen] = useState(false);
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -801,36 +805,56 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
           </article>
         </section>
 
-        <button
-          type="button"
-          className={`reader-typography-fab${model.readerTypography?.source === 'novel' ? ' highlight' : ''}`}
-          onClick={() => {
-            if (model.readerTypography) {
-              setReaderTypographyDraft({
-                fontSize: model.readerTypography.fontSize,
-                fontSizePreset: model.readerTypography.fontSizePreset,
-                lineHeight: model.readerTypography.lineHeight,
-                paragraphSpacing: model.readerTypography.paragraphSpacing,
-                fontFamilyPreset: model.readerTypography.fontFamilyPreset,
-                fontFamilyCustom: model.readerTypography.fontFamilyCustom,
-              });
-              setReaderTypographyDirty(false);
-            }
-            setIsReaderTypographyOpen(true);
-          }}
-          aria-label="调整阅读器排版"
-        >
-          排版
-        </button>
+    <ReaderFabBar
+      items={[
+        { key: 'typography', label: '排版', ariaLabel: '调整阅读器排版', onClick: () => {
+          if (model.readerTypography) {
+            setReaderTypographyDraft({
+              fontSize: model.readerTypography.fontSize,
+              fontSizePreset: model.readerTypography.fontSizePreset,
+              lineHeight: model.readerTypography.lineHeight,
+              paragraphSpacing: model.readerTypography.paragraphSpacing,
+              fontFamilyPreset: model.readerTypography.fontFamilyPreset,
+              fontFamilyCustom: model.readerTypography.fontFamilyCustom,
+            });
+            setReaderTypographyDirty(false);
+          }
+          setIsReaderTypographyOpen(true);
+        }},
+        { key: 'directory', label: '目录', ariaLabel: '打开章节目录', onClick: () => setIsReaderDirectoryOpen(true) },
+        { key: 'translation', label: '翻译', ariaLabel: '翻译设置', onClick: () => setIsTranslationPanelOpen(true),
+          accent: model.translationViewMode !== 'original' },
+      ]}
+    />
 
-        <button
-          type="button"
-          className="reader-directory-fab"
-          onClick={() => setIsReaderDirectoryOpen(true)}
-          aria-label="打开章节目录"
-        >
-          目录
-        </button>
+    {isTranslationPanelOpen ? (
+          <div className="reader-directory-overlay" role="presentation" onClick={() => setIsTranslationPanelOpen(false)}>
+            <aside
+              className="reader-directory-drawer"
+              aria-label="翻译设置浮窗"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="reader-directory-drawer-header">
+                <div>
+                  <p className="eyebrow">翻译设置</p>
+                  <h2>翻译视图与导出</h2>
+                  <p className="panel-note">在这里切换阅读模式或下载带翻译内容的导出文件。</p>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button reader-directory-close"
+                  onClick={() => setIsTranslationPanelOpen(false)}
+                >
+                  关闭
+                </button>
+              </div>
+
+              <div style={{ padding: '0 1rem 1rem' }}>
+                <TranslationProfilePanel model={model} onNotify={onNotify} />
+              </div>
+            </aside>
+          </div>
+        ) : null}
 
         {isReaderDirectoryOpen ? (
           <div className="reader-directory-overlay" role="presentation" onClick={() => setIsReaderDirectoryOpen(false)}>
@@ -1269,6 +1293,8 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
           ) : null}
         </div>
       </section>
+
+      <TranslationLaunchPanel model={model} onNotify={onNotify} />
 
       {renderAliasManager()}
 
