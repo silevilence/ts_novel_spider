@@ -473,6 +473,79 @@ export class LibraryIntelligenceService {
     return this.buildKnowledgeGraphState(snapshot);
   }
 
+  async syncNovelKnowledgeGraphToNeo4j(
+    sourceId: string,
+    novelId: string,
+  ): Promise<{ synced: boolean; message: string; entityCount: number; relationCount: number }> {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    if (!snapshot) {
+      throw new Error(`未找到小说 ${sourceId}/${novelId}。`);
+    }
+
+    const profile = this.#repository.getKnowledgeGraphProfile(sourceId, novelId);
+    const resolvedNeo4j = resolveNeo4jConfig(profile, this.#preferences.getNeo4jState());
+    if (!resolvedNeo4j?.enabled || !resolvedNeo4j.uri || !resolvedNeo4j.username) {
+      throw new Error('Neo4j 尚未启用或连接信息不完整，请先在系统偏好或图谱配置中完成 Neo4j 设置。');
+    }
+
+    const entities = this.#repository.listKnowledgeGraphEntities(sourceId, novelId);
+    const relations = this.#repository.listKnowledgeGraphRelations(sourceId, novelId);
+
+    if (entities.length === 0) {
+      throw new Error('当前图谱没有实体数据，请先构建图谱。');
+    }
+
+    const cleanupConfig = resolveNeo4jCleanupConfig(profile, this.#preferences.getNeo4jState());
+    if (cleanupConfig) {
+      await this.#neo4jGraphStore.clearNamespaceGraph(
+        createGraphNamespace(sourceId, novelId),
+        cleanupConfig,
+      );
+    }
+
+    // Strip updatedAt for the store interface
+    const strippedEntities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>> = entities.map(
+      ({ updatedAt: _updatedAt, ...rest }) => rest,
+    );
+    const strippedRelations: Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>> = relations.map(
+      ({ updatedAt: _updatedAt, ...rest }) => rest,
+    );
+
+    await this.#neo4jGraphStore.replaceNamespaceGraph(snapshot, strippedEntities, strippedRelations, resolvedNeo4j);
+
+    const syncedAt = new Date().toISOString();
+    this.#repository.saveKnowledgeGraphBuild({
+      sourceId,
+      novelId,
+      status: 'completed',
+      stage: 'completed',
+      progressPercent: 100,
+      message: `已手动同步到 Neo4j：${entities.length} 个实体，${relations.length} 条关系。`,
+      errorMessage: null,
+      startedAt: null,
+      completedAt: syncedAt,
+      lastBuiltAt: syncedAt,
+      syncedToNeo4jAt: syncedAt,
+      entityCount: entities.length,
+      relationCount: relations.length,
+      modelStats: [],
+    });
+    this.writeBuildLog(
+      sourceId,
+      novelId,
+      'syncing',
+      'info',
+      `手工 Neo4j 同步完成：${entities.length} 个实体，${relations.length} 条关系。`,
+    );
+
+    return {
+      synced: true,
+      message: `已成功同步 ${entities.length} 个实体、${relations.length} 条关系到 Neo4j。`,
+      entityCount: entities.length,
+      relationCount: relations.length,
+    };
+  }
+
   async askLibraryAssistant(input: AskLibraryAssistantInput): Promise<LibraryAssistantResponse> {
     const snapshot = this.#repository.getSnapshot(input.sourceId, input.novelId);
     if (!snapshot) {
@@ -948,8 +1021,10 @@ export class LibraryIntelligenceService {
         `本地图谱已写入：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系，${extracted.chunks.length} 个片段索引；已刷新 ${extracted.checkpoints.length} 个结构缓存。`,
       );
 
+      // ── Neo4j sync（best-effort：失败不影响本地图谱构建结果）──────────────
       let syncedToNeo4jAt: string | null = null;
       let staleNeo4jGraphCleared = false;
+      let neo4jSyncWarning: string | null = null;
       const namespace = createGraphNamespace(snapshot.sourceId, snapshot.metadata.novelId);
       const resolvedNeo4j = resolveNeo4jConfig(
         this.#repository.getKnowledgeGraphProfile(sourceId, novelId),
@@ -960,107 +1035,117 @@ export class LibraryIntelligenceService {
         this.#preferences.getNeo4jState(),
       );
 
-      if (cleanupNeo4j && (Boolean(previousBuild?.syncedToNeo4jAt) || Boolean(resolvedNeo4j?.enabled))) {
-        this.saveBuildState({
-          sourceId,
-          novelId,
-          status: 'running',
-          stage: 'syncing',
-          progressPercent: 80,
-          message: resolvedNeo4j?.enabled
-            ? '正在清理旧版 Neo4j 子图并准备写入新结果。'
-            : '正在清理 Neo4j 中的旧版图谱。',
-          errorMessage: null,
-          startedAt,
-          completedAt: null,
-          lastBuiltAt: null,
-          syncedToNeo4jAt: null,
-          entityCount: extracted.entities.length,
-          relationCount: extracted.relations.length,
-          modelStats: extracted.diagnostics.modelStats,
-        });
-        this.writeBuildLog(
-          sourceId,
-          novelId,
-          'syncing',
-          'info',
-          resolvedNeo4j?.enabled
-            ? `开始清理旧版 Neo4j 子图，命名空间 ${namespace}，随后写入新结果。`
-            : `开始清理 Neo4j 中的旧版图谱，命名空间 ${namespace}。`,
-        );
-        staleNeo4jGraphCleared = await this.#neo4jGraphStore.clearNamespaceGraph(
-          namespace,
-          cleanupNeo4j,
-        );
-        this.writeBuildLog(
-          sourceId,
-          novelId,
-          'syncing',
-          'info',
-          staleNeo4jGraphCleared
-            ? `旧版 Neo4j 子图清理完成：命名空间 ${namespace}。`
-            : `Neo4j 中未发现需要清理的旧子图：命名空间 ${namespace}。`,
-        );
-      }
+      try {
+        if (cleanupNeo4j && (Boolean(previousBuild?.syncedToNeo4jAt) || Boolean(resolvedNeo4j?.enabled))) {
+          this.saveBuildState({
+            sourceId,
+            novelId,
+            status: 'running',
+            stage: 'syncing',
+            progressPercent: 80,
+            message: resolvedNeo4j?.enabled
+              ? '正在清理旧版 Neo4j 子图并准备写入新结果。'
+              : '正在清理 Neo4j 中的旧版图谱。',
+            errorMessage: null,
+            startedAt,
+            completedAt: null,
+            lastBuiltAt: null,
+            syncedToNeo4jAt: null,
+            entityCount: extracted.entities.length,
+            relationCount: extracted.relations.length,
+            modelStats: extracted.diagnostics.modelStats,
+          });
+          this.writeBuildLog(
+            sourceId,
+            novelId,
+            'syncing',
+            'info',
+            resolvedNeo4j?.enabled
+              ? `开始清理旧版 Neo4j 子图，命名空间 ${namespace}，随后写入新结果。`
+              : `开始清理 Neo4j 中的旧版图谱，命名空间 ${namespace}。`,
+          );
+          staleNeo4jGraphCleared = await this.#neo4jGraphStore.clearNamespaceGraph(
+            namespace,
+            cleanupNeo4j,
+          );
+          this.writeBuildLog(
+            sourceId,
+            novelId,
+            'syncing',
+            'info',
+            staleNeo4jGraphCleared
+              ? `旧版 Neo4j 子图清理完成：命名空间 ${namespace}。`
+              : `Neo4j 中未发现需要清理的旧子图：命名空间 ${namespace}。`,
+          );
+        }
 
-      if (resolvedNeo4j?.enabled && resolvedNeo4j.uri && resolvedNeo4j.username) {
-        this.saveBuildState({
-          sourceId,
-          novelId,
-          status: 'running',
-          stage: 'syncing',
-          progressPercent: 84,
-          message: '本地图谱已生成，正在同步到 Neo4j。',
-          errorMessage: null,
-          startedAt,
-          completedAt: null,
-          lastBuiltAt: null,
-          syncedToNeo4jAt: null,
-          entityCount: extracted.entities.length,
-          relationCount: extracted.relations.length,
-          modelStats: extracted.diagnostics.modelStats,
-        });
-        this.writeBuildLog(
-          sourceId,
-          novelId,
-          'syncing',
-          'info',
-          `开始同步 Neo4j 子图：命名空间 ${namespace}，${extracted.entities.length} 个实体，${extracted.relations.length} 条关系。`,
-        );
+        if (resolvedNeo4j?.enabled && resolvedNeo4j.uri && resolvedNeo4j.username) {
+          this.saveBuildState({
+            sourceId,
+            novelId,
+            status: 'running',
+            stage: 'syncing',
+            progressPercent: 84,
+            message: '本地图谱已生成，正在同步到 Neo4j。',
+            errorMessage: null,
+            startedAt,
+            completedAt: null,
+            lastBuiltAt: null,
+            syncedToNeo4jAt: null,
+            entityCount: extracted.entities.length,
+            relationCount: extracted.relations.length,
+            modelStats: extracted.diagnostics.modelStats,
+          });
+          this.writeBuildLog(
+            sourceId,
+            novelId,
+            'syncing',
+            'info',
+            `开始同步 Neo4j 子图：命名空间 ${namespace}，${extracted.entities.length} 个实体，${extracted.relations.length} 条关系。`,
+          );
 
-        await this.#neo4jGraphStore.replaceNamespaceGraph(snapshot, extracted.entities, extracted.relations, resolvedNeo4j);
-        syncedToNeo4jAt = new Date().toISOString();
-        this.writeBuildLog(
-          sourceId,
-          novelId,
-          'syncing',
-          'info',
-          `Neo4j 子图同步完成：命名空间 ${namespace}，可按 sourceId=${snapshot.sourceId}、novelId=${snapshot.metadata.novelId} 过滤查看。`,
-        );
+          await this.#neo4jGraphStore.replaceNamespaceGraph(snapshot, extracted.entities, extracted.relations, resolvedNeo4j);
+          syncedToNeo4jAt = new Date().toISOString();
+          this.writeBuildLog(
+            sourceId,
+            novelId,
+            'syncing',
+            'info',
+            `Neo4j 子图同步完成：命名空间 ${namespace}，可按 sourceId=${snapshot.sourceId}、novelId=${snapshot.metadata.novelId} 过滤查看。`,
+          );
+        }
+      } catch (neo4jError) {
+        const neo4jMessage = neo4jError instanceof Error ? neo4jError.message : 'Unknown Neo4j error.';
+        neo4jSyncWarning = `Neo4j 同步失败（本地图谱不受影响）：${neo4jMessage}`;
+        this.writeBuildLog(sourceId, novelId, 'syncing', 'warn', neo4jSyncWarning);
+        // 不向上 rethrow —— 本地图谱已成功持久化，Neo4j 是可选的附加同步。
       }
 
       const completedAt = new Date().toISOString();
+      const baseCompletionMessage = syncedToNeo4jAt
+        ? extracted.usedEmbeddingIndex
+          ? 'AI 图谱、向量索引已构建完成，并已同步到 Neo4j。'
+          : 'AI 图谱已构建完成，并已同步到 Neo4j。'
+        : staleNeo4jGraphCleared
+          ? extracted.usedEmbeddingIndex
+            ? 'AI 图谱与向量索引构建完成，旧版 Neo4j 图谱已清理。'
+            : extracted.usedLlmExtraction
+              ? 'AI 图谱构建完成，旧版 Neo4j 图谱已清理。'
+              : '基础图谱构建完成，旧版 Neo4j 图谱已清理。'
+        : extracted.usedEmbeddingIndex
+          ? 'AI 图谱与向量索引构建完成，当前保存在本地书库。'
+          : extracted.usedLlmExtraction
+            ? 'AI 图谱构建完成，当前保存在本地书库。'
+            : '基础图谱构建完成，当前保存在本地书库。';
       this.saveBuildState({
         sourceId,
         novelId,
         status: 'completed',
         stage: 'completed',
         progressPercent: 100,
-        message: syncedToNeo4jAt
-          ? extracted.usedEmbeddingIndex
-            ? 'AI 图谱、向量索引已构建完成，并已同步到 Neo4j。'
-            : 'AI 图谱已构建完成，并已同步到 Neo4j。'
-          : staleNeo4jGraphCleared
-            ? extracted.usedEmbeddingIndex
-              ? 'AI 图谱与向量索引构建完成，旧版 Neo4j 图谱已清理。'
-              : extracted.usedLlmExtraction
-                ? 'AI 图谱构建完成，旧版 Neo4j 图谱已清理。'
-                : '基础图谱构建完成，旧版 Neo4j 图谱已清理。'
-          : extracted.usedEmbeddingIndex
-            ? 'AI 图谱与向量索引构建完成，当前保存在本地书库。'
-            : extracted.usedLlmExtraction
-              ? 'AI 图谱构建完成，当前保存在本地书库。'
-              : '基础图谱构建完成，当前保存在本地书库。',
+        message: neo4jSyncWarning
+          ? `${baseCompletionMessage}（${neo4jSyncWarning}）`
+          : baseCompletionMessage,
         errorMessage: null,
         startedAt,
         completedAt,

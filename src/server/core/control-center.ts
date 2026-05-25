@@ -568,6 +568,13 @@ export class ControlCenterService {
     return this.#libraryIntelligence.clearNovelKnowledgeGraph(sourceId, novelId);
   }
 
+  syncLibraryKnowledgeGraphToNeo4j(
+    sourceId: string,
+    novelId: string,
+  ): Promise<{ synced: boolean; message: string; entityCount: number; relationCount: number }> {
+    return this.#libraryIntelligence.syncNovelKnowledgeGraphToNeo4j(sourceId, novelId);
+  }
+
   askLibraryAssistant(input: AskLibraryAssistantInput): Promise<LibraryAssistantResponse> {
     return this.#libraryIntelligence.askLibraryAssistant(input);
   }

@@ -1643,7 +1643,7 @@ export class SqliteNovelRepository {
     const timestamp = new Date().toISOString();
     const insertEntity = this.#database.prepare(
       `
-        INSERT INTO knowledge_graph_entities (
+        INSERT OR IGNORE INTO knowledge_graph_entities (
           entity_id,
           source_id,
           novel_id,
@@ -1664,7 +1664,7 @@ export class SqliteNovelRepository {
     );
     const insertRelation = this.#database.prepare(
       `
-        INSERT INTO knowledge_graph_relations (
+        INSERT OR IGNORE INTO knowledge_graph_relations (
           relation_id,
           source_id,
           novel_id,
@@ -1682,7 +1682,7 @@ export class SqliteNovelRepository {
     );
     const insertChunk = this.#database.prepare(
       `
-        INSERT INTO knowledge_graph_chunks (
+        INSERT OR IGNORE INTO knowledge_graph_chunks (
           chunk_id,
           source_id,
           novel_id,

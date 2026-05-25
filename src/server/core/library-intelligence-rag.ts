@@ -2335,7 +2335,12 @@ function finalizeEntities(
   entityMap: Map<string, AggregateEntity>,
   snapshot: StoredNovelSnapshot,
 ): Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>> {
-  return [...entityMap.values()]
+  // 先构建去重后的实体列表：按 createStableId 去重，保留排序靠前（更显著）的实体。
+  // normalizeEntityKey（Map 键）和 createStableId 的归一化算法不同，
+  // 可能导致不同键的实体在 createStableId 下碰撞 —— 这是 UNIQUE constraint 的根因。
+  const dedupedById = new Map<string, { entity: AggregateEntity; rank: number }>();
+  let rank = 0;
+  for (const entity of [...entityMap.values()]
     .filter((entity) => entity.displayName.length > 0)
     .sort((left, right) => {
       const chapterDelta = right.chapterIds.size - left.chapterIds.size;
@@ -2349,26 +2354,36 @@ function finalizeEntities(
       }
 
       return left.displayName.localeCompare(right.displayName, 'zh-CN');
-    })
-    .slice(0, MAX_GRAPH_ENTITIES)
-    .map((entity, index, all) => {
-      const chapterIds = [...entity.chapterIds].sort();
-      const mentionBaseline = Math.max(1, all[0]?.mentionCount ?? 1);
-      const entityType = chooseWinner(entity.typeVotes) ?? classifyEntity(snapshot, entity.displayName);
-      return {
-        id: createStableId('entity', entity.displayName),
-        name: entity.displayName,
-        entityType,
-        summary: entity.summaries.join('；').slice(0, 240) || `${entity.displayName} 在正文中多次出现。`,
-        prominence: Number((entity.mentionCount / mentionBaseline).toFixed(3)),
-        mentionCount: Math.max(1, entity.mentionCount),
-        mentionChapterIds: chapterIds,
-        firstChapterId: chapterIds[0] ?? null,
-        lastChapterId: chapterIds[chapterIds.length - 1] ?? null,
-        aliases: [...entity.aliases].filter((alias) => alias !== entity.displayName).slice(0, 6),
-        embedding: entity.embedding,
-      } satisfies Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>;
-    });
+    })) {
+    rank += 1;
+    const id = createStableId('entity', entity.displayName);
+    if (!dedupedById.has(id)) {
+      dedupedById.set(id, { entity, rank });
+    }
+    // 已存在同 ID 的实体：保留更显著的（排序靠前的），静默丢弃后者。
+  }
+
+  const sorted = [...dedupedById.values()].sort((left, right) => left.rank - right.rank);
+  const sliced = sorted.slice(0, MAX_GRAPH_ENTITIES);
+
+  return sliced.map(({ entity }, index, all) => {
+    const chapterIds = [...entity.chapterIds].sort();
+    const mentionBaseline = Math.max(1, all[0]?.entity.mentionCount ?? 1);
+    const entityType = chooseWinner(entity.typeVotes) ?? classifyEntity(snapshot, entity.displayName);
+    return {
+      id: createStableId('entity', entity.displayName),
+      name: entity.displayName,
+      entityType,
+      summary: entity.summaries.join('；').slice(0, 240) || `${entity.displayName} 在正文中多次出现。`,
+      prominence: Number((entity.mentionCount / mentionBaseline).toFixed(3)),
+      mentionCount: Math.max(1, entity.mentionCount),
+      mentionChapterIds: chapterIds,
+      firstChapterId: chapterIds[0] ?? null,
+      lastChapterId: chapterIds[chapterIds.length - 1] ?? null,
+      aliases: [...entity.aliases].filter((alias) => alias !== entity.displayName).slice(0, 6),
+      embedding: entity.embedding,
+    } satisfies Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>;
+  });
 }
 
 function finalizeRelations(

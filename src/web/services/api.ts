@@ -455,6 +455,25 @@ export async function resumeLibraryKnowledgeGraph(
   );
 }
 
+export interface SyncNeo4jKnowledgeGraphResult {
+  synced: boolean;
+  message: string;
+  entityCount: number;
+  relationCount: number;
+}
+
+export async function syncLibraryKnowledgeGraphToNeo4j(
+  sourceId: string,
+  novelId: string,
+): Promise<SyncNeo4jKnowledgeGraphResult> {
+  return requestJson<SyncNeo4jKnowledgeGraphResult>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/graph/sync-neo4j`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
     export async function deleteLibraryKnowledgeGraph(
       sourceId: string,
       novelId: string,

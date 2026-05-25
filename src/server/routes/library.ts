@@ -313,6 +313,17 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     }
   });
 
+  router.post('/novels/:sourceId/:novelId/graph/sync-neo4j', async (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const result = await service.syncLibraryKnowledgeGraphToNeo4j(sourceId, novelId);
+      response.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Neo4j sync failed.';
+      response.status(422).json({ message });
+    }
+  });
+
   router.post('/novels/:sourceId/:novelId/assistant/chat', async (request, response) => {
     try {
       const { sourceId, novelId } = request.params;

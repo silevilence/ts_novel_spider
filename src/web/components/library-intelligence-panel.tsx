@@ -9,6 +9,7 @@ import {
   fetchNeo4jPreferences,
   pauseLibraryKnowledgeGraph,
   resumeLibraryKnowledgeGraph,
+  syncLibraryKnowledgeGraphToNeo4j,
   updateLibraryKnowledgeGraphProfile,
   type LibraryKnowledgeGraphBuildMode,
   type UpdateKnowledgeGraphProfileInput,
@@ -154,6 +155,7 @@ export function LibraryIntelligencePanel({
   const [graphBuilding, setGraphBuilding] = useState(false);
   const [graphPausing, setGraphPausing] = useState(false);
   const [graphResuming, setGraphResuming] = useState(false);
+  const [graphSyncing, setGraphSyncing] = useState(false);
   const [graphDeleting, setGraphDeleting] = useState(false);
   const [graphProgressExpanded, setGraphProgressExpanded] = useState(() => shouldExpandBuildProgress(detailPayload.knowledgeGraph.build.status));
   const [configExpanded, setConfigExpanded] = useState(false);
@@ -410,6 +412,32 @@ export function LibraryIntelligencePanel({
     }
   }
 
+  async function handleSyncToNeo4j() {
+    if (graphSyncing || buildRunning) {
+      return;
+    }
+
+    setGraphSyncing(true);
+
+    try {
+      const result = await syncLibraryKnowledgeGraphToNeo4j(detail.sourceId, detail.metadata.novelId);
+      onNotify({
+        tone: 'success',
+        title: '已同步到 Neo4j',
+        message: result.message,
+      });
+      await onRefresh();
+    } catch (error) {
+      onNotify({
+        tone: 'error',
+        title: 'Neo4j 同步失败',
+        message: error instanceof Error ? error.message : 'Neo4j sync failed.',
+      });
+    } finally {
+      setGraphSyncing(false);
+    }
+  }
+
   function handlePreviewEntity(entity: GraphEntity) {
     setGraphPreview(buildEntityPreview(entity));
   }
@@ -418,7 +446,7 @@ export function LibraryIntelligencePanel({
     setGraphPreview(buildRelationPreview(relation));
   }
 
-  const buildBusy = graphBuilding || graphPausing || graphResuming;
+  const buildBusy = graphBuilding || graphPausing || graphResuming || graphSyncing;
   const buildRunning = build.status === 'queued' || build.status === 'running';
   const buildStartDisabled = buildBusy || buildRunning || build.status === 'paused';
   const graphNamespace = `${knowledgeGraph.namespace}:${knowledgeGraph.entities.length}:${knowledgeGraph.relations.length}:${build.updatedAt ?? 'idle'}`;
@@ -648,6 +676,21 @@ export function LibraryIntelligencePanel({
                     全量重做
                   </button>
                 </article>
+                {knowledgeGraph.entities.length > 0 ? (
+                <article className="graph-action-tile">
+                  <p className="label">Neo4j 同步</p>
+                  <strong className="graph-action-title">推送到远端图数据库</strong>
+                  <p className="graph-action-note">将本地已生成的图谱同步到 Neo4j（需先在偏好中配置连接信息）。</p>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => void handleSyncToNeo4j()}
+                    disabled={buildBusy || buildRunning}
+                  >
+                    {graphSyncing ? '同步中...' : '手动同步到 Neo4j'}
+                  </button>
+                </article>
+                ) : null}
               </div>
 
               <p className="panel-note graph-status-copy">
