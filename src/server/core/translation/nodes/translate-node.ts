@@ -85,13 +85,14 @@ export async function translateNode(
       drafts.push(...batchDrafts);
 
       // 仅当本批所有段落都有有效译文时才追加到对话历史
+      // 历史以 EXACT 原始格式存储，保证 KV Cache 前缀匹配
       const allValid = batchDrafts.every(
         (d) => d.translatedText && d.translatedText.length > 0,
       );
       if (allValid) {
-        const batchSource = batch.map((s) => s.sourceText).join('\n');
-        const batchTranslated = batchDrafts.map((d) => d.translatedText).join('\n');
-        historyManager.addEntry(batchSource, batchTranslated);
+        const batchPrompt = buildBatchPrompt(batch);
+        const batchResponse = batchDrafts.map((d) => d.translatedText).join('\n---\n');
+        historyManager.addEntry(batchPrompt, batchResponse);
       }
 
       // 通知外部批次完成（用于实时进度条）
@@ -155,6 +156,7 @@ export async function translateNode(
 
 /**
  * 翻译一批段落（一次 LLM 调用）。
+ * 失败时先重试 3 次（温度递进），仍失败再回退逐段翻译。
  * 遇到上下文溢出错误时自动裁剪历史后重试。
  */
 async function translateBatch(
@@ -169,31 +171,46 @@ async function translateBatch(
 ): Promise<ParagraphDraft[]> {
   let lastError: Error | null = null;
   const maxRetries = 3;
+  // 温度递进：0.3 → 0.45 → 0.6 → 0.75（每次提高不稳定性以尝试不同输出）
+  const retryTemperatures = [0.3, 0.45, 0.6, 0.75];
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const temperature = retryTemperatures[attempt] ?? 0.3;
     try {
-      const prompt = buildBatchPrompt(batch);
+      const batchPrompt = buildBatchPrompt(batch);
       const historyMessages = historyManager.buildHistoryMessages();
 
-      console.log(`[translation] 调用 LLM (尝试 ${attempt + 1}/${maxRetries + 1}, ${batch.length} 段, ${historyMessages.length} 条历史)`);
+      console.log(`[translation] 调用 LLM (尝试 ${attempt + 1}/${maxRetries + 1}, ${batch.length} 段, ${historyMessages.length} 条历史, temp=${temperature})`);
 
-      // 将对话历史嵌入 prompt 以避免 exactOptionalPropertyTypes 问题
-      const historyContext = historyMessages.length > 0
-        ? historyMessages.map((m) => `[${m.role === 'user' ? '原文' : '译文'}]: ${m.content}`).join('\n\n') + '\n\n'
-        : '';
-
-      const fullPrompt = historyContext + prompt;
+      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+        ...historyMessages,
+        { role: 'user', content: batchPrompt },
+      ];
 
       const callStart = Date.now();
       const result = await generateText({
         model,
         system: systemPrompt,
-        prompt: fullPrompt,
-        temperature: 0.3,
+        messages,
+        temperature,
         maxOutputTokens: Math.max(batch.reduce((sum, s) => sum + s.sourceText.length, 0) * 3, 512),
         abortSignal: AbortSignal.timeout(120000),
       });
       const callDuration = Date.now() - callStart;
+
+      // 打印 DeepSeek 缓存命中信息（若有）
+      try {
+        const usage = (result as unknown as Record<string, unknown>).usage as Record<string, unknown> | undefined;
+        if (usage) {
+          const hit = usage.prompt_cache_hit_tokens as number | undefined;
+          const miss = usage.prompt_cache_miss_tokens as number | undefined;
+          if (typeof hit === 'number' || typeof miss === 'number') {
+            const total = (hit ?? 0) + (miss ?? 0);
+            const rate = total > 0 ? Math.round(((hit ?? 0) / total) * 100) : 0;
+            console.log(`[translation] DS Cache: hit=${hit ?? '?'} miss=${miss ?? '?'} total=${total} rate=${rate}%`);
+          }
+        }
+      } catch { /* ignore */ }
 
       const responseText = result.text.trim();
 
@@ -201,7 +218,7 @@ async function translateBatch(
         provider: modelIdStr.split(':')[0] ?? 'unknown',
         model: modelIdStr.split(':')[1] ?? modelIdStr,
         systemPrompt,
-        userPrompt: fullPrompt,
+        userPrompt: batchPrompt,
         response: responseText,
         durationMs: callDuration,
       });
@@ -219,11 +236,12 @@ async function translateBatch(
         continue;
       }
 
-      // 非上下文错误或历史已耗尽，抛出
-      if (attempt >= maxRetries || !isContextOverflowError(errMsg)) {
+      // 达到最大重试次数，抛出以触发回退
+      if (attempt >= maxRetries) {
+        console.warn(`[translation] 批次翻译 ${maxRetries + 1} 次尝试均失败，回退逐段翻译: ${errMsg}`);
         throw lastError;
       }
-      console.warn(`[translation] 翻译失败，第 ${attempt + 1} 次重试: ${errMsg}`);
+      console.warn(`[translation] 翻译失败，第 ${attempt + 1} 次重试 (temp=${temperature}→${retryTemperatures[attempt + 1]}): ${errMsg}`);
     }
   }
 
@@ -246,7 +264,9 @@ async function translateSingleSegment(
   const result = await generateText({
     model,
     system: systemPrompt,
-    prompt: segment.sourceText,
+    messages: [
+      { role: 'user', content: segment.sourceText },
+    ],
     temperature: 0.3,
     maxOutputTokens: Math.max(segment.sourceText.length * 3, 256),
     abortSignal: AbortSignal.timeout(60000),
@@ -350,43 +370,45 @@ function splitByNumberedPrefix(text: string): string[] {
   return text.split(/(?=【\d+】)/);
 }
 
-/** 构建批次翻译 prompt：带编号的段落 + 明确的分隔符要求 */
+/** 构建批次翻译 prompt：仅包含段落内容，格式极简以最大化 KV Cache 命中 */
 function buildBatchPrompt(
   batch: Array<{ sourceText: string }>,
 ): string {
   const numberedParts: string[] = [];
   for (let i = 0; i < batch.length; i++) {
-    // 使用 "【N】" 编号在译文中更不容易与正文混淆
     numberedParts.push(`【${i + 1}】${batch[i]!.sourceText}`);
   }
-
-  return [
-    `请将以下 ${batch.length} 段文本翻译为目标语言。`,
-    `重要：每段译文之间必须用单独一行 "---" 分隔，不要合并段落，不要添加任何解释。`,
-    `每段译文前用 "【N】" 标记段落编号以帮助对齐。`,
-    '',
-    numberedParts.join('\n\n---\n\n'),
-  ].join('\n');
+  return numberedParts.join('\n\n---\n\n');
 }
 
-/** 构建翻译系统提示词（Agent 角色设定 + 术语约束） */
+/** 构建翻译系统提示词（全部固定指令 + 术语表，供 KV Cache 100% 复用） */
 function buildTranslationSystemPrompt(
   sourceLang: string,
   targetLang: string,
   glossary: string,
 ): string {
-  return [
-    `你是一位专业的${langLabel(sourceLang)}→${langLabel(targetLang)}文学翻译专家。`,
+  const srcLabel = langLabel(sourceLang);
+  const tgtLabel = langLabel(targetLang);
+  const parts = [
+    `你是一位资深${srcLabel}→${tgtLabel}文学翻译专家，精通两种语言的文学表达与文化背景。`,
     '',
-    '核心规则：',
-    `1. 只输出${langLabel(targetLang)}译文，不要附带任何解释、注释或原文`,
-    '2. 保持原文段落结构、语气和文学风格',
-    '3. 严格遵循术语表中的翻译，术语表优先级高于你的常识',
-    '4. 人物名、地名、专有名词按术语表翻译，术语表未覆盖的合理音译',
-    '5. 译文需自然流畅，符合目标语言阅读习惯',
-
-    glossary ? `\n术语表（强制遵循）：\n${glossary}` : '',
-  ].join('\n');
+    '【核心翻译规则】',
+    `1. 只输出${tgtLabel}译文，严禁附带任何解释、注释、分析或原文`,
+    '2. 严格保持原文的段落结构、叙述语气和文学风格',
+    '3. 人物名、地名、专有名词按术语表翻译，术语表未覆盖的合理音译',
+    `4. 译文需自然流畅，符合${tgtLabel}母语者的阅读习惯`,
+    '5. 对话和内心独白需保留口语感和角色性格',
+    '6. 修辞手法（比喻、排比等）应在目标语言中还原等效效果',
+    '',
+    '【段落输出格式】',
+    '每段译文用单独一行 "---" 分隔，段落内不要出现此分隔符',
+    '每段译文前保留【N】编号以帮助对齐',
+    '严格按照原文段落顺序输出，不要合并或拆分段落',
+  ];
+  if (glossary) {
+    parts.push('', '【术语表（强制遵循）】', glossary);
+  }
+  return parts.join('\n');
 }
 
 /** 从术语表中查找哪些术语出现在译文中 */

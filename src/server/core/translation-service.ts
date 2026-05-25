@@ -499,7 +499,7 @@ export class TranslationService {
     const terms = this.#repository.listTranslationTerms(sourceId, novelId);
     const profile = this.getTranslationProfile(sourceId, novelId);
     const paragraphsPerBatch = profile?.translationConcurrency ?? 2;
-    const historyManager = new TranslationHistoryManager();
+    const historyManager = new TranslationHistoryManager(200); // DeepSeek 1M 上下文可容纳大量历史
     const llmLogger = new LlmInteractionLogger(
       undefined,
       this.#preferences.getTranslationState().config.enableLlmInteractionLog,
