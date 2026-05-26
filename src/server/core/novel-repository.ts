@@ -3059,13 +3059,6 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
 
-    // 翻译构建——段落级进度追踪
-    this.ensureColumnExists('novel_translation_builds', 'current_chapter_title', 'TEXT');
-    this.ensureColumnExists('novel_translation_builds', 'current_chapter_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
-    this.ensureColumnExists('novel_translation_builds', 'current_chapter_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
-    this.ensureColumnExists('novel_translation_builds', 'total_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
-    this.ensureColumnExists('novel_translation_builds', 'total_paragraph_estimate', 'INTEGER NOT NULL DEFAULT 0');
-
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS reader_typography (
         source_id TEXT NOT NULL,
@@ -3134,6 +3127,11 @@ export class SqliteNovelRepository {
         failed_chapters INTEGER NOT NULL DEFAULT 0,
         glossary_version INTEGER NOT NULL DEFAULT 0,
         profile_version INTEGER NOT NULL DEFAULT 0,
+        current_chapter_title TEXT,
+        current_chapter_paragraphs INTEGER NOT NULL DEFAULT 0,
+        current_chapter_translated_paragraphs INTEGER NOT NULL DEFAULT 0,
+        total_translated_paragraphs INTEGER NOT NULL DEFAULT 0,
+        total_paragraph_estimate INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (source_id, novel_id),
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
@@ -3229,6 +3227,13 @@ export class SqliteNovelRepository {
       CREATE INDEX IF NOT EXISTS idx_chapter_translation_qa_lookup
         ON chapter_translation_qa(source_id, novel_id, chapter_id, check_type);
     `);
+
+    // 翻译构建——段落级进度追踪（幂等迁移：仅对旧库补列）
+    this.ensureColumnExists('novel_translation_builds', 'current_chapter_title', 'TEXT');
+    this.ensureColumnExists('novel_translation_builds', 'current_chapter_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('novel_translation_builds', 'current_chapter_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('novel_translation_builds', 'total_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('novel_translation_builds', 'total_paragraph_estimate', 'INTEGER NOT NULL DEFAULT 0');
   }
 
   private ensureColumnExists(tableName: string, columnName: string, columnDefinition: string): void {
