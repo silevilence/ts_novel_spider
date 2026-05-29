@@ -40,6 +40,7 @@ export interface KnowledgeGraphBuildArtifacts {
     chapterTitle: string;
     extractionJson: string;
     warningMessage: string | null;
+    status: 'success' | 'failed';
   }>;
   usedLlmExtraction: boolean;
   usedEmbeddingIndex: boolean;
@@ -341,6 +342,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
     chapterTitle: string;
     extractionJson: string;
     warningMessage: string | null;
+    status: 'success' | 'failed';
   }) => void | Promise<void>;
   onProgress?: (event: KnowledgeGraphBuildProgressEvent) => void | Promise<void>;
   onStageProgress?: (event: KnowledgeGraphBuildStageEvent) => void | Promise<void>;
@@ -348,6 +350,13 @@ export async function buildKnowledgeGraphArtifacts(options: {
   const chunkPlans = createChunkPlans(options.snapshot.chapters);
   const buildMode = options.mode ?? 'incremental';
   const extractionModels = options.extractionModels.filter((route) => route.maxConcurrency > 0);
+
+  if (extractionModels.length === 0) {
+    throw new Error(
+      '未配置图谱提取模型，无法构建知识图谱。请先在小说图谱配置中添加至少一个提取模型。',
+    );
+  }
+
   const buildStartedAtMs = parseTimestampMs(options.startedAt) ?? Date.now();
   const modelStates = createExtractionModelRuntimeStates(extractionModels, options.modelStatsSeed);
   const entityMap = new Map<string, AggregateEntity>();
@@ -374,12 +383,9 @@ export async function buildKnowledgeGraphArtifacts(options: {
     if (checkpoint.extraction.usedLlm) {
       usedLlmExtraction = true;
       llmSuccessCount += 1;
-    } else {
-      fallbackCount += 1;
-      if (checkpoint.warning) {
-        llmFailureCount += 1;
-        pushUnique(failureSamples, checkpoint.warning, 4);
-      }
+    } else if (checkpoint.warning) {
+      llmFailureCount += 1;
+      pushUnique(failureSamples, checkpoint.warning, 4);
     }
   }
 
@@ -400,9 +406,8 @@ export async function buildKnowledgeGraphArtifacts(options: {
     }),
   );
   const circuitBreakerEnabled = candidateModelKeys.size > 1;
-  const workerSlots: Array<{ id: string; route: ResolvedExtractionRoute | null }> = extractionModels.length > 0
-    ? createExtractionWorkerSlots(extractionModels)
-    : [{ id: 'fallback::0', route: null }];
+  const workerSlots: Array<{ id: string; route: ResolvedExtractionRoute | null }> =
+    createExtractionWorkerSlots(extractionModels);
   const maxInFlight = Math.max(
     1,
     Math.min(
@@ -526,12 +531,10 @@ export async function buildKnowledgeGraphArtifacts(options: {
     if (settled.extraction.usedLlm) {
       usedLlmExtraction = true;
       llmSuccessCount += 1;
-    } else {
-      fallbackCount += 1;
-      if (settled.warning) {
-        llmFailureCount += 1;
-        pushUnique(failureSamples, settled.warning, 4);
-      }
+    } else if (settled.warning) {
+      // 所有模型均失败，片段标记为 failed
+      llmFailureCount += 1;
+      pushUnique(failureSamples, settled.warning, 4);
     }
 
     extractionByChunkId.set(settled.pending.chunk.id, { extraction: settled.extraction, warning: settled.warning });
@@ -543,6 +546,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
       chapterTitle: settled.pending.chunk.chapterTitle,
       extractionJson: serializeCheckpointExtraction(settled.pending.chunk, settled.extraction),
       warningMessage: settled.warning,
+      status: settled.extraction.usedLlm ? 'success' : 'failed',
     });
 
     completedChunks += 1;
@@ -580,8 +584,10 @@ export async function buildKnowledgeGraphArtifacts(options: {
     });
   }
 
-  if (extractionModels.length > 0 && chunkPlans.length > 0 && !usedLlmExtraction && fallbackCount === chunkPlans.length && llmFailureCount > 0) {
-    throw new Error(`已配置图谱抽取模型，但所有结构化抽取请求都失败了。最近错误：${failureSamples[0] ?? '未返回具体错误。'}`);
+  if (chunkPlans.length > 0 && !usedLlmExtraction && llmFailureCount > 0) {
+    throw new Error(
+      `已配置图谱抽取模型，但所有结构化抽取请求都失败了。请检查模型配置后使用重试端点再次尝试。最近错误：${failureSamples[0] ?? '未返回具体错误。'}`,
+    );
   }
 
   await options.onStageProgress?.({
@@ -639,6 +645,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
               chapterTitle: chunk.chapterTitle,
               extractionJson: serializeCheckpointExtraction(chunk, resolved.extraction),
               warningMessage: resolved.warning,
+              status: resolved.extraction.usedLlm ? 'success' as const : 'failed' as const,
             }]
           : [];
       }),
@@ -677,6 +684,7 @@ export async function buildKnowledgeGraphArtifacts(options: {
             chapterTitle: chunk.chapterTitle,
             extractionJson: serializeCheckpointExtraction(chunk, resolved.extraction),
             warningMessage: resolved.warning,
+            status: resolved.extraction.usedLlm ? 'success' as const : 'failed' as const,
           }]
         : [];
     }),
@@ -1295,16 +1303,13 @@ function createExtractionWorkerSlots(
   return slots;
 }
 
-async function processChunkWithRoute(
+export async function processChunkWithRoute(
   snapshot: StoredNovelSnapshot,
   chunk: ChunkPlan,
   route: ResolvedExtractionRoute | null,
 ): Promise<{ extraction: ChunkExtraction; warning: string | null }> {
   if (!route) {
-    return {
-      extraction: extractChunkHeuristically(snapshot, chunk),
-      warning: null,
-    };
+    throw new Error('未配置图谱提取模型，无法进行结构化提取。');
   }
 
   try {
@@ -1314,11 +1319,20 @@ async function processChunkWithRoute(
     };
   } catch (error) {
     return {
-      extraction: extractChunkHeuristically(snapshot, chunk),
+      extraction: FAILED_EXTRACTION,
       warning: describeErrorMessage(error),
     };
   }
 }
+
+export const FAILED_EXTRACTION: ChunkExtraction = Object.freeze({
+  summary: '',
+  eventSummary: '',
+  entities: [],
+  relations: [],
+  keywordHints: [],
+  usedLlm: false,
+});
 
 async function extractChunkWithLlm(
   snapshot: StoredNovelSnapshot,

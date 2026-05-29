@@ -166,7 +166,30 @@ test('library graph routes recover stale running graph builds when no active tas
 });
 
 test('library graph routes can rebuild after stale graph tasks are auto-marked failed', async () => {
-  const { app, repository, cleanup } = createLibraryServer();
+  const fakeProvider = await createFakeOpenAiProviderServer();
+  const preferences = new SystemPreferencesService();
+  preferences.updateLlmProviders([
+    {
+      id: 'fake-openai',
+      label: 'Fake OpenAI',
+      type: 'openai-compatible',
+      enabled: true,
+      baseUrl: fakeProvider.baseUrl,
+      apiKey: 'test-key',
+      models: [
+        {
+          id: 'fake-chat',
+          label: 'Fake Chat',
+          modelId: 'fake-chat',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: ['chat'],
+        },
+      ],
+    },
+  ]);
+  const { app, repository, cleanup } = createLibraryServer({ systemPreferences: preferences });
   repository.saveKnowledgeGraphBuild({
     sourceId: 'syosetu',
     novelId: 'n1000lib',
@@ -190,6 +213,15 @@ test('library graph routes can rebuild after stale graph tasks are auto-marked f
     const stalePayload = await fetchGraph(baseUrl);
     assert.equal(stalePayload.knowledgeGraph.build.status, 'failed');
 
+    // 配置提取模型后重建
+    await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/profile`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        extractionModels: [{ providerId: 'fake-openai', modelId: 'fake-chat', maxConcurrency: 1 }],
+      }),
+    });
+
     const rebuildResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/build`, { method: 'POST' });
     assert.equal(rebuildResponse.status, 202);
 
@@ -200,11 +232,36 @@ test('library graph routes can rebuild after stale graph tasks are auto-marked f
   } finally {
     await closeServer(server);
     cleanup();
+    await fakeProvider.close();
   }
 });
 
 test('library graph routes resume interrupted graph builds when checkpoints exist', async () => {
+  const fakeProvider = await createFakeOpenAiProviderServer();
+  const preferences = new SystemPreferencesService();
+  preferences.updateLlmProviders([
+    {
+      id: 'fake-openai',
+      label: 'Fake OpenAI',
+      type: 'openai-compatible',
+      enabled: true,
+      baseUrl: fakeProvider.baseUrl,
+      apiKey: 'test-key',
+      models: [
+        {
+          id: 'fake-chat',
+          label: 'Fake Chat',
+          modelId: 'fake-chat',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: ['chat'],
+        },
+      ],
+    },
+  ]);
   const { app, cleanup } = createLibraryServer({
+    systemPreferences: preferences,
     beforeControlCenter: (repository) => {
       repository.saveKnowledgeGraphBuild({
         sourceId: 'syosetu',
@@ -263,6 +320,7 @@ test('library graph routes resume interrupted graph builds when checkpoints exis
           usedLlm: true,
         }),
         warningMessage: null,
+        status: 'success',
       });
     },
   });
@@ -283,6 +341,7 @@ test('library graph routes resume interrupted graph builds when checkpoints exis
   } finally {
     await closeServer(server);
     cleanup();
+    await fakeProvider.close();
   }
 });
 
@@ -521,7 +580,7 @@ test('library graph routes repair prompted JSON leaf type mismatches before loca
     assert.ok(payload.knowledgeGraph.build.entityCount >= 4);
     assert.ok(payload.knowledgeGraph.entities.some((entity) => entity.name === '艾琳' && entity.aliases.includes('女伴')));
     assert.ok(payload.knowledgeGraph.entities.some((entity) => entity.name === '莱昂' && entity.aliases.includes('男主')));
-    assert.ok(payload.knowledgeGraph.buildLogs.some((entry) => /回退 0 个/.test(entry.message)));
+    assert.ok(payload.knowledgeGraph.buildLogs.some((entry) => /失败 0 个/.test(entry.message)));
   } finally {
     await closeServer(server);
     cleanup();
@@ -659,7 +718,7 @@ test('library graph routes requeue failed chunks onto another extraction model b
 
     const payload = await pollGraph(baseUrl, (current) => current.knowledgeGraph.build.status === 'completed', { maxAttempts: 200 });
     assert.equal(payload.knowledgeGraph.build.status, 'completed');
-    assert.ok(payload.knowledgeGraph.buildLogs.some((entry) => /回退 0 个/.test(entry.message)));
+    assert.ok(payload.knowledgeGraph.buildLogs.some((entry) => /失败 0 个/.test(entry.message)));
     assert.deepEqual(fakeProvider.getSeenExtractionModels().sort(), ['fake-chat-a', 'fake-chat-b']);
 
     const requestCounts = fakeProvider.getExtractionRequestCounts();
@@ -678,7 +737,39 @@ test('library graph routes requeue failed chunks onto another extraction model b
 });
 
 test('library graph routes build a knowledge graph, lock config and answer assistant chat', async () => {
-  const { app, cleanup } = createLibraryServer();
+  const fakeProvider = await createFakeOpenAiProviderServer();
+  const preferences = new SystemPreferencesService();
+  preferences.updateLlmProviders([
+    {
+      id: 'fake-openai',
+      label: 'Fake OpenAI',
+      type: 'openai-compatible',
+      enabled: true,
+      baseUrl: fakeProvider.baseUrl,
+      apiKey: 'test-key',
+      models: [
+        {
+          id: 'fake-chat',
+          label: 'Fake Chat',
+          modelId: 'fake-chat',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['chat'],
+          defaultFor: ['chat'],
+        },
+        {
+          id: 'fake-embedding',
+          label: 'Fake Embedding',
+          modelId: 'fake-embedding',
+          enabled: true,
+          capabilityMode: 'manual',
+          capabilities: ['embedding'],
+          defaultFor: ['embedding'],
+        },
+      ],
+    },
+  ]);
+  const { app, cleanup } = createLibraryServer({ systemPreferences: preferences });
   const server = app.listen(0, '127.0.0.1');
 
   try {
@@ -686,7 +777,12 @@ test('library graph routes build a knowledge graph, lock config and answer assis
     const profileResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph/profile`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ extractionConcurrency: 4, neo4j: { enabled: false } }),
+      body: JSON.stringify({
+        extractionConcurrency: 4,
+        extractionModels: [{ providerId: 'fake-openai', modelId: 'fake-chat', maxConcurrency: 2 }],
+        embeddingModel: { providerId: 'fake-openai', modelId: 'fake-embedding' },
+        neo4j: { enabled: false },
+      }),
     });
     const profilePayload = await profileResponse.json() as {
       profile: { configLocked: boolean; neo4j: { enabled: boolean }; extractionConcurrency: number };
@@ -732,13 +828,14 @@ test('library graph routes build a knowledge graph, lock config and answer assis
     };
 
     assert.equal(assistantResponse.status, 200);
-    assert.equal(assistantPayload.reply.mode, 'local');
-    assert.match(assistantPayload.reply.message, /本地图谱|聊天模型/);
+    assert.ok(assistantPayload.reply.mode === 'local' || assistantPayload.reply.mode === 'llm');
+    assert.ok(assistantPayload.reply.message.length > 0);
     assert.ok(assistantPayload.reply.sources.some((source) => source.type === 'graph'));
     assert.ok(assistantPayload.reply.sources.some((source) => source.chapterId === 'chapter-2'));
   } finally {
     await closeServer(server);
     cleanup();
+    await fakeProvider.close();
   }
 });
 

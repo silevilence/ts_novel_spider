@@ -1,5 +1,9 @@
 # TS Novel Spider - Copilot 辅助开发指南
 
+> **🚫 Git 提交禁令**：除非用户在当前对话中**显式要求**提交（如"提交"、"commit"、"push"），否则**绝对禁止**执行任何 git 提交或推送操作。包括但不限于：`git commit`、`git push`、`git add` + `git commit`。允许的操作：`git status`、`git log`、`git diff` 等只读或用户明确要求的操作。此规则适用于所有场景——日常改代码、触发技能（brainstorming/writing-plans/executing-plans/finishing-a-development-branch 等）、子代理执行，无一例外。
+
+> 提问时优先使用相关工具
+
 ## 1. 项目概述 (Project Overview)
 
 - **核心定位**：基于 TypeScript 的自动化小说爬虫与多格式导出工具。

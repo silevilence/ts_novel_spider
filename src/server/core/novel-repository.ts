@@ -135,6 +135,7 @@ export interface StoredKnowledgeGraphBuildCheckpointRow {
   chapterTitle: string;
   extractionJson: string;
   warningMessage: string | null;
+  status: 'success' | 'failed';
   updatedAt: string;
 }
 
@@ -459,6 +460,7 @@ interface KnowledgeGraphBuildCheckpointRow {
   chapter_title: string;
   extraction_json: string;
   warning_message: string | null;
+  status: string;
   updated_at: string;
 }
 
@@ -1390,9 +1392,35 @@ export class SqliteNovelRepository {
             chapter_title,
             extraction_json,
             warning_message,
+            status,
             updated_at
           FROM novel_graph_build_checkpoints
           WHERE source_id = ? AND novel_id = ?
+          ORDER BY chapter_index ASC, chunk_index ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapKnowledgeGraphBuildCheckpointRow(row as KnowledgeGraphBuildCheckpointRow));
+  }
+
+  listFailedKnowledgeGraphCheckpoints(sourceId: string, novelId: string): StoredKnowledgeGraphBuildCheckpointRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            source_id,
+            novel_id,
+            chunk_id,
+            chapter_id,
+            chapter_index,
+            chunk_index,
+            chapter_title,
+            extraction_json,
+            warning_message,
+            status,
+            updated_at
+          FROM novel_graph_build_checkpoints
+          WHERE source_id = ? AND novel_id = ? AND status = 'failed'
           ORDER BY chapter_index ASC, chunk_index ASC
         `,
       )
@@ -1410,6 +1438,7 @@ export class SqliteNovelRepository {
     chapterTitle: string;
     extractionJson: string;
     warningMessage: string | null;
+    status: 'success' | 'failed';
   }): void {
     this.assertNovelExists(input.sourceId, input.novelId);
 
@@ -1427,9 +1456,10 @@ export class SqliteNovelRepository {
             chapter_title,
             extraction_json,
             warning_message,
+            status,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(source_id, novel_id, chunk_id) DO UPDATE SET
             chapter_id = excluded.chapter_id,
             chapter_index = excluded.chapter_index,
@@ -1437,6 +1467,7 @@ export class SqliteNovelRepository {
             chapter_title = excluded.chapter_title,
             extraction_json = excluded.extraction_json,
             warning_message = excluded.warning_message,
+            status = excluded.status,
             updated_at = excluded.updated_at
         `,
       )
@@ -1450,6 +1481,7 @@ export class SqliteNovelRepository {
         input.chapterTitle,
         input.extractionJson,
         input.warningMessage,
+        input.status,
         updatedAt,
       );
   }
@@ -1471,6 +1503,7 @@ export class SqliteNovelRepository {
       chapterTitle: string;
       extractionJson: string;
       warningMessage: string | null;
+      status: 'success' | 'failed';
     }>,
   ): void {
     this.assertNovelExists(sourceId, novelId);
@@ -1487,9 +1520,10 @@ export class SqliteNovelRepository {
           chapter_title,
           extraction_json,
           warning_message,
+          status,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     );
 
@@ -1507,6 +1541,7 @@ export class SqliteNovelRepository {
           checkpoint.chapterTitle,
           checkpoint.extractionJson,
           checkpoint.warningMessage,
+          checkpoint.status,
           new Date().toISOString(),
         );
       }
@@ -3058,6 +3093,7 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_graph_profiles', 'extraction_models_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumnExists('novel_graph_build_checkpoints', 'status', "TEXT NOT NULL DEFAULT 'success'");
 
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS reader_typography (
@@ -3506,6 +3542,7 @@ function mapKnowledgeGraphBuildCheckpointRow(row: KnowledgeGraphBuildCheckpointR
     chapterTitle: row.chapter_title,
     extractionJson: row.extraction_json,
     warningMessage: row.warning_message,
+    status: (row.status === 'failed' ? 'failed' : 'success'),
     updatedAt: row.updated_at,
   };
 }

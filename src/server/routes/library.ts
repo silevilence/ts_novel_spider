@@ -289,6 +289,32 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     }
   });
 
+  router.post('/novels/:sourceId/:novelId/graph/retry-failed', async (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const body = (request.body ?? {}) as { modelOverrides?: Array<{ providerId: string; modelId: string }> };
+
+      const result = await service.retryFailedKnowledgeGraphChunks(
+        sourceId,
+        novelId,
+        body.modelOverrides ? { modelOverrides: body.modelOverrides } : undefined,
+      );
+
+      if (!result) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+
+      response.status(200).json(result);
+    } catch (error) {
+      response.status(409).json({
+        message: error instanceof Error ? error.message : 'Knowledge graph retry failed.',
+      });
+    }
+  });
+
   router.delete('/novels/:sourceId/:novelId/graph', async (request, response) => {
     try {
       const { sourceId, novelId } = request.params;

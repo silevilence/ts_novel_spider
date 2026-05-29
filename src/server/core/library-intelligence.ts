@@ -12,6 +12,7 @@ import {
   collectAssistantSources as collectAssistantSourcesForRag,
   countKnowledgeGraphChunkPlans,
   countReusableKnowledgeGraphCheckpoints,
+  processChunkWithRoute,
   type AssistantGraphTraceHit,
   type AssistantRetrievalTrace,
   type KnowledgeGraphBuildExecutionMode,
@@ -266,6 +267,124 @@ export class LibraryIntelligenceService {
     }
 
     return this.buildKnowledgeGraphState(snapshot);
+  }
+
+  async retryFailedKnowledgeGraphChunks(
+    sourceId: string,
+    novelId: string,
+    options?: {
+      modelOverrides?: Array<{ providerId: string; modelId: string }>;
+    },
+  ): Promise<{
+    retriedCount: number;
+    successCount: number;
+    stillFailedCount: number;
+  } | null> {
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    if (!snapshot) {
+      return null;
+    }
+
+    const failedCheckpoints = this.#repository.listFailedKnowledgeGraphCheckpoints(sourceId, novelId);
+    if (failedCheckpoints.length === 0) {
+      return { retriedCount: 0, successCount: 0, stillFailedCount: 0 };
+    }
+
+    const llmState = this.#preferences.getLlmState();
+    const profile = this.#repository.getKnowledgeGraphProfile(sourceId, novelId);
+    let extractionModels = resolveExtractionRoutes(llmState, profile);
+
+    if (options?.modelOverrides && options.modelOverrides.length > 0) {
+      const overridden = options.modelOverrides
+        .map(({ providerId, modelId }) => {
+          const provider = llmState.providers.find((p) => p.id === providerId);
+          if (!provider) return null;
+          const model = provider.models.find((m) => m.id === modelId);
+          if (!model) return null;
+          return { provider, model, maxConcurrency: 1, source: 'global' as const };
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+      if (overridden.length > 0) {
+        extractionModels = overridden;
+      }
+    }
+
+    if (extractionModels.length === 0) {
+      throw new Error(
+        '未配置图谱提取模型，无法重试失败片段。请先在小说图谱配置中添加至少一个提取模型。',
+      );
+    }
+
+    const allChunks = this.#repository.listKnowledgeGraphChunks(sourceId, novelId);
+    const contentById = new Map(allChunks.map((c) => [c.id, c.content]));
+
+    let successCount = 0;
+    let stillFailedCount = 0;
+
+    for (const cp of failedCheckpoints) {
+      const content = contentById.get(cp.chunkId);
+      if (!content) continue;
+
+      const route = extractionModels[0];
+      if (!route) continue;
+
+      try {
+        const { extraction, warning } = await processChunkWithRoute(snapshot, {
+          id: cp.chunkId,
+          chapterId: cp.chapterId,
+          chapterIndex: cp.chapterIndex,
+          chunkIndex: cp.chunkIndex,
+          chapterTitle: cp.chapterTitle,
+          content,
+        }, route);
+
+        if (extraction.usedLlm) {
+          this.#repository.saveKnowledgeGraphBuildCheckpoint({
+            sourceId,
+            novelId,
+            chunkId: cp.chunkId,
+            chapterId: cp.chapterId,
+            chapterIndex: cp.chapterIndex,
+            chunkIndex: cp.chunkIndex,
+            chapterTitle: cp.chapterTitle,
+            extractionJson: JSON.stringify(extraction),
+            warningMessage: warning,
+            status: 'success',
+          });
+          successCount += 1;
+        } else {
+          this.#repository.saveKnowledgeGraphBuildCheckpoint({
+            sourceId,
+            novelId,
+            chunkId: cp.chunkId,
+            chapterId: cp.chapterId,
+            chapterIndex: cp.chapterIndex,
+            chunkIndex: cp.chunkIndex,
+            chapterTitle: cp.chapterTitle,
+            extractionJson: '{}',
+            warningMessage: warning ?? '重试后模型仍返回空结果。',
+            status: 'failed',
+          });
+          stillFailedCount += 1;
+        }
+      } catch (error) {
+        this.#repository.saveKnowledgeGraphBuildCheckpoint({
+          sourceId,
+          novelId,
+          chunkId: cp.chunkId,
+          chapterId: cp.chapterId,
+          chapterIndex: cp.chapterIndex,
+          chunkIndex: cp.chunkIndex,
+          chapterTitle: cp.chapterTitle,
+          extractionJson: '{}',
+          warningMessage: error instanceof Error ? error.message : '重试时发生未知错误。',
+          status: 'failed',
+        });
+        stillFailedCount += 1;
+      }
+    }
+
+    return { retriedCount: failedCheckpoints.length, successCount, stillFailedCount };
   }
 
   updateNovelKnowledgeGraphProfile(
@@ -862,14 +981,10 @@ export class LibraryIntelligenceService {
             : options.buildMode === 'rebuild'
               ? '正在基于已缓存结构重新归并实体关系，无需重新抽取章节片段。'
               : options.buildMode === 'full'
-                ? extractionModels.length > 0
-                  ? `正在全量重建图谱：重新解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
-                  : '正在全量重建图谱，当前只使用本地规则。'
+                ? `正在全量重建图谱：重新解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
                 : reusableCheckpointCount > 0
                   ? `正在增量更新图谱：复用 ${reusableCheckpointCount} 个片段缓存，仅补处理 ${pendingChunkCount} 个片段。`
-                  : extractionModels.length > 0
-                    ? `正在增量更新图谱：当前没有可复用缓存，将解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
-                    : '正在增量更新图谱，当前只使用本地规则。',
+                  : `正在增量更新图谱：当前没有可复用缓存，将解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`,
       errorMessage: null,
       startedAt,
       completedAt: null,
@@ -918,14 +1033,10 @@ export class LibraryIntelligenceService {
         options.buildMode === 'rebuild'
           ? `重建开始：已复用 ${reusableCheckpointCount} 个片段缓存，准备重新归并实体关系。`
           : options.buildMode === 'full'
-            ? extractionModels.length > 0
-              ? `全量重建开始：准备重新解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
-              : `全量重建开始：准备重新解析 ${totalDownloadedChapters} 个已下载章节，当前只使用本地规则。`
+            ? `全量重建开始：准备重新解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
             : reusableCheckpointCount > 0
               ? `增量更新开始：复用 ${reusableCheckpointCount} 个片段缓存，仅补处理 ${pendingChunkCount} 个片段。`
-              : extractionModels.length > 0
-                ? `增量更新开始：暂无可复用缓存，准备解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`
-                : `增量更新开始：暂无可复用缓存，当前只使用本地规则。`,
+              : `增量更新开始：暂无可复用缓存，准备解析 ${totalDownloadedChapters} 个已下载章节，抽取模型 ${extractionModels.length} 个，全局并发 ${extractionConcurrency}。`,
       );
     }
 
@@ -951,6 +1062,7 @@ export class LibraryIntelligenceService {
             chapterTitle: checkpoint.chapterTitle,
             extractionJson: checkpoint.extractionJson,
             warningMessage: checkpoint.warningMessage,
+            status: checkpoint.status,
           });
         },
         onProgress: async (event) => {
@@ -984,7 +1096,7 @@ export class LibraryIntelligenceService {
         novelId,
         'relating',
         'info',
-        `抽取结束：共处理 ${extracted.diagnostics.totalChunks} 个片段，结构化成功 ${extracted.diagnostics.llmSuccessCount} 个，回退 ${extracted.diagnostics.fallbackCount} 个。`,
+        `抽取结束：共处理 ${extracted.diagnostics.totalChunks} 个片段，结构化成功 ${extracted.diagnostics.llmSuccessCount} 个，失败 ${extracted.diagnostics.llmFailureCount} 个。`,
       );
 
       this.saveBuildState({
@@ -1248,16 +1360,12 @@ export class LibraryIntelligenceService {
         novelId,
         'extracting',
         'info',
-        event.mode === 'llm'
-          ? `开始解析片段 ${event.chunkNumber}/${event.totalChunks}：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。`
-          : `开始整理片段 ${event.chunkNumber}/${event.totalChunks}：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。`,
+        `开始解析片段 ${event.chunkNumber}/${event.totalChunks}：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。`,
       );
       return;
     }
 
-    const message = event.mode === 'llm'
-      ? `正在解析片段 ${event.processedChunks}/${event.totalChunks}：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。`
-      : `片段 ${event.processedChunks}/${event.totalChunks} 结构化抽取失败，已回退本地规则：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。`;
+    const message = `正在解析片段 ${event.processedChunks}/${event.totalChunks}：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。`;
 
     this.saveBuildState({
       sourceId,
@@ -1283,7 +1391,7 @@ export class LibraryIntelligenceService {
         novelId,
         'extracting',
         'warn',
-        `片段 ${event.processedChunks}/${event.totalChunks} 回退本地规则：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。原因：${event.warning}`,
+        `片段 ${event.processedChunks}/${event.totalChunks} 结构化抽取失败：${event.chapterTitle} · 第 ${event.chunkIndex + 1} 段。原因：${event.warning}`,
       );
       return;
     }
@@ -1294,7 +1402,7 @@ export class LibraryIntelligenceService {
         novelId,
         'extracting',
         'info',
-        `已完成 ${event.processedChunks}/${event.totalChunks} 个片段；结构化成功 ${event.llmSuccessCount} 个，回退 ${event.fallbackCount} 个。`,
+        `已完成 ${event.processedChunks}/${event.totalChunks} 个片段；结构化成功 ${event.llmSuccessCount} 个，失败 ${event.llmFailureCount} 个。`,
       );
     }
   }

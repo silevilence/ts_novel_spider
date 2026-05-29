@@ -568,6 +568,20 @@ export class ControlCenterService {
     return this.#libraryIntelligence.clearNovelKnowledgeGraph(sourceId, novelId);
   }
 
+  retryFailedKnowledgeGraphChunks(
+    sourceId: string,
+    novelId: string,
+    options?: {
+      modelOverrides?: Array<{ providerId: string; modelId: string }>;
+    },
+  ): Promise<{
+    retriedCount: number;
+    successCount: number;
+    stillFailedCount: number;
+  } | null> {
+    return this.#libraryIntelligence.retryFailedKnowledgeGraphChunks(sourceId, novelId, options);
+  }
+
   syncLibraryKnowledgeGraphToNeo4j(
     sourceId: string,
     novelId: string,
