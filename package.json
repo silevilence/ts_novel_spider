@@ -30,7 +30,6 @@
     "@mantine/core": "^7.17.8",
     "@mantine/hooks": "^7.17.8",
     "@mantine/notifications": "^7.17.8",
-    "@mantine/spotlight": "^9.2.2",
     "@tabler/icons-react": "^3.44.0",
     "ai": "^6.0.177",
     "ai-sdk-ollama": "^3.8.3",
