@@ -275,6 +275,30 @@ test('system preferences persist translation config', () => {
   }
 });
 
+test('system preferences persist model gateway routes across reloads', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-model-gateway-'));
+  const prefsPath = path.join(tempDir, 'preferences.json');
+
+  try {
+    const prefs = new SystemPreferencesService({ storageFilePath: prefsPath });
+
+    prefs.updateModelGateway({
+      chat: { providerId: 'provider-chat', modelId: 'deepseek-v4-pro' },
+      embedding: { providerId: 'provider-embed', modelId: 'qwen-embed-8b' },
+      rerank: { providerId: 'provider-rerank', modelId: 'bge-reranker-v2' },
+    });
+
+    const reloaded = new SystemPreferencesService({ storageFilePath: prefsPath });
+    assert.deepEqual(reloaded.getModelGateway(), {
+      chat: { providerId: 'provider-chat', modelId: 'deepseek-v4-pro' },
+      embedding: { providerId: 'provider-embed', modelId: 'qwen-embed-8b' },
+      rerank: { providerId: 'provider-rerank', modelId: 'bge-reranker-v2' },
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 // ── 导出引擎双语 ──
 
 test('export engine bilingual mode renders translated content', () => {

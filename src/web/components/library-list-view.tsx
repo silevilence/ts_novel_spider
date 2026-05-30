@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Badge, Button, Card, Group, Menu, Paper, ScrollArea, SimpleGrid, Stack, Text, TextInput, Title,
+  Badge, Button, Card, Group, Menu, Modal, Paper, ScrollArea, SimpleGrid, Stack, Text, TextInput, Title, UnstyledButton,
 } from '@mantine/core';
 import { IconBook, IconSearch, IconArrowRight, IconDots, IconFileDownload, IconBook2 } from '@tabler/icons-react';
 
@@ -102,7 +102,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
             {model.novels.map((novel) => {
               const preview = buildTextPreview(novel.metadata.description, LIBRARY_CARD_DESCRIPTION_LIMIT);
               return (
-                <Card key={`${novel.sourceId}-${novel.metadata.novelId}`} padding="md" radius="lg" h={220} style={{ display: 'flex', flexDirection: 'column' }}>
+                <Card key={`${novel.sourceId}-${novel.metadata.novelId}`} padding="md" radius="lg" h="auto" mih={220} style={{ display: 'flex', flexDirection: 'column' }}>
                   <Group justify="space-between" mb="xs">
                     <Badge variant="light" color="gray" size="sm">{novel.sourceId}</Badge>
                     <Menu shadow="md" width={160}>
@@ -123,15 +123,12 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
                       </Menu.Dropdown>
                     </Menu>
                   </Group>
-                  <Title order={4} lineClamp={1} mb={4}>{novel.metadata.title}</Title>
+                  <UnstyledButton onClick={() => model.openNovel(novel.sourceId, novel.metadata.novelId)} style={{ textAlign: 'left' }}>
+                    <Title order={4} lineClamp={1} mb={4} style={{ cursor: 'pointer', transition: 'color 150ms ease' }}>{novel.metadata.title}</Title>
+                  </UnstyledButton>
                   <Text size="xs" c="dimmed" mb="xs">作者：{novel.metadata.author || '未知作者'}</Text>
-                  <ScrollArea.Autosize style={{ flex: 1, minHeight: 0 }} offsetScrollbars>
-                    <Text size="xs" c="dimmed" lineClamp={3} mb="xs">{preview.text}</Text>
-                    {preview.isTruncated ? (
-                      <Button variant="subtle" size="compact-xs" onClick={() => setDescriptionDialog({ title: novel.metadata.title, text: preview.fullText })}>
-                        查看简介全文
-                      </Button>
-                    ) : null}
+                  <ScrollArea.Autosize mah={80} offsetScrollbars>
+                    <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>{novel.metadata.description || '暂无简介'}</Text>
                   </ScrollArea.Autosize>
                   <Group gap={4} wrap="wrap" mb="xs">
                     {novel.metadata.tags.length > 0
@@ -164,17 +161,20 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
         )}
       </Paper>
 
-      {descriptionDialog ? (
-        <div className="reader-directory-overlay" role="presentation" onClick={() => setDescriptionDialog(null)}>
-          <Paper p="lg" radius="lg" maw={600} mx="auto" mt="10vh" onClick={(e) => e.stopPropagation()} style={{ background: 'rgba(26,20,16,0.96)' }}>
-            <Group justify="space-between" mb="md">
-              <Text size="lg" fw={700}>{descriptionDialog.title}</Text>
-              <Button variant="subtle" size="compact-sm" onClick={() => setDescriptionDialog(null)}>关闭</Button>
-            </Group>
-            <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{descriptionDialog.text}</Text>
-          </Paper>
-        </div>
-      ) : null}
+      <Modal
+        opened={descriptionDialog !== null}
+        onClose={() => setDescriptionDialog(null)}
+        title={<Text size="lg" fw={700}>{descriptionDialog?.title}</Text>}
+        size="lg"
+        styles={{
+          content: { background: 'rgba(15,10,8,0.97)' },
+          header: { background: 'rgba(15,10,8,0.97)', borderBottom: '1px solid rgba(168,133,96,0.12)' },
+        }}
+      >
+        {descriptionDialog ? (
+          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{descriptionDialog.text}</Text>
+        ) : null}
+      </Modal>
     </Stack>
   );
 }

@@ -173,6 +173,19 @@ export function resolveTranslationModel(
 
   const llmState = preferences.getLlmState();
 
+  // 2a. 模型网关中指定的默认 chat 模型
+  const gateway = preferences.getModelGateway();
+  if (gateway.chat) {
+    const gwProvider = llmState.providers.find((p) => p.id === gateway.chat!.providerId && p.enabled && p.isConfigured);
+    if (gwProvider) {
+      const gwModel = gwProvider.models.find((m) => m.modelId === gateway.chat!.modelId && m.enabled && m.isConfigured && m.resolvedCapabilities.includes('chat'));
+      if (gwModel) {
+        console.log(`[translation] 使用模型网关默认翻译模型: ${gwProvider.id}/${gwModel.modelId}`);
+        return { providerId: gwProvider.id, modelId: gwModel.id };
+      }
+    }
+  }
+
   // 2. 全局翻译偏好中指定的默认模型
   const translationPrefs = preferences.getTranslationState().config;
   if (translationPrefs.preferredTranslationModelKey) {

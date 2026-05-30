@@ -207,6 +207,7 @@ export function ReaderTypographyPanel({ onNotice }: ReaderTypographyPanelProps) 
           min={0.7} max={2.2} step={0.01}
           value={draft.fontSize}
           onChange={(v) => { if (typeof v === 'number' && isFinite(v)) setField('fontSize', Math.max(0.7, Math.min(2.2, v))); }}
+          hideControls
         />
       </div>
 

@@ -36,6 +36,7 @@ import type {
 } from './novel-repository';
 import type {
   LlmModelConfig,
+  LlmModelGatewayConfig,
   LlmPreferencesState,
   LlmProviderConfig,
   ModelCapability,
@@ -292,7 +293,7 @@ export class LibraryIntelligenceService {
 
     const llmState = this.#preferences.getLlmState();
     const profile = this.#repository.getKnowledgeGraphProfile(sourceId, novelId);
-    let extractionModels = resolveExtractionRoutes(llmState, profile);
+    let extractionModels = resolveExtractionRoutes(llmState, profile, this.#preferences.getModelGateway());
 
     if (options?.modelOverrides && options.modelOverrides.length > 0) {
       const overridden = options.modelOverrides
@@ -434,7 +435,7 @@ export class LibraryIntelligenceService {
 
     const storedProfile = this.#repository.getKnowledgeGraphProfile(sourceId, novelId);
     const llmState = this.#preferences.getLlmState();
-    const extractionModels = resolveExtractionRoutes(llmState, storedProfile);
+    const extractionModels = resolveExtractionRoutes(llmState, storedProfile, this.#preferences.getModelGateway());
 
     this.#repository.clearKnowledgeGraphBuildLogs(sourceId, novelId);
     if (buildMode === 'full') {
@@ -674,15 +675,18 @@ export class LibraryIntelligenceService {
     const graphState = this.buildKnowledgeGraphState(snapshot);
     const storedProfile = this.#repository.getKnowledgeGraphProfile(input.sourceId, input.novelId);
     const llmState = this.#preferences.getLlmState();
+    const gateway = this.#preferences.getModelGateway();
     const embeddingModel = resolveCapabilityRoute(
       llmState,
       'embedding',
       storedProfile ? routeFromProfile(storedProfile.embeddingProviderId, storedProfile.embeddingModelId) : null,
+      gateway,
     );
     const rerankModel = resolveCapabilityRoute(
       llmState,
       'rerank',
       storedProfile ? routeFromProfile(storedProfile.rerankProviderId, storedProfile.rerankModelId) : null,
+      gateway,
     );
     const sourceCollection = await collectAssistantSourcesForRag({
       snapshot,
@@ -712,6 +716,7 @@ export class LibraryIntelligenceService {
         providerId: graphState.profile.chatModel.providerId,
         modelId: graphState.profile.chatModel.modelId,
       } : null,
+      gateway,
     );
 
     if (!model) {
@@ -761,10 +766,11 @@ export class LibraryIntelligenceService {
   private serializeProfile(profile: StoredKnowledgeGraphProfileRow | null): LibraryKnowledgeGraphProfile {
     const llmState = this.#preferences.getLlmState();
     const neo4jState = this.#preferences.getNeo4jState();
-    const chatModel = resolveCapabilityRoute(llmState, 'chat', profile ? routeFromProfile(profile.chatProviderId, profile.chatModelId) : null);
-    const extractionModels = resolveExtractionRoutes(llmState, profile);
-    const embeddingModel = resolveCapabilityRoute(llmState, 'embedding', profile ? routeFromProfile(profile.embeddingProviderId, profile.embeddingModelId) : null);
-    const rerankModel = resolveCapabilityRoute(llmState, 'rerank', profile ? routeFromProfile(profile.rerankProviderId, profile.rerankModelId) : null);
+    const gateway = this.#preferences.getModelGateway();
+    const chatModel = resolveCapabilityRoute(llmState, 'chat', profile ? routeFromProfile(profile.chatProviderId, profile.chatModelId) : null, gateway);
+    const extractionModels = resolveExtractionRoutes(llmState, profile, gateway);
+    const embeddingModel = resolveCapabilityRoute(llmState, 'embedding', profile ? routeFromProfile(profile.embeddingProviderId, profile.embeddingModelId) : null, gateway);
+    const rerankModel = resolveCapabilityRoute(llmState, 'rerank', profile ? routeFromProfile(profile.rerankProviderId, profile.rerankModelId) : null, gateway);
 
     return {
       chatModel: chatModel ? serializeCapabilityRoute(chatModel.provider, chatModel.model, chatModel.source) : null,
@@ -941,11 +947,13 @@ export class LibraryIntelligenceService {
     const previousBuild = this.#repository.getKnowledgeGraphBuild(sourceId, novelId);
     const storedProfile = this.#repository.getKnowledgeGraphProfile(sourceId, novelId);
     const llmState = this.#preferences.getLlmState();
-    const extractionModels = resolveExtractionRoutes(llmState, storedProfile);
+    const gateway = this.#preferences.getModelGateway();
+    const extractionModels = resolveExtractionRoutes(llmState, storedProfile, gateway);
     const embeddingModel = resolveCapabilityRoute(
       llmState,
       'embedding',
       storedProfile ? routeFromProfile(storedProfile.embeddingProviderId, storedProfile.embeddingModelId) : null,
+      gateway,
     );
     const checkpoints = this.#repository.listKnowledgeGraphBuildCheckpoints(sourceId, novelId);
     const totalChunkCount = countKnowledgeGraphChunkPlans(snapshot);
@@ -1275,6 +1283,7 @@ export class LibraryIntelligenceService {
           this.#repository.getKnowledgeGraphProfile(sourceId, novelId),
           this.#preferences.getLlmState(),
           this.#preferences.getNeo4jState(),
+          this.#preferences.getModelGateway(),
         ),
       );
       this.writeBuildLog(sourceId, novelId, 'completed', 'info', '本次图谱配置已冻结；后续若需调整，请先暂停或重新发起构建。');
@@ -1544,12 +1553,23 @@ function resolveCapabilityRoute(
   state: LlmPreferencesState,
   capability: ModelCapability,
   override: { providerId: string; modelId: string } | null,
+  gateway?: LlmModelGatewayConfig,
 ): { provider: LlmProviderConfig; model: LlmModelConfig; source: 'novel' | 'global' } | null {
   if (override) {
     const provider = state.providers.find((entry) => entry.id === override.providerId && entry.enabled);
     const model = provider?.models.find((entry) => entry.id === override.modelId && entry.enabled);
     if (provider && model) {
       return { provider, model, source: 'novel' };
+    }
+  }
+
+  // Check model gateway before defaultFor / fallback
+  const gwRoute = gateway?.[capability];
+  if (gwRoute) {
+    const gwProvider = state.providers.find((p) => p.id === gwRoute.providerId && p.enabled);
+    const gwModel = gwProvider?.models.find((m) => m.modelId === gwRoute.modelId && m.enabled && m.resolvedCapabilities.includes(capability));
+    if (gwProvider && gwModel) {
+      return { provider: gwProvider, model: gwModel, source: 'global' };
     }
   }
 
@@ -2445,11 +2465,12 @@ function freezeProfile(
   current: StoredKnowledgeGraphProfileRow | null,
   llmState: LlmPreferencesState,
   neo4jState: Neo4jPreferencesState,
+  gateway: LlmModelGatewayConfig,
 ): StoredKnowledgeGraphProfileInput {
-  const chat = resolveCapabilityRoute(llmState, 'chat', current ? routeFromProfile(current.chatProviderId, current.chatModelId) : null);
-  const extractionModels = resolveExtractionRoutes(llmState, current);
-  const embedding = resolveCapabilityRoute(llmState, 'embedding', current ? routeFromProfile(current.embeddingProviderId, current.embeddingModelId) : null);
-  const rerank = resolveCapabilityRoute(llmState, 'rerank', current ? routeFromProfile(current.rerankProviderId, current.rerankModelId) : null);
+  const chat = resolveCapabilityRoute(llmState, 'chat', current ? routeFromProfile(current.chatProviderId, current.chatModelId) : null, gateway);
+  const extractionModels = resolveExtractionRoutes(llmState, current, gateway);
+  const embedding = resolveCapabilityRoute(llmState, 'embedding', current ? routeFromProfile(current.embeddingProviderId, current.embeddingModelId) : null, gateway);
+  const rerank = resolveCapabilityRoute(llmState, 'rerank', current ? routeFromProfile(current.rerankProviderId, current.rerankModelId) : null, gateway);
   const neo4j = resolveNeo4jConfig(current, neo4jState);
 
   return {
@@ -2557,9 +2578,10 @@ function isExtractionModelPoolEqual(
 function resolveExtractionRoutes(
   state: LlmPreferencesState,
   profile: StoredKnowledgeGraphProfileRow | null,
+  gateway?: LlmModelGatewayConfig,
 ): Array<ResolvedCapabilityRoute & { maxConcurrency: number }> {
   const configured = normalizeExtractionModelPool(profile?.extractionModels).flatMap((entry) => {
-    const resolved = resolveCapabilityRoute(state, 'chat', routeFromProfile(entry.providerId, entry.modelId));
+    const resolved = resolveCapabilityRoute(state, 'chat', routeFromProfile(entry.providerId, entry.modelId), gateway);
     return resolved ? [{ ...resolved, maxConcurrency: normalizeExtractionModelConcurrency(entry.maxConcurrency) }] : [];
   });
 
@@ -2571,6 +2593,7 @@ function resolveExtractionRoutes(
     state,
     'chat',
     profile ? routeFromProfile(profile.chatProviderId, profile.chatModelId) : null,
+    gateway,
   );
   return fallback
     ? [{ ...fallback, maxConcurrency: normalizeExtractionConcurrency(profile?.extractionConcurrency) }]

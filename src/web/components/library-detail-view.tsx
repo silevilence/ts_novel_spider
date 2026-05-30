@@ -6,20 +6,22 @@ import {
   Button,
   Card,
   Group,
+  Modal,
   Paper,
+  SegmentedControl,
   SimpleGrid,
   Stack,
+  Tabs,
   Text,
   TextInput,
   Title,
-  Tooltip,
 } from '@mantine/core';
-import { IconBook, IconFileDownload, IconBookmark, IconTag } from '@tabler/icons-react';
+import { IconArrowDown, IconArrowUp, IconBookmark, IconFileDownload, IconPhoto, IconTag } from '@tabler/icons-react';
 
 import { ChapterDirectory } from './chapter-directory';
 import { LibraryIntelligencePanel } from './library-intelligence-panel';
 import { TranslationLaunchPanel } from './translation-launch-panel';
-import { ScrollspyNav, ScrollspyProvider } from './scrollspy-nav';
+import { ScrollspyProvider, useScrollspy, type ScrollspySection } from './scrollspy-nav';
 import type { LibraryModel } from '../services/library-model';
 import {
   buildLibraryExportDownloadUrl,
@@ -172,9 +174,6 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
                 {detail.readingProgress ? '继续阅读' : '开始阅读'}
               </Button>
             ) : null}
-            <Tooltip label="别名管理"><ActionIcon variant="subtle" color="gray" onClick={() => document.getElementById('detail-alias')?.scrollIntoView({ behavior: 'smooth' })}><IconTag size={18} /></ActionIcon></Tooltip>
-            <Tooltip label="书签管理"><ActionIcon variant="subtle" color="gray" onClick={() => document.getElementById('detail-bookmarks')?.scrollIntoView({ behavior: 'smooth' })}><IconBookmark size={18} /></ActionIcon></Tooltip>
-            <Tooltip label="导出文件"><ActionIcon variant="subtle" color="gray" onClick={() => document.getElementById('detail-export')?.scrollIntoView({ behavior: 'smooth' })}><IconFileDownload size={18} /></ActionIcon></Tooltip>
           </Group>
         </Paper>
 
@@ -256,166 +255,259 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
 
         <TranslationLaunchPanel model={model} onNotify={onNotify} />
 
-        {/* ====== 别名管理（聚合卡片） ====== */}
-        <Paper p="md" radius="lg" data-scrollspy id="detail-alias" data-scrollspy-label="别名" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
-          <Group justify="space-between" mb="xs">
-            <Text size="sm" fw={600}>别名映射</Text>
-            <Badge variant="light" color="yellow">{detail.aliases.length} 条</Badge>
-          </Group>
-          <Text size="xs" c="dimmed" mb="sm">补充常用别称、旧译名，保存后直接参与搜索排序。</Text>
-          <Group mb="sm">
-            <TextInput value={aliasDraft} onChange={(e) => setAliasDraft(e.target.value)}
-              placeholder="新增别名，比如旧译名或简称" style={{ flex: 1 }} />
-            <Button color="brand" size="compact-sm" onClick={() => { void model.addAlias(aliasDraft); setAliasDraft(''); }}
-              loading={model.mutationBusyKey === 'alias-create'} disabled={aliasDraft.trim().length === 0}>添加</Button>
-          </Group>
-          {detail.aliases.length === 0 ? (
-            <Text size="xs" c="dimmed">还没有别名。</Text>
-          ) : (
-            <Stack gap="xs">
-              {detail.aliases.map((alias) => (
-                <Paper key={alias.id} p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
-                  {editingAliasId === alias.id ? (
-                    <Group>
-                      <TextInput size="xs" value={editingAliasValue} onChange={(e) => setEditingAliasValue(e.target.value)} style={{ flex: 1 }} />
-                      <Button size="compact-xs" color="brand" onClick={() => { void model.renameAlias(alias.id, editingAliasValue); setEditingAliasId(null); setEditingAliasValue(''); }}
-                        loading={model.mutationBusyKey === `alias:${alias.id}`} disabled={editingAliasValue.trim().length === 0}>保存</Button>
-                      <Button size="compact-xs" variant="subtle" onClick={() => { setEditingAliasId(null); setEditingAliasValue(''); }}>取消</Button>
-                    </Group>
-                  ) : (
-                    <Group justify="space-between">
-                      <div><Text size="sm" fw={600}>{alias.alias}</Text><Text size="xs" c="dimmed">{new Date(alias.updatedAt).toLocaleString('zh-CN')}</Text></div>
-                      <Group gap="xs">
-                        <Button variant="subtle" size="compact-xs" onClick={() => { setEditingAliasId(alias.id); setEditingAliasValue(alias.alias); }}>编辑</Button>
-                        <Button variant="subtle" size="compact-xs" color="red" onClick={() => void model.removeAlias(alias.id)} loading={model.mutationBusyKey === `alias:${alias.id}`}>删除</Button>
-                      </Group>
-                    </Group>
-                  )}
-                </Paper>
-              ))}
-            </Stack>
-          )}
-        </Paper>
+        {/* ====== 工具面板（别名 + 书签 + 导出 + 图片缓存） ====== */}
+        <Paper p="md" radius="lg" data-scrollspy id="detail-tools" data-scrollspy-label="工具" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
+          <Tabs defaultValue="alias">
+            <Tabs.List>
+              <Tabs.Tab value="alias" leftSection={<IconTag size={14} />}>别名映射</Tabs.Tab>
+              <Tabs.Tab value="bookmarks" leftSection={<IconBookmark size={14} />}>章节书签</Tabs.Tab>
+              <Tabs.Tab value="export" leftSection={<IconFileDownload size={14} />}>导出文件</Tabs.Tab>
+              <Tabs.Tab value="media" leftSection={<IconPhoto size={14} />}>图片缓存</Tabs.Tab>
+            </Tabs.List>
 
-        {/* ====== 书签管理（聚合到 Card） ====== */}
-        <Paper p="md" radius="lg" data-scrollspy id="detail-bookmarks" data-scrollspy-label="书签" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
-          <Group justify="space-between" mb="xs">
-            <Text size="sm" fw={600}>章节书签</Text>
-            <Badge variant="light" color="orange">{detail.bookmarks.length} 条</Badge>
-          </Group>
-          <Text size="xs" c="dimmed" mb="sm">阅读时加入书签，这里会按章节顺序列出，点击直接跳回对应章节。</Text>
-          {detail.bookmarks.length === 0 ? (
-            <Text size="xs" c="dimmed">还没有书签。阅读时点"加入书签"，这里就会开始累积。</Text>
-          ) : (
-            <Stack gap="xs">
-              {detail.bookmarks.map((bookmark) => (
-                <Paper key={bookmark.id} p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
-                  <Group justify="space-between" mb={4}>
-                    <div>
-                      <Text size="xs" c="dimmed">第 {bookmark.chapterIndex} 章</Text>
-                      <Text size="sm" fw={600}>{bookmark.chapterTitle}</Text>
-                    </div>
-                    {editingBookmarkId === bookmark.id ? (
-                      <Group gap="xs">
-                        <TextInput size="xs" value={editingBookmarkNote} onChange={(e) => setEditingBookmarkNote(e.target.value)} placeholder="备注" />
-                        <Button size="compact-xs" color="brand" onClick={() => { void model.editBookmark(bookmark.id, editingBookmarkNote); setEditingBookmarkId(null); setEditingBookmarkNote(''); }}
-                          loading={model.mutationBusyKey === `bookmark:${bookmark.id}`}>保存</Button>
-                        <Button size="compact-xs" variant="subtle" onClick={() => { setEditingBookmarkId(null); setEditingBookmarkNote(''); }}>取消</Button>
-                      </Group>
-                    ) : (
-                      <Group gap="xs">
-                        <Button variant="subtle" size="compact-xs"
-                          onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, bookmark.chapterId)}>打开</Button>
-                        <Button variant="subtle" size="compact-xs"
-                          onClick={() => { setEditingBookmarkId(bookmark.id); setEditingBookmarkNote(bookmark.note); }}>编辑</Button>
-                        <Button variant="subtle" size="compact-xs" color="red"
-                          onClick={() => void model.removeBookmark(bookmark.id)} loading={model.mutationBusyKey === `bookmark:${bookmark.id}`}>删除</Button>
-                      </Group>
-                    )}
-                  </Group>
-                  {editingBookmarkId !== bookmark.id && bookmark.note ? (
-                    <Text size="xs" c="dimmed">{bookmark.note || '没有备注。'}</Text>
-                  ) : null}
-                </Paper>
-              ))}
-            </Stack>
-          )}
-        </Paper>
+            {/* 别名映射 */}
+            <Tabs.Panel value="alias" pt="md">
+              <Group justify="space-between" mb="xs">
+                <Badge variant="light" color="yellow">{detail.aliases.length} 条</Badge>
+              </Group>
+              <Text size="xs" c="dimmed" mb="sm">补充常用别称、旧译名，保存后直接参与搜索排序。</Text>
+              <Group mb="sm">
+                <TextInput value={aliasDraft} onChange={(e) => setAliasDraft(e.target.value)}
+                  placeholder="新增别名，比如旧译名或简称" style={{ flex: 1 }} />
+                <Button color="brand" size="compact-sm" onClick={() => { void model.addAlias(aliasDraft); setAliasDraft(''); }}
+                  loading={model.mutationBusyKey === 'alias-create'} disabled={aliasDraft.trim().length === 0}>添加</Button>
+              </Group>
+              {detail.aliases.length === 0 ? (
+                <Text size="xs" c="dimmed">还没有别名。</Text>
+              ) : (
+                <Stack gap="xs">
+                  {detail.aliases.map((alias) => (
+                    <Paper key={alias.id} p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                      {editingAliasId === alias.id ? (
+                        <Group>
+                          <TextInput size="xs" value={editingAliasValue} onChange={(e) => setEditingAliasValue(e.target.value)} style={{ flex: 1 }} />
+                          <Button size="compact-xs" color="brand" onClick={() => { void model.renameAlias(alias.id, editingAliasValue); setEditingAliasId(null); setEditingAliasValue(''); }}
+                            loading={model.mutationBusyKey === `alias:${alias.id}`} disabled={editingAliasValue.trim().length === 0}>保存</Button>
+                          <Button size="compact-xs" variant="subtle" onClick={() => { setEditingAliasId(null); setEditingAliasValue(''); }}>取消</Button>
+                        </Group>
+                      ) : (
+                        <Group justify="space-between">
+                          <div><Text size="sm" fw={600}>{alias.alias}</Text><Text size="xs" c="dimmed">{new Date(alias.updatedAt).toLocaleString('zh-CN')}</Text></div>
+                          <Group gap="xs">
+                            <Button variant="subtle" size="compact-xs" onClick={() => { setEditingAliasId(alias.id); setEditingAliasValue(alias.alias); }}>编辑</Button>
+                            <Button variant="subtle" size="compact-xs" color="red" onClick={() => void model.removeAlias(alias.id)} loading={model.mutationBusyKey === `alias:${alias.id}`}>删除</Button>
+                          </Group>
+                        </Group>
+                      )}
+                    </Paper>
+                  ))}
+                </Stack>
+              )}
+            </Tabs.Panel>
 
-        {/* ====== 导出中枢 ====== */}
-        <Paper p="md" radius="lg" data-scrollspy id="detail-export" data-scrollspy-label="导出" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
-          <Group justify="space-between" mb="xs">
-            <div>
-              <Text size="sm" fw={600}>导出文件</Text>
-              <Text size="xs" c="dimmed">导出使用已采集的正文生成文件。</Text>
-            </div>
-            <Group gap="xs">
-              <Badge variant="light" color="green">正文 {detail.stats.downloaded} 章</Badge>
-              <Badge variant="light" color="gray">图片 {detail.media.cached}/{detail.media.total}</Badge>
-              <Badge variant="light" color="yellow">3 种格式</Badge>
-            </Group>
-          </Group>
-          <Button color="brand" size="compact-sm" mt="sm" onClick={() => setIsExportDialogOpen(true)} disabled={detail.stats.downloaded === 0}>选择导出格式</Button>
-          <Text size="xs" c="dimmed" mt="sm">
-            {detail.stats.downloaded === 0 ? '当前还没有已采集章节，先补录正文后才能导出文件。' : '一个入口按用途选格式：Markdown 整理、EPUB 阅读、TXT 备份。'}
-          </Text>
-        </Paper>
+            {/* 章节书签 */}
+            <Tabs.Panel value="bookmarks" pt="md">
+              <Group justify="space-between" mb="xs">
+                <Badge variant="light" color="orange">{detail.bookmarks.length} 条</Badge>
+              </Group>
+              <Text size="xs" c="dimmed" mb="sm">阅读时加入书签，这里会按章节顺序列出，点击直接跳回对应章节。</Text>
+              {detail.bookmarks.length === 0 ? (
+                <Text size="xs" c="dimmed">还没有书签。阅读时点"加入书签"，这里就会开始累积。</Text>
+              ) : (
+                <Stack gap="xs">
+                  {detail.bookmarks.map((bookmark) => (
+                    <Paper key={bookmark.id} p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                      <Group justify="space-between" mb={4}>
+                        <div>
+                          <Text size="xs" c="dimmed">第 {bookmark.chapterIndex} 章</Text>
+                          <Text size="sm" fw={600}>{bookmark.chapterTitle}</Text>
+                        </div>
+                        {editingBookmarkId === bookmark.id ? (
+                          <Group gap="xs">
+                            <TextInput size="xs" value={editingBookmarkNote} onChange={(e) => setEditingBookmarkNote(e.target.value)} placeholder="备注" />
+                            <Button size="compact-xs" color="brand" onClick={() => { void model.editBookmark(bookmark.id, editingBookmarkNote); setEditingBookmarkId(null); setEditingBookmarkNote(''); }}
+                              loading={model.mutationBusyKey === `bookmark:${bookmark.id}`}>保存</Button>
+                            <Button size="compact-xs" variant="subtle" onClick={() => { setEditingBookmarkId(null); setEditingBookmarkNote(''); }}>取消</Button>
+                          </Group>
+                        ) : (
+                          <Group gap="xs">
+                            <Button variant="subtle" size="compact-xs"
+                              onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, bookmark.chapterId)}>打开</Button>
+                            <Button variant="subtle" size="compact-xs"
+                              onClick={() => { setEditingBookmarkId(bookmark.id); setEditingBookmarkNote(bookmark.note); }}>编辑</Button>
+                            <Button variant="subtle" size="compact-xs" color="red"
+                              onClick={() => void model.removeBookmark(bookmark.id)} loading={model.mutationBusyKey === `bookmark:${bookmark.id}`}>删除</Button>
+                          </Group>
+                        )}
+                      </Group>
+                      {editingBookmarkId !== bookmark.id && bookmark.note ? (
+                        <Text size="xs" c="dimmed">{bookmark.note}</Text>
+                      ) : null}
+                    </Paper>
+                  ))}
+                </Stack>
+              )}
+            </Tabs.Panel>
 
-        {/* ====== 图片缓存（聚合卡片） ====== */}
-        <Paper p="md" radius="lg" data-scrollspy id="detail-media" data-scrollspy-label="图片" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
-          <Group justify="space-between" mb="xs">
-            <div>
-              <Text size="sm" fw={600}>图片缓存</Text>
-              <Text size="xs" c="dimmed">
-                {detail.media.total === 0 ? '这本书当前没有图片资源。' : '统一补缓存或进入有图章节单独保存。'}
-              </Text>
-            </div>
-            <Group gap="xs">
-              <Badge variant="light" color="green">已缓存 {detail.media.cached}</Badge>
-              <Badge variant="light" color="gray">待缓存 {detail.media.total - detail.media.cached}</Badge>
-            </Group>
-          </Group>
-          <Group mt="sm">
-            {detail.media.total > 0 ? (
-              <Button variant="default" size="compact-sm"
-                onClick={() => void model.cacheAllMediaAssets()}
-                loading={model.mediaBatchBusy}
-                disabled={detail.media.pending === 0}>
-                {detail.media.pending === 0 ? '图片已全部缓存' : '统一缓存未保存图片'}
-              </Button>
-            ) : null}
-            {preferredMediaChapterId ? (
-              <Button variant="subtle" size="compact-sm"
-                onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, preferredMediaChapterId)}>
-                进入有图章节
-              </Button>
-            ) : null}
-            <Button variant="subtle" size="compact-sm" onClick={scrollToChapterDirectory}>跳到章节目录</Button>
-          </Group>
-          {model.mediaBatchProgress ? (
-            <Paper p="xs" mt="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
-              <Group justify="space-between" mb={4}>
-                <Text size="xs" fw={600}>
-                  {model.mediaBatchBusy ? '统一缓存进行中' : '最近一次统一缓存'}
-                </Text>
+            {/* 导出文件 */}
+            <Tabs.Panel value="export" pt="md">
+              <Group justify="space-between" mb="xs">
+                <div>
+                  <Text size="xs" c="dimmed">导出使用已采集的正文生成文件。</Text>
+                </div>
                 <Group gap="xs">
-                  <Badge variant="light" color="green" size="xs">新缓存 {model.mediaBatchProgress.cached}</Badge>
-                  <Badge variant="light" color="gray" size="xs">跳过 {model.mediaBatchProgress.skipped}</Badge>
+                  <Badge variant="light" color="green">正文 {detail.stats.downloaded} 章</Badge>
+                  <Badge variant="light" color="gray">图片 {detail.media.cached}/{detail.media.total}</Badge>
+                  <Badge variant="light" color="yellow">3 种格式</Badge>
                 </Group>
               </Group>
-              <Text size="xs" c="dimmed">
-                {model.mediaBatchProgress.completed}/{model.mediaBatchProgress.total}
-                {model.mediaBatchBusy ? ` · 当前：${model.mediaBatchProgress.currentChapterTitle ?? '图片资源'}` : ' · 已按最近结果更新'}
+              <Button color="brand" size="compact-sm" onClick={() => setIsExportDialogOpen(true)} disabled={detail.stats.downloaded === 0}>选择导出格式</Button>
+              <Text size="xs" c="dimmed" mt="sm">
+                {detail.stats.downloaded === 0 ? '当前还没有已采集章节，先补录正文后才能导出文件。' : '一个入口按用途选格式：Markdown 整理、EPUB 阅读、TXT 备份。'}
               </Text>
-              <div style={{ height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 1.5, overflow: 'hidden', marginTop: 6 }}>
-                <div style={{ width: `${model.mediaBatchProgress.total === 0 ? 0 : (model.mediaBatchProgress.completed / model.mediaBatchProgress.total) * 100}%`, height: '100%', background: 'linear-gradient(90deg, #61d4a6, #ff8c42)', borderRadius: 1.5, transition: 'width 300ms ease' }} />
-              </div>
-            </Paper>
-          ) : null}
+            </Tabs.Panel>
+
+            {/* 图片缓存 */}
+            <Tabs.Panel value="media" pt="md">
+              <Group justify="space-between" mb="xs">
+                <div>
+                  <Text size="xs" c="dimmed">
+                    {detail.media.total === 0 ? '这本书当前没有图片资源。' : '统一补缓存或进入有图章节单独保存。'}
+                  </Text>
+                </div>
+                <Group gap="xs">
+                  <Badge variant="light" color="green">已缓存 {detail.media.cached}</Badge>
+                  <Badge variant="light" color="gray">待缓存 {detail.media.total - detail.media.cached}</Badge>
+                </Group>
+              </Group>
+              <Group mt="sm">
+                {detail.media.total > 0 ? (
+                  <Button variant="default" size="compact-sm"
+                    onClick={() => void model.cacheAllMediaAssets()}
+                    loading={model.mediaBatchBusy}
+                    disabled={detail.media.pending === 0}>
+                    {detail.media.pending === 0 ? '图片已全部缓存' : '统一缓存未保存图片'}
+                  </Button>
+                ) : null}
+                {preferredMediaChapterId ? (
+                  <Button variant="subtle" size="compact-sm"
+                    onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, preferredMediaChapterId)}>
+                    进入有图章节
+                  </Button>
+                ) : null}
+                <Button variant="subtle" size="compact-sm" onClick={scrollToChapterDirectory}>跳到章节目录</Button>
+              </Group>
+              {model.mediaBatchProgress ? (
+                <Paper p="xs" mt="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                  <Group justify="space-between" mb={4}>
+                    <Text size="xs" fw={600}>
+                      {model.mediaBatchBusy ? '统一缓存进行中' : '最近一次统一缓存'}
+                    </Text>
+                    <Group gap="xs">
+                      <Badge variant="light" color="green" size="xs">新缓存 {model.mediaBatchProgress.cached}</Badge>
+                      <Badge variant="light" color="gray" size="xs">跳过 {model.mediaBatchProgress.skipped}</Badge>
+                    </Group>
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {model.mediaBatchProgress.completed}/{model.mediaBatchProgress.total}
+                    {model.mediaBatchBusy ? ` · 当前：${model.mediaBatchProgress.currentChapterTitle ?? '图片资源'}` : ' · 已按最近结果更新'}
+                  </Text>
+                  <div style={{ height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 1.5, overflow: 'hidden', marginTop: 6 }}>
+                    <div style={{ width: `${model.mediaBatchProgress.total === 0 ? 0 : (model.mediaBatchProgress.completed / model.mediaBatchProgress.total) * 100}%`, height: '100%', background: 'linear-gradient(90deg, #61d4a6, #ff8c42)', borderRadius: 1.5, transition: 'width 300ms ease' }} />
+                  </div>
+                </Paper>
+              ) : null}
+            </Tabs.Panel>
+          </Tabs>
         </Paper>
 
+        {/* ====== 导出格式选择弹窗 ====== */}
+        {isExportDialogOpen ? (
+          <Modal
+            opened={isExportDialogOpen}
+            onClose={() => setIsExportDialogOpen(false)}
+            title={<Text size="lg" fw={700}>选择导出格式</Text>}
+            size="md"
+            styles={{
+              content: { background: 'rgba(15,10,8,0.97)' },
+              header: { background: 'rgba(15,10,8,0.97)', borderBottom: '1px solid rgba(168,133,96,0.12)' },
+            }}
+          >
+            <Stack gap="md">
+              <Text size="xs" c="dimmed">
+                选择适合你使用场景的格式。如果翻译过，还可以选择导出原文、译文或双语版本。
+              </Text>
+              {model.translationLanguages ? (
+                <SegmentedControl
+                  data={[
+                    { value: 'original', label: '原文' },
+                    { value: 'translated', label: '纯译文' },
+                    { value: 'bilingual', label: '双语对照' },
+                  ]}
+                  value={exportTranslationMode}
+                  onChange={(v) => setExportTranslationMode(v as TranslationExportMode)}
+                  fullWidth
+                />
+              ) : null}
+              {LIBRARY_EXPORT_OPTIONS.map((opt) => {
+                if (!detail) return null;
+                const url = buildLibraryExportDownloadUrl(
+                  detail.sourceId, detail.metadata.novelId,
+                  opt.format, exportTranslationMode,
+                  model.translationLanguages?.sourceLang, model.translationLanguages?.targetLang,
+                );
+                return (
+                  <Paper key={opt.format} p="md" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                    <Group justify="space-between" mb={4}>
+                      <div>
+                        <Text fw={700}>{opt.label}</Text>
+                        <Text size="xs" c="dimmed">{opt.summary}</Text>
+                        <Text size="xs" c="dimmed">适合：{opt.bestFor} · {opt.example}</Text>
+                      </div>
+                      <Button
+                        variant="filled"
+                        size="compact-sm"
+                        component="a"
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => onNotify({ tone: 'info', title: '导出已开始', message: `${opt.label} 下载中。` })}
+                      >
+                        下载 {opt.format.toUpperCase()}
+                      </Button>
+                    </Group>
+                  </Paper>
+                );
+              })}
+            </Stack>
+          </Modal>
+        ) : null}
+
         {/* ====== 知识图谱与 AI 伴读 —— 默认收起 ====== */}
-        <Accordion variant="separated" radius="lg">
+        <Accordion
+          variant="separated"
+          radius="lg"
+          chevronPosition="right"
+          styles={{
+            control: {
+              minHeight: 48,
+              paddingLeft: '1.2rem',
+              paddingRight: '1.2rem',
+            },
+            panel: {
+              padding: '1rem 1.2rem',
+              background: 'rgba(26, 20, 16, 0.6)',
+            },
+            item: {
+              background: 'rgba(31, 21, 16, 0.84)',
+              border: '1px solid rgba(168, 133, 96, 0.18)',
+              backdropFilter: 'blur(18px)',
+            },
+            label: {
+              padding: 0,
+            },
+          }}
+        >
           <Accordion.Item value="ai-assistant">
             <Accordion.Control>
               <Text size="sm" fw={600}>AI 伴读与知识图谱</Text>
@@ -447,22 +539,13 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
           />
         </div>
 
-        {/* ====== 底部导航按钮 ====== */}
-        <Group>
-          <Button variant="subtle" size="compact-sm" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>回到顶部</Button>
-          <Button variant="subtle" size="compact-sm" onClick={onOpenControl}>返回采集台</Button>
-        </Group>
-
-        {/* ====== 页面快捷导航浮窗 ====== */}
-        {isPageNavOpen ? (
-          <Paper p="sm" radius="lg" style={{ position: 'fixed', bottom: 80, right: 24, zIndex: 1000, background: 'rgba(15,10,8,0.95)', border: '1px solid rgba(168,133,96,0.22)', boxShadow: '0 4px 24px rgba(10,6,4,0.6)', minWidth: 140 }}>
-            <Stack gap="xs">
-              <Button variant="subtle" size="compact-sm" color="gray" onClick={() => { window.scrollTo({ top: 0, behavior: 'smooth' }); setIsPageNavOpen(false); }}>↑ 回到顶部</Button>
-              <Button variant="subtle" size="compact-sm" color="gray" onClick={() => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); setIsPageNavOpen(false); }}>↓ 直达底部</Button>
-              <Button variant="subtle" size="compact-sm" color="gray" onClick={() => { scrollToChapterDirectory(); setIsPageNavOpen(false); }}>☰ 章节目录</Button>
-            </Stack>
-          </Paper>
-        ) : null}
+        {/* ====== 页面快捷导航（汉堡菜单） ====== */}
+        <PageNavPopover
+          isOpen={isPageNavOpen}
+          onClose={() => setIsPageNavOpen(false)}
+          chapterDirectoryRef={chapterDirectoryRef}
+          onOpenControl={onOpenControl}
+        />
 
         <ActionIcon
           variant="filled" color="gray.7" size="lg" radius="xl"
@@ -472,9 +555,89 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
         >
           {isPageNavOpen ? '✕' : '☰'}
         </ActionIcon>
-
-        <ScrollspyNav />
       </Stack>
     </ScrollspyProvider>
+  );
+}
+
+/** 汉堡菜单弹出面板 —— 使用 useScrollspy 动态列出所有注册面板 */
+const DETAIL_SECTIONS: ScrollspySection[] = [
+  { id: 'detail-hero', label: '概览' },
+  { id: 'detail-task', label: '任务' },
+  { id: 'detail-meta', label: '元数据' },
+  { id: 'detail-tools', label: '工具' },
+  { id: 'detail-chapters', label: '目录' },
+];
+
+function PageNavPopover({
+  isOpen,
+  onClose,
+  chapterDirectoryRef,
+  onOpenControl,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  chapterDirectoryRef: React.RefObject<HTMLDivElement | null>;
+  onOpenControl: () => void;
+}) {
+  const { register, sections } = useScrollspy();
+
+  useEffect(() => {
+    const cleanups = DETAIL_SECTIONS.map((s) => register(s));
+    return () => cleanups.forEach((fn) => fn());
+  }, [register]);
+
+  function scrollTo(id: string) {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    onClose();
+  }
+
+  function scrollToChapterDirectory() {
+    chapterDirectoryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    onClose();
+  }
+
+  if (!isOpen) return null;
+
+  return (
+    <Paper
+      p="sm"
+      radius="lg"
+      style={{
+        position: 'fixed',
+        bottom: 80,
+        right: 24,
+        zIndex: 1000,
+        background: 'rgba(15,10,8,0.95)',
+        border: '1px solid rgba(168,133,96,0.22)',
+        boxShadow: '0 4px 24px rgba(10,6,4,0.6)',
+        minWidth: 160,
+        maxHeight: '65vh',
+        overflow: 'auto',
+      }}
+    >
+      <Stack gap={4}>
+        <Button variant="subtle" size="compact-sm" color="gray"
+          leftSection={<IconArrowUp size={14} />}
+          onClick={() => { window.scrollTo({ top: 0, behavior: 'smooth' }); onClose(); }}>
+          回到顶部
+        </Button>
+
+        {sections.map((s) => (
+          <Button key={s.id} variant="subtle" size="compact-sm" color="gray"
+            onClick={() => s.id === 'detail-chapters' ? scrollToChapterDirectory() : scrollTo(s.id)}>
+            {s.label}
+          </Button>
+        ))}
+
+        <Button variant="subtle" size="compact-sm" color="gray"
+          leftSection={<IconArrowDown size={14} />}
+          onClick={() => { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); onClose(); }}>
+          直达底部
+        </Button>
+
+      </Stack>
+    </Paper>
   );
 }

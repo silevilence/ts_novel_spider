@@ -1355,6 +1355,7 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
     const parsed = JSON.parse(fileContent) as {
       llmProviders?: unknown;
       neo4j?: unknown;
+      modelGateway?: unknown;
       readerTypography?: unknown;
       translation?: unknown;
       updatedAt?: unknown;
@@ -1399,6 +1400,36 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
 
     if (isRecord(parsed.translation)) {
       result.translation = parsed.translation as TranslationPreferencesInput;
+    }
+
+    if (isRecord(parsed.modelGateway)) {
+      const gateway = parsed.modelGateway as Record<string, unknown>;
+      result.modelGateway = {
+        ...(isRecord(gateway.chat) && typeof gateway.chat.providerId === 'string' && typeof gateway.chat.modelId === 'string'
+          ? {
+              chat: {
+                providerId: gateway.chat.providerId,
+                modelId: gateway.chat.modelId,
+              },
+            }
+          : {}),
+        ...(isRecord(gateway.embedding) && typeof gateway.embedding.providerId === 'string' && typeof gateway.embedding.modelId === 'string'
+          ? {
+              embedding: {
+                providerId: gateway.embedding.providerId,
+                modelId: gateway.embedding.modelId,
+              },
+            }
+          : {}),
+        ...(isRecord(gateway.rerank) && typeof gateway.rerank.providerId === 'string' && typeof gateway.rerank.modelId === 'string'
+          ? {
+              rerank: {
+                providerId: gateway.rerank.providerId,
+                modelId: gateway.rerank.modelId,
+              },
+            }
+          : {}),
+      };
     }
 
     return result;

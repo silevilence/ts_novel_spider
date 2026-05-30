@@ -1,4 +1,4 @@
-import { Badge, Button, Group, Modal, NumberInput, Paper, Progress, SegmentedControl, Slider, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Badge, Button, Drawer, Group, Modal, NumberInput, Paper, Progress, SegmentedControl, Slider, Stack, Text, TextInput, Title } from '@mantine/core';
 import { ChapterDirectory } from './chapter-directory';
 import { FontFamilyPicker } from './font-family-picker';
 import { ReaderFabBar } from './reader-fab-bar';
@@ -111,7 +111,12 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
           <Text size="xs" c="dimmed">{chapter.mediaAssets.length === 0 ? '无图片。' : `已缓存 ${readerChapter.media.cached} 张。`}</Text></Group>
         <div className="reader-copy" style={{ fontSize: `${model.readerTypography?.fontSize ?? 1.03}rem`, lineHeight: model.readerTypography?.lineHeight ?? 1.9, fontFamily: resolveReaderFontFamily(model.readerTypography) }}>
           {parseReaderContent(readerChapter.content).map((block, i) => {
-            if (block.type === 'image') return <figure key={i} className="reader-inline-image"><img src={block.sourceUrl} alt={block.alt ?? ''} /><figcaption>{block.alt}</figcaption></figure>;
+            if (block.type === 'image') return (
+              <figure key={i} style={{ margin: '1.5rem 0', textAlign: 'center' }}>
+                <img src={block.sourceUrl} alt={block.alt ?? ''} style={{ maxWidth: '100%', borderRadius: 14, background: 'rgba(255,255,255,0.02)' }} />
+                {block.alt ? <figcaption style={{ marginTop: 6, fontSize: '0.85rem', opacity: 0.55 }}>{block.alt}</figcaption> : null}
+              </figure>
+            );
             if (block.type === 'divider') return <hr key={i} className="reader-section-divider" />;
             return <p key={i}>{block.text}</p>;
           })}
@@ -140,7 +145,8 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
               value={readerTypographyDraft.fontSizePreset}
               onChange={(v) => { const sizes: Record<string, number> = { small: 0.95, medium: 1.03, large: 1.16 }; setReaderTypographyDraft({ ...readerTypographyDraft, fontSize: sizes[v] ?? 1.03, fontSizePreset: v as 'small' | 'medium' | 'large' }); setReaderTypographyDirty(true); }} fullWidth />
             <NumberInput label="精确字号 (rem)" min={0.7} max={2.2} step={0.01} value={readerTypographyDraft.fontSize}
-              onChange={(v) => { if (typeof v === 'number') { setReaderTypographyDraft({ ...readerTypographyDraft, fontSize: v }); setReaderTypographyDirty(true); } }} />
+              onChange={(v) => { if (typeof v === 'number') { setReaderTypographyDraft({ ...readerTypographyDraft, fontSize: v }); setReaderTypographyDirty(true); } }}
+              hideControls />
             <Text size="sm">行高：{readerTypographyDraft.lineHeight.toFixed(2)}</Text>
             <Slider min={1.2} max={3} step={0.05} value={readerTypographyDraft.lineHeight} onChange={(v) => { setReaderTypographyDraft({ ...readerTypographyDraft, lineHeight: v }); setReaderTypographyDirty(true); }} />
             <Text size="sm">段间距：{readerTypographyDraft.paragraphSpacing.toFixed(2)} rem</Text>
@@ -156,32 +162,36 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
         </Modal>
       ) : null}
 
-      {isReaderDirectoryOpen ? (
-        <div className="reader-directory-overlay" role="presentation" onClick={() => setIsReaderDirectoryOpen(false)}>
-          <aside className="reader-directory-drawer" aria-label="章节目录" onClick={(e) => e.stopPropagation()}>
-            <div className="reader-directory-drawer-header">
-              <div><p className="eyebrow">章节目录</p><h2>{detail.metadata.title}</h2></div>
-              <Button variant="subtle" size="compact-sm" onClick={() => setIsReaderDirectoryOpen(false)}>关闭</Button>
-            </div>
-            <ChapterDirectory chapters={toLibraryDirectoryChapters(detail.chapters, { readingProgress: detail.readingProgress, bookmarks: detail.bookmarks })}
-              mode="inspect" activeChapterId={readerChapter.id}
-              loading={model.loading} title="章节目录" subtitle="点已下载章节就能切换阅读。" emptyMessage="暂无本地章节。"
-              onPickChapter={(chapterId) => { model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId); setIsReaderDirectoryOpen(false); }} />
-          </aside>
-        </div>
-      ) : null}
+      <Drawer
+        opened={isReaderDirectoryOpen}
+        onClose={() => setIsReaderDirectoryOpen(false)}
+        title={<><Text size="xs" c="dimmed" tt="uppercase">章节目录</Text><Text size="lg" fw={700}>{detail.metadata.title}</Text></>}
+        position="right"
+        size="md"
+        styles={{
+          content: { background: 'rgba(15,10,8,0.97)', borderLeft: '1px solid rgba(168,133,96,0.18)' },
+          header: { background: 'rgba(15,10,8,0.97)', borderBottom: '1px solid rgba(168,133,96,0.12)' },
+        }}
+      >
+        <ChapterDirectory chapters={toLibraryDirectoryChapters(detail.chapters, { readingProgress: detail.readingProgress, bookmarks: detail.bookmarks })}
+          mode="inspect" activeChapterId={readerChapter.id}
+          loading={model.loading} title="章节目录" subtitle="点已下载章节就能切换阅读。" emptyMessage="暂无本地章节。"
+          onPickChapter={(chapterId) => { model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId); setIsReaderDirectoryOpen(false); }} />
+      </Drawer>
 
-      {isTranslationPanelOpen ? (
-        <div className="reader-directory-overlay" role="presentation" onClick={() => setIsTranslationPanelOpen(false)}>
-          <aside className="reader-directory-drawer" aria-label="翻译设置" onClick={(e) => e.stopPropagation()}>
-            <div className="reader-directory-drawer-header">
-              <div><p className="eyebrow">翻译设置</p><h2>翻译视图与导出</h2></div>
-              <Button variant="subtle" size="compact-sm" onClick={() => setIsTranslationPanelOpen(false)}>关闭</Button>
-            </div>
-            <TranslationProfilePanel model={model} onNotify={onNotify} />
-          </aside>
-        </div>
-      ) : null}
+      <Drawer
+        opened={isTranslationPanelOpen}
+        onClose={() => setIsTranslationPanelOpen(false)}
+        title={<><Text size="xs" c="dimmed" tt="uppercase">翻译设置</Text><Text size="lg" fw={700}>翻译视图与导出</Text></>}
+        position="right"
+        size="md"
+        styles={{
+          content: { background: 'rgba(15,10,8,0.97)', borderLeft: '1px solid rgba(168,133,96,0.18)' },
+          header: { background: 'rgba(15,10,8,0.97)', borderBottom: '1px solid rgba(168,133,96,0.12)' },
+        }}
+      >
+        <TranslationProfilePanel model={model} onNotify={onNotify} />
+      </Drawer>
     </Stack>
   );
 }

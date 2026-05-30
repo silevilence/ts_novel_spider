@@ -477,38 +477,6 @@ button:focus-visible {
   background: rgba(255, 255, 255, 0.04);
 }
 
-.reader-directory-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-overlay);
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(2, 8, 15, 0.56);
-  backdrop-filter: blur(4px);
-}
-
-.reader-directory-drawer {
-  width: min(460px, calc(100vw - 1rem));
-  height: 100vh;
-  overflow: auto;
-  padding: 1rem;
-  border-left: 1px solid var(--line);
-  background: rgba(6, 18, 30, 0.98);
-  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.34);
-}
-
-.reader-directory-drawer-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: flex-start;
-  margin-bottom: 1rem;
-}
-
-.reader-directory-close {
-  min-width: 88px;
-}
-
 .fold-header {
   display: flex;
   justify-content: space-between;
@@ -555,8 +523,7 @@ button:focus-visible {
   .provider-nav-head,
   .model-section-head,
   .model-discovery-item,
-  .reader-article-header,
-  .reader-directory-drawer-header {
+  .reader-article-header {
     flex-direction: column;
     align-items: flex-start;
   }
@@ -597,11 +564,6 @@ button:focus-visible {
   .page-nav-popover {
     right: 1rem;
     bottom: 8rem;
-  }
-
-  .reader-directory-drawer {
-    width: min(100vw, 100%);
-    padding: 0.85rem;
   }
 
   .export-hub-actions {
@@ -881,8 +843,9 @@ button:focus-visible {
   align-items: flex-start;
   padding: 0.8rem 0.9rem;
   border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(6, 19, 30, 0.78);
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: linear-gradient(180deg, rgba(36, 25, 18, 0.94), rgba(20, 14, 10, 0.86));
+  box-shadow: 0 14px 28px rgba(15, 10, 8, 0.2);
 }
 
 .intelligence-list-copy {
@@ -904,6 +867,9 @@ button:focus-visible {
   min-height: 0;
   width: fit-content;
   padding: 0.35rem 0.75rem;
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: rgba(31, 21, 16, 0.88);
+  color: rgba(244, 236, 228, 0.92);
 }
 
 .intelligence-list-item p {
@@ -932,6 +898,13 @@ button:focus-visible {
   gap: 0.35rem;
 }
 
+.graph-search-field span {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(255, 209, 102, 0.88);
+}
+
 .graph-search-field input {
   width: 100%;
 }
@@ -951,9 +924,9 @@ button:focus-visible {
   overflow-y: auto;
   padding: 0.4rem;
   border-radius: 14px;
-  border: 1px solid rgba(127, 208, 255, 0.18);
-  background: rgba(8, 22, 35, 0.98);
-  box-shadow: 0 14px 36px rgba(2, 10, 18, 0.36);
+  border: 1px solid rgba(168, 133, 96, 0.18);
+  background: rgba(22, 15, 11, 0.98);
+  box-shadow: 0 14px 36px rgba(15, 10, 8, 0.36);
   backdrop-filter: blur(14px);
   display: grid;
   gap: 0.15rem;
@@ -972,7 +945,7 @@ button:focus-visible {
 }
 
 .graph-search-suggestion-item:hover {
-  background: rgba(127, 208, 255, 0.1);
+  background: rgba(255, 140, 66, 0.12);
 }
 
 .graph-toolbar-actions {
@@ -989,8 +962,8 @@ button:focus-visible {
   gap: 0.55rem;
   padding: 0.95rem 1rem;
   border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, rgba(10, 28, 43, 0.9), rgba(6, 18, 30, 0.82));
+  border: 1px solid rgba(168, 133, 96, 0.14);
+  background: linear-gradient(180deg, rgba(42, 29, 21, 0.92), rgba(24, 17, 12, 0.84));
 }
 
 .graph-action-title,
@@ -1020,8 +993,8 @@ button:focus-visible {
   gap: 0.2rem;
   padding: 0.75rem 0.85rem;
   border-radius: 16px;
-  background: rgba(5, 18, 31, 0.68);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(20, 14, 10, 0.72);
+  border: 1px solid rgba(168, 133, 96, 0.12);
 }
 
 .graph-result-stat strong {
@@ -1046,13 +1019,30 @@ button:focus-visible {
   align-items: end;
   padding: 0.85rem 0.95rem;
   border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, rgba(10, 28, 43, 0.9), rgba(6, 18, 30, 0.82));
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: linear-gradient(180deg, rgba(36, 25, 18, 0.94), rgba(22, 16, 12, 0.88));
 }
 
 .graph-toolbar-row .graph-search-field {
   flex: 1 1 240px;
   min-width: 180px;
+}
+
+.graph-toolbar-row .graph-search-field input {
+  border-color: rgba(168, 133, 96, 0.18);
+  background: rgba(12, 9, 8, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.graph-toolbar-floating .graph-search-field input {
+  border-color: rgba(168, 133, 96, 0.18);
+  background: rgba(12, 9, 8, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.graph-toolbar-row .graph-search-field input::placeholder,
+.graph-toolbar-floating .graph-search-field input::placeholder {
+  color: rgba(232, 214, 194, 0.42);
 }
 
 .graph-toolbar-row .graph-result-strip {
@@ -1064,13 +1054,51 @@ button:focus-visible {
   flex: 0 0 auto;
 }
 
+.graph-toolbar-row .ghost-button {
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: rgba(30, 21, 16, 0.92);
+  color: rgba(244, 236, 228, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.graph-toolbar-floating .ghost-button {
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: rgba(30, 21, 16, 0.92);
+  color: rgba(244, 236, 228, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.graph-toolbar-row .ghost-button:hover:not(:disabled),
+.graph-toolbar-floating .ghost-button:hover:not(:disabled) {
+  background: rgba(56, 36, 23, 0.96);
+  border-color: rgba(255, 209, 102, 0.22);
+}
+
 .graph-inspector-footer {
   display: grid;
   gap: 0.65rem;
   padding: 0.85rem 0.95rem;
   border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, rgba(10, 28, 43, 0.9), rgba(6, 18, 30, 0.82));
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: linear-gradient(180deg, rgba(36, 25, 18, 0.94), rgba(22, 16, 12, 0.88));
+}
+
+.graph-inspector-tab {
+  min-height: 0;
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: rgba(245, 236, 224, 0.16);
+  color: rgba(240, 230, 216, 0.88);
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.graph-inspector-tab.active {
+  background: linear-gradient(135deg, rgba(255, 209, 102, 0.92), rgba(255, 140, 66, 0.9));
+  border-color: rgba(255, 209, 102, 0.4);
+  color: #2a1b10;
+  box-shadow: 0 10px 24px rgba(255, 140, 66, 0.18);
 }
 
 .graph-inspector-footer .graph-inspector-card {
@@ -1103,9 +1131,9 @@ button:focus-visible {
   gap: 0.7rem;
   padding: 0.85rem 1rem;
   border-radius: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(7, 18, 29, 0.82);
-  box-shadow: 0 18px 42px rgba(2, 10, 18, 0.24);
+  border: 1px solid rgba(168, 133, 96, 0.18);
+  background: rgba(25, 18, 14, 0.84);
+  box-shadow: 0 18px 42px rgba(15, 10, 8, 0.24);
   backdrop-filter: blur(18px);
 }
 
@@ -1152,9 +1180,9 @@ button:focus-visible {
   gap: 0.45rem;
   padding: 0.65rem;
   border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(7, 18, 29, 0.88);
-  box-shadow: 0 18px 42px rgba(2, 10, 18, 0.24);
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: rgba(16, 12, 10, 0.9);
+  box-shadow: 0 18px 42px rgba(15, 10, 8, 0.24);
   backdrop-filter: blur(18px);
 }
 
@@ -1180,8 +1208,8 @@ button:focus-visible {
   min-height: 0;
   padding: 0.55rem 0.75rem;
   border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(12, 27, 43, 0.9);
+  border: 1px solid rgba(168, 133, 96, 0.16);
+  background: rgba(33, 23, 17, 0.92);
   color: var(--ink);
   font-size: 0.86rem;
 }
@@ -1203,8 +1231,8 @@ button:focus-visible {
   width: 14px;
   height: 14px;
   border-radius: 6px;
-  border: 1px solid rgba(127, 208, 255, 0.18);
-  background: rgba(8, 22, 35, 0.92);
+  border: 1px solid rgba(255, 209, 102, 0.18);
+  background: rgba(34, 23, 16, 0.92);
   flex-shrink: 0;
 }
 
@@ -1231,11 +1259,11 @@ button:focus-visible {
   overflow: hidden;
   overscroll-behavior: contain;
   border-radius: 26px;
-  border: 1px solid rgba(127, 208, 255, 0.16);
+  border: 1px solid rgba(168, 133, 96, 0.18);
   background:
-    radial-gradient(circle at 20% 18%, rgba(127, 208, 255, 0.16), transparent 24%),
-    radial-gradient(circle at 78% 16%, rgba(255, 140, 66, 0.16), transparent 24%),
-    linear-gradient(180deg, rgba(7, 21, 34, 0.96), rgba(5, 16, 27, 0.92));
+    radial-gradient(circle at 20% 18%, rgba(255, 209, 102, 0.12), transparent 24%),
+    radial-gradient(circle at 78% 16%, rgba(199, 125, 90, 0.16), transparent 24%),
+    linear-gradient(180deg, rgba(28, 20, 16, 0.98), rgba(16, 12, 10, 0.94));
 }
 
 .graph-browser-canvas.interactive {
@@ -1290,10 +1318,44 @@ button:focus-visible {
   stroke-width: 2;
 }
 
+.graph-edge {
+  stroke: rgba(168, 133, 96, 0.34);
+  stroke-width: 1.3;
+}
+
+.graph-edge.primary {
+  stroke: rgba(255, 209, 102, 0.52);
+  stroke-width: 1.6;
+}
+
+.graph-edge.matched {
+  stroke: rgba(255, 140, 66, 0.72);
+  stroke-width: 1.8;
+}
+
 .graph-edge-hit {
   stroke: transparent;
   stroke-width: 14;
   pointer-events: auto;
+}
+
+.graph-edge-label {
+  fill: rgba(244, 236, 228, 0.78);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  paint-order: stroke;
+  stroke: rgba(19, 14, 10, 0.92);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.graph-edge-label.primary {
+  fill: rgba(255, 224, 148, 0.92);
+}
+
+.graph-edge-label.matched {
+  fill: rgba(255, 160, 96, 0.94);
 }
 
 .graph-edge-group:hover .graph-edge-label {
@@ -1304,6 +1366,66 @@ button:focus-visible {
   position: absolute;
   inset: 0;
   transform-origin: top left;
+}
+
+.graph-node {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 0.28rem;
+  align-content: center;
+  justify-items: center;
+  min-height: 0;
+  max-width: 260px;
+  padding: 0.8rem 0.95rem;
+  border-radius: 26px;
+  border: 1px solid rgba(168, 133, 96, 0.24);
+  background: linear-gradient(180deg, rgba(33, 23, 17, 0.94), rgba(20, 14, 10, 0.9));
+  box-shadow: 0 16px 30px rgba(15, 10, 8, 0.28);
+  backdrop-filter: blur(14px);
+  color: rgba(248, 241, 233, 0.96);
+  text-align: center;
+  transform: translate(-50%, -50%);
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease, color 140ms ease;
+  word-break: break-word;
+}
+
+button.graph-node:hover:not(:disabled) {
+  transform: translate(-50%, -50%);
+  border-color: rgba(255, 209, 102, 0.34);
+  background: linear-gradient(180deg, rgba(56, 36, 23, 0.96), rgba(27, 18, 11, 0.92));
+  box-shadow: 0 0 0 1px rgba(255, 209, 102, 0.16), 0 0 24px rgba(255, 140, 66, 0.18), 0 18px 34px rgba(15, 10, 8, 0.28);
+}
+
+button.graph-node:focus-visible {
+  transform: translate(-50%, -50%);
+}
+
+.graph-node.focused {
+  border-color: rgba(255, 209, 102, 0.48);
+  background: linear-gradient(180deg, rgba(68, 42, 23, 0.96), rgba(32, 20, 12, 0.92));
+  box-shadow: 0 20px 38px rgba(255, 140, 66, 0.22);
+}
+
+.graph-node.matched {
+  border-color: rgba(255, 140, 66, 0.4);
+}
+
+.graph-node strong {
+  display: block;
+  margin: 0;
+  font-family: "Alegreya", "Noto Serif SC", Georgia, serif;
+  font-size: 1.08rem;
+  line-height: 1.1;
+  color: #fff5ea;
+}
+
+.graph-node span {
+  display: block;
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  color: rgba(232, 214, 194, 0.76);
 }
 
 .graph-browser-empty {
@@ -1322,8 +1444,8 @@ button:focus-visible {
   min-height: 0;
   padding: 0.55rem 0.8rem;
   border-radius: 16px;
-  border: 1px solid rgba(127, 208, 255, 0.12);
-  background: rgba(5, 18, 31, 0.72);
+  border: 1px solid rgba(168, 133, 96, 0.14);
+  background: rgba(28, 19, 14, 0.76);
   color: var(--ink);
   text-align: left;
 }
@@ -1336,7 +1458,7 @@ button:focus-visible {
 }
 
 .graph-chip.relation {
-  border-color: rgba(255, 140, 66, 0.14);
+  border-color: rgba(199, 125, 90, 0.2);
 }
 
 .graph-inspector.enlarged {
@@ -1372,9 +1494,9 @@ button:focus-visible {
   gap: 1rem;
   padding: 1rem;
   border-radius: 28px;
-  border: 1px solid var(--line);
-  background: rgba(8, 22, 35, 0.98);
-  box-shadow: 0 26px 90px rgba(2, 6, 12, 0.48);
+  border: 1px solid rgba(168, 133, 96, 0.18);
+  background: rgba(20, 14, 10, 0.98);
+  box-shadow: 0 26px 90px rgba(15, 10, 8, 0.48);
 }
 
 .graph-modal-dialog .graph-preview-header {

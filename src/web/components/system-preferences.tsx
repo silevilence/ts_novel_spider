@@ -1,11 +1,13 @@
-import { useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Accordion,
   Badge,
+  Button,
   Group,
   NumberInput,
   Paper,
   ScrollArea,
+  Select,
   Stack,
   Text,
   Title,
@@ -15,16 +17,24 @@ import {
   IconAdjustments,
   IconBrain,
   IconDatabase,
+  IconDeviceFloppy,
+  IconLanguage,
   IconNetwork,
   IconTypography,
-  IconLanguage,
 } from '@tabler/icons-react';
 
+import { LanguagePicker } from './language-picker';
 import { LlmProviderPanel } from './llm-provider-panel';
 import { ModelGatewayPanel } from './model-gateway-panel';
 import { Neo4jPanel } from './neo4j-panel';
 import { NetworkProxyPanel } from './network-proxy-panel';
 import { ReaderTypographyPanel } from './reader-typography-panel';
+import {
+  fetchLlmProvidersPreferences,
+  fetchTranslationPreferences,
+  updateTranslationPreferences,
+  type ModelCapability,
+} from '../services/api';
 import type {
   ControlCenterModel,
   NoticeInput,
@@ -76,6 +86,7 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
                 max={12}
                 value={model.chapterConcurrency}
                 onChange={(v) => model.setChapterConcurrency(typeof v === 'number' ? v : 1)}
+                hideControls
               />
               <NumberInput
                 label="失败重试次数"
@@ -83,6 +94,7 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
                 max={5}
                 value={model.chapterRetryCount}
                 onChange={(v) => model.setChapterRetryCount(typeof v === 'number' ? v : 0)}
+                hideControls
               />
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
@@ -133,11 +145,7 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
         icon: <IconLanguage size={PANEL_ICON_SIZE} />,
         title: '翻译默认值',
         description: '设定默认的源语言、目标语言与翻译模型偏好。',
-        content: (
-          <Text size="sm" c="dimmed">
-            翻译默认语言与模型偏好将在翻译面板中配置（即将在翻译启动面板中整合）。
-          </Text>
-        ),
+        content: <TranslationDefaultsPanel onNotice={onNotify} />,
       },
     ],
     [model, onNotify, theme],
@@ -228,13 +236,120 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
               </Group>
             </Accordion.Control>
             <Accordion.Panel>
-              <ScrollArea.Autosize mah="max(40vh, 360px)" offsetScrollbars>
-                {panel.content}
-              </ScrollArea.Autosize>
+              {panel.id === 'reader' || panel.id === 'llm' ? (
+                panel.content
+              ) : (
+                <ScrollArea.Autosize mah="max(40vh, 360px)" offsetScrollbars>
+                  {panel.content}
+                </ScrollArea.Autosize>
+              )}
             </Accordion.Panel>
           </Accordion.Item>
         ))}
       </Accordion>
+    </Stack>
+  );
+}
+
+// ── TranslationDefaultsPanel ──
+
+function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput) => void }) {
+  const [sourceLang, setSourceLang] = useState('ja');
+  const [targetLang, setTargetLang] = useState('zh-CN');
+  const [translationConcurrency, setTranslationConcurrency] = useState(3);
+  const [preferredModelKey, setPreferredModelKey] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [chatModelOptions, setChatModelOptions] = useState<{ group: string; items: { value: string; label: string }[] }[]>([]);
+
+  useEffect(() => {
+    Promise.all([
+      fetchTranslationPreferences(),
+      fetchLlmProvidersPreferences(),
+    ])
+      .then(([transPrefs, llmPrefs]) => {
+        setSourceLang(transPrefs.config.sourceLang);
+        setTargetLang(transPrefs.config.targetLang);
+        setTranslationConcurrency(transPrefs.config.translationConcurrency);
+        setPreferredModelKey(transPrefs.config.preferredTranslationModelKey ?? '');
+        // Build chat-only model options
+        const groups: { group: string; items: { value: string; label: string }[] }[] = [];
+        for (const p of llmPrefs.providers) {
+          if (!p.enabled) continue;
+          const items = p.models
+            .filter((m) => m.enabled && m.modelId && m.resolvedCapabilities.includes('chat' as ModelCapability))
+            .map((m) => ({
+              value: `${p.id}:${m.modelId}`,
+              label: `${p.label} / ${m.label || m.modelId}`,
+            }));
+          if (items.length > 0) groups.push({ group: p.label, items });
+        }
+        setChatModelOptions(groups);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await updateTranslationPreferences({
+        sourceLang,
+        targetLang,
+        translationConcurrency,
+        preferredTranslationModelKey: preferredModelKey || null,
+      });
+      onNotice({ tone: 'success', title: '已保存', message: '翻译默认值已更新。' });
+    } catch (err) {
+      onNotice({ tone: 'error', title: '保存失败', message: err instanceof Error ? err.message : '未知错误' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <Text size="sm" c="dimmed">正在加载翻译配置...</Text>;
+
+  return (
+    <Stack gap="md">
+      <Text size="xs" c="dimmed">新翻译任务会默认继承这些设定，单本书启动翻译时可以临时覆盖。</Text>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+        <div>
+          <Text size="sm" fw={600} mb={4}>源语言</Text>
+          <LanguagePicker value={sourceLang} onChange={setSourceLang} placeholder="ja" />
+        </div>
+        <div>
+          <Text size="sm" fw={600} mb={4}>目标语言</Text>
+          <LanguagePicker value={targetLang} onChange={setTargetLang} placeholder="zh-CN" />
+        </div>
+      </div>
+      <Select
+        label="默认翻译模型"
+        placeholder="自动选择可用模型"
+        data={chatModelOptions}
+        value={preferredModelKey}
+        onChange={(v) => setPreferredModelKey(v ?? '')}
+        searchable
+        clearable
+        nothingFoundMessage="暂无可用对话模型"
+      />
+      <NumberInput
+        label="段落翻译并发数"
+        min={1}
+        max={12}
+        value={translationConcurrency}
+        onChange={(v) => setTranslationConcurrency(typeof v === 'number' ? v : 3)}
+        hideControls
+      />
+      <Button
+        variant="filled"
+        color="brand"
+        size="compact-sm"
+        leftSection={<IconDeviceFloppy size={14} />}
+        loading={saving}
+        onClick={() => void handleSave()}
+      >
+        保存翻译默认值
+      </Button>
     </Stack>
   );
 }

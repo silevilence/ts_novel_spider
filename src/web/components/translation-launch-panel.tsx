@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Anchor, Badge, Button, Group, Paper, Progress, ScrollArea, Select, Stack, Text, Title } from '@mantine/core';
 import type { LibraryModel, TranslationBuildState } from '../services/library-model';
-import { fetchLlmProvidersPreferences, buildLibraryExportDownloadUrl, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
+import { fetchLlmProvidersPreferences, fetchTranslationPreferences, buildLibraryExportDownloadUrl, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
 
 interface TranslationLaunchPanelProps {
   model: LibraryModel;
@@ -14,7 +14,10 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
   const [logs, setLogs] = useState<Array<{ time: string; msg: string }>>([]);
 
   useEffect(() => {
-    fetchLlmProvidersPreferences().then((p) => {
+    Promise.all([
+      fetchLlmProvidersPreferences(),
+      fetchTranslationPreferences(),
+    ]).then(([p, transPrefs]) => {
       const models: Array<{ key: string; label: string }> = [];
       for (const provider of p.providers) {
         if (!provider.enabled) continue;
@@ -24,7 +27,12 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
         }
       }
       setAvailableModels(models);
-      if (models.length > 0 && !selectedModel) setSelectedModel(models[0]!.key);
+      const preferred = transPrefs.config.preferredTranslationModelKey;
+      if (preferred && models.some((m) => m.key === preferred)) {
+        setSelectedModel(preferred);
+      } else if (models.length > 0 && !selectedModel) {
+        setSelectedModel(models[0]!.key);
+      }
     }, () => {});
   }, []);
 

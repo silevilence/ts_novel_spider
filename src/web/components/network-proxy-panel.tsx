@@ -171,7 +171,7 @@ export function NetworkProxyPanel({ onNotice }: NetworkProxyPanelProps) {
           onChange={(v) => v && setDraft((c) => ({ ...c, protocol: v as 'http' | 'https' }))}
         />
         <TextInput label="主机" value={draft.host} onChange={(e) => setDraft((c) => ({ ...c, host: e.target.value }))} placeholder="127.0.0.1" />
-        <NumberInput label="端口" value={draft.port ? Number(draft.port) : ''} onChange={(v) => setDraft((c) => ({ ...c, port: String(v ?? '') }))} min={1} placeholder="7890" />
+        <NumberInput label="端口" value={draft.port ? Number(draft.port) : ''} onChange={(v) => setDraft((c) => ({ ...c, port: String(v ?? '') }))} min={1} placeholder="7890" hideControls />
         <TextInput label="用户名" value={draft.username} onChange={(e) => setDraft((c) => ({ ...c, username: e.target.value }))} placeholder="可选" />
         <PasswordInput label="密码" value={draft.password} onChange={(e) => setDraft((c) => ({ ...c, password: e.target.value }))} placeholder="可选" />
       </SimpleGrid>

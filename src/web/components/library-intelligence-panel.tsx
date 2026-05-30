@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useRef, useState } from 'react';
-import { Badge, Button, Group, Paper, Progress, ScrollArea, Select, Stack, Text, TextInput, Textarea, Title } from '@mantine/core';
+import { ActionIcon, Affix, Badge, Button, Checkbox, Drawer, Group, Modal, NumberInput, Paper, PasswordInput, Progress, ScrollArea, Select, SimpleGrid, Stack, Text, TextInput, Textarea, Title } from '@mantine/core';
 import type { AppLocation } from '../services/app-routes';
 import {
   askLibraryAssistant,
@@ -457,9 +457,9 @@ export function LibraryIntelligencePanel({
   return (
     <>
       {location.view === 'detail' ? (
-        <section className="panel intelligence-panel">
-          <section className={`card ${graphProgressExpanded ? 'intelligence-hero-expanded' : 'intelligence-hero'}`}>
-            <div className="panel-heading split align-start">
+        <Stack gap="md">
+          <Paper p="md" radius="lg" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
+            <Group justify="space-between" mb="xs" wrap="wrap">
               <div>
                 <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.12em', color: '#ffd166' }}>知识图谱</Text>
                 <Title order={3}>实体关系图谱</Title>
@@ -474,231 +474,191 @@ export function LibraryIntelligencePanel({
                 <Badge variant="light" color="gray" size="sm">实体 {knowledgeGraph.entities.length}</Badge>
                 <Badge variant="light" color="gray" size="sm">关系 {knowledgeGraph.relations.length}</Badge>
               </div>
-            </div>
+            </Group>
 
             <div className="intelligence-progress-overview">
               {graphProgressExpanded ? (
               <>
-              <div className="intelligence-progress-summary-grid">
-                <article className="summary-tile">
-                  <span className="label">进度</span>
-                  <strong>{build.progressPercent}%</strong>
-                  <p>{build.message || '等待任务启动'}</p>
-                </article>
-                <article className="summary-tile">
-                  <span className="label">最近更新</span>
-                  <strong>{build.updatedAt ? new Date(build.updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '未开始'}</strong>
-                  <p>{build.startedAt ? `开始于 ${new Date(build.startedAt).toLocaleString('zh-CN')}` : '还没有生成记录。'}</p>
-                </article>
-                <article className="summary-tile">
-                  <span className="label">当前阶段</span>
-                  <strong>{formatGraphStage(build.stage)}</strong>
-                  <p>{build.lastBuiltAt ? `最近完成于 ${new Date(build.lastBuiltAt).toLocaleString('zh-CN')}` : '等待首次构建。'}</p>
-                </article>
-                <article className="summary-tile">
-                  <span className="label">Neo4j</span>
-                  <strong>
+              <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
+                <Paper p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                  <Text size="xs" c="dimmed">进度</Text>
+                  <Text fw={700} size="lg">{build.progressPercent}%</Text>
+                  <Text size="xs" c="dimmed">{build.message || '等待任务启动'}</Text>
+                </Paper>
+                <Paper p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                  <Text size="xs" c="dimmed">最近更新</Text>
+                  <Text fw={700}>{build.updatedAt ? new Date(build.updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '未开始'}</Text>
+                  <Text size="xs" c="dimmed">{build.startedAt ? `开始于 ${new Date(build.startedAt).toLocaleString('zh-CN')}` : '还没有生成记录。'}</Text>
+                </Paper>
+                <Paper p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                  <Text size="xs" c="dimmed">当前阶段</Text>
+                  <Text fw={700}>{formatGraphStage(build.stage)}</Text>
+                  <Text size="xs" c="dimmed">{build.lastBuiltAt ? `最近完成于 ${new Date(build.lastBuiltAt).toLocaleString('zh-CN')}` : '等待首次构建。'}</Text>
+                </Paper>
+                <Paper p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+                  <Text size="xs" c="dimmed">Neo4j</Text>
+                  <Text fw={700}>
                     {knowledgeGraph.profile.neo4j.source === 'novel'
                       ? '本书专用'
                       : knowledgeGraph.profile.neo4j.source === 'global'
                         ? '沿用全局'
                         : '未启用'}
-                  </strong>
-                  <p>
+                  </Text>
+                  <Text size="xs" c="dimmed">
                     {knowledgeGraph.profile.neo4j.source === 'novel'
                       ? knowledgeGraph.profile.neo4j.uri
                       : knowledgeGraph.profile.neo4j.source === 'global'
                         ? '使用系统里的 Neo4j 配置。'
                         : '当前未单独指定图库连接。'}
-                  </p>
-                </article>
-              </div>
+                  </Text>
+                </Paper>
+              </SimpleGrid>
 
-              <div className="progress-track" aria-hidden="true">
-                <div className="progress-fill" style={{ width: `${build.progressPercent}%` }} />
-              </div>
+              <Progress value={build.progressPercent} size="sm" color="brand" />
               </>
               ) : null}
 
-              <div className="action-row wrap compact-actions">
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => setGraphProgressExpanded((current) => !current)}
-                >
+              <Group gap="xs" mt="sm">
+                <Button variant="subtle" size="compact-xs"
+                  onClick={() => setGraphProgressExpanded((current) => !current)}>
                   {graphProgressExpanded ? '收起进度详情' : '展开进度详情'}
-                </button>
+                </Button>
                 {buildRunning ? (
-                  <button type="button" className="ghost-button" onClick={() => void handlePauseGraph()} disabled={graphPausing}>
+                  <Button variant="subtle" size="compact-xs" onClick={() => void handlePauseGraph()} disabled={graphPausing}>
                     {graphPausing ? '暂停中...' : '暂停构建'}
-                  </button>
+                  </Button>
                 ) : null}
                 {build.status === 'paused' ? (
-                  <button type="button" className="primary-button" onClick={() => void handleResumeGraph()} disabled={graphResuming}>
+                  <Button variant="filled" size="compact-xs" onClick={() => void handleResumeGraph()} disabled={graphResuming}>
                     {graphResuming ? '继续中...' : '继续构建'}
-                  </button>
+                  </Button>
                 ) : null}
-              </div>
+              </Group>
 
               {graphProgressExpanded ? (
                 <div className="intelligence-progress-drawer">
                   {build.modelStats.length > 0 ? (
-                    <div className="intelligence-log-panel">
-                      <div className="assistant-trace-heading split">
-                        <span className="label">抽取模型表现</span>
-                        <span className="panel-note">看每个模型当前跑得快不快、稳不稳。</span>
-                      </div>
-                      <div className="intelligence-model-grid">
+                    <Paper p="sm" radius="md" mb="sm" style={{ background: 'rgba(38,26,20,0.4)' }}>
+                      <Group justify="space-between" mb="xs">
+                        <Text size="sm" fw={600}>抽取模型表现</Text>
+                        <Text size="xs" c="dimmed">看每个模型当前跑得快不快、稳不稳。</Text>
+                      </Group>
+                      <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="xs">
                         {build.modelStats.map((stat) => (
-                          <article key={`${stat.providerId}::${stat.modelId}`} className="intelligence-model-card">
-                            <div className="intelligence-log-head">
-                              <strong>{formatBuildModelLabel(buildModelLabels, stat.providerId, stat.modelId)}</strong>
-                              <div className="badge-row wrap compact-actions">
-                                <span className={`status-badge ${stat.circuitState === 'open' ? 'danger' : stat.circuitState === 'half-open' ? 'state-queued' : 'ok'}`}>
+                          <Paper key={`${stat.providerId}::${stat.modelId}`} p="xs" radius="md" style={{ background: 'rgba(48,36,30,0.5)' }}>
+                            <Group justify="space-between" mb={2}>
+                              <Text fw={700} size="xs">{formatBuildModelLabel(buildModelLabels, stat.providerId, stat.modelId)}</Text>
+                              <Group gap={4}>
+                                <Badge variant="light" color={stat.circuitState === 'open' ? 'red' : stat.circuitState === 'half-open' ? 'yellow' : 'green'} size="xs">
                                   {formatGraphCircuitState(stat.circuitState)}
-                                </span>
-                                <span className="status-badge state-idle">{formatModelSource(stat.source)}</span>
-                              </div>
-                            </div>
-                            <div className="assistant-score-grid intelligence-model-metrics">
-                              <span>吞吐 {formatThroughputPerMinute(stat.throughputPerMinute)}</span>
-                              <span>失败率 {formatFailureRate(stat.failureRate)}</span>
-                              <span>进行中 {stat.inFlightCount}</span>
-                            </div>
-                            <div className="assistant-score-grid intelligence-model-metrics">
-                              <span>成功 {stat.llmSuccessCount}</span>
-                              <span>失败 {stat.failureCount}</span>
-                              <span>接盘 {stat.handoffInCount}</span>
-                              <span>转派 {stat.handoffOutCount}</span>
-                            </div>
-                          </article>
+                                </Badge>
+                                <Badge variant="light" color="gray" size="xs">{formatModelSource(stat.source)}</Badge>
+                              </Group>
+                            </Group>
+                            <Group gap="xs" mb={2}>
+                              <Text size="xs" c="dimmed">吞吐 {formatThroughputPerMinute(stat.throughputPerMinute)}</Text>
+                              <Text size="xs" c="dimmed">失败率 {formatFailureRate(stat.failureRate)}</Text>
+                              <Text size="xs" c="dimmed">进行中 {stat.inFlightCount}</Text>
+                            </Group>
+                            <Group gap="xs">
+                              <Text size="xs" c="dimmed">成功 {stat.llmSuccessCount}</Text>
+                              <Text size="xs" c="dimmed">失败 {stat.failureCount}</Text>
+                              <Text size="xs" c="dimmed">接盘 {stat.handoffInCount}</Text>
+                              <Text size="xs" c="dimmed">转派 {stat.handoffOutCount}</Text>
+                            </Group>
+                          </Paper>
                         ))}
-                      </div>
-                    </div>
+                      </SimpleGrid>
+                    </Paper>
                   ) : null}
 
-                  <div className="intelligence-log-panel">
-                    <div className="assistant-trace-heading split">
-                      <span className="label">构建日志</span>
-                      <span className="panel-note">自动刷新最近步骤和失败原因</span>
-                    </div>
+                  <Paper p="sm" radius="md" mb="sm" style={{ background: 'rgba(38,26,20,0.4)' }}>
+                    <Group justify="space-between" mb="xs">
+                      <Text size="sm" fw={600}>构建日志</Text>
+                      <Text size="xs" c="dimmed">自动刷新最近步骤和失败原因</Text>
+                    </Group>
                     {knowledgeGraph.buildLogs.length === 0 ? (
-                      <p className="panel-note">还没有构建日志。启动生成后，这里会显示每个阶段的进展。</p>
+                      <Text size="xs" c="dimmed">还没有构建日志。启动生成后，这里会显示每个阶段的进展。</Text>
                     ) : (
-                      <div className="intelligence-log-list intelligence-build-log-list">
+                      <Stack gap={4}>
                         {knowledgeGraph.buildLogs.slice(-10).map((log) => (
-                          <article key={log.id} className={`intelligence-log-item ${log.level}`}>
-                            <div className="intelligence-log-head">
-                              <span className={`status-badge ${log.level === 'error' ? 'danger' : log.level === 'warn' ? 'state-queued' : 'state-indexed'}`}>
+                          <Paper key={log.id} p={6} radius="sm" style={{ background: 'rgba(48,36,30,0.4)' }}>
+                            <Group gap="xs" mb={2}>
+                              <Badge variant="light" color={log.level === 'error' ? 'red' : log.level === 'warn' ? 'yellow' : 'green'} size="xs">
                                 {formatBuildLogLevel(log.level)}
-                              </span>
-                              <span className="panel-note">{formatGraphStage(log.stage)} · {new Date(log.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                            </div>
-                            <p>{log.message}</p>
-                          </article>
+                              </Badge>
+                              <Text size="xs" c="dimmed">{formatGraphStage(log.stage)} · {new Date(log.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</Text>
+                            </Group>
+                            <Text size="xs">{log.message}</Text>
+                          </Paper>
                         ))}
-                      </div>
+                      </Stack>
                     )}
-                    {build.errorMessage ? <p className="panel-note">失败原因：{build.errorMessage}</p> : null}
-                  </div>
+                    {build.errorMessage ? <Text size="xs" c="dimmed" mt="xs">失败原因：{build.errorMessage}</Text> : null}
+                  </Paper>
                 </div>
               ) : null}
             </div>
-          </section>
+          </Paper>
 
           <div className="intelligence-grid">
-            <section className="card intelligence-graph-card">
-              <div className="panel-heading compact-heading split align-start">
+            <Paper p="md" radius="lg" style={{ background: 'rgba(31,21,16,0.6)', border: '1px solid rgba(168,133,96,0.12)' }}>
+              <Group justify="space-between" mb="xs" wrap="wrap">
                 <div>
-                  <p className="label">图谱浏览</p>
-                  <h3>关系图与检索</h3>
-                  <p className="panel-note">按人物、地点、别名、关系证据或章节线索搜索。点节点可聚焦，双击可展开详情。</p>
+                  <Text size="xs" c="dimmed">图谱浏览</Text>
+                  <Title order={4}>关系图与检索</Title>
+                  <Text size="xs" c="dimmed" maw={500}>按人物、地点、别名、关系证据或章节线索搜索。点节点可聚焦，双击可展开详情。</Text>
                 </div>
-                <div className="badge-row wrap compact-actions graph-stat-row">
-                  <span className="status-badge state-indexed">实体 {knowledgeGraph.entities.length}</span>
-                  <span className="status-badge ok">关系 {knowledgeGraph.relations.length}</span>
-                  <span className="status-badge state-idle">当前可见 {graphExplorer.nodes.length}/{graphExplorer.edges.length}</span>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => setGraphBrowserExpanded((current) => !current)}
-                  >
+                <Group gap={4} wrap="wrap">
+                  <Badge variant="light" color="blue" size="sm">实体 {knowledgeGraph.entities.length}</Badge>
+                  <Badge variant="light" color="green" size="sm">关系 {knowledgeGraph.relations.length}</Badge>
+                  <Badge variant="light" color="gray" size="sm">可见 {graphExplorer.nodes.length}/{graphExplorer.edges.length}</Badge>
+                  <Button variant="subtle" size="compact-xs"
+                    onClick={() => setGraphBrowserExpanded((current) => !current)}>
                     {graphBrowserExpanded ? '收起' : '展开'}
-                  </button>
-                </div>
-              </div>
+                  </Button>
+                </Group>
+              </Group>
 
               {graphBrowserExpanded ? (
               <>
-              <div className="graph-build-actions">
-                <article className="graph-action-tile">
-                  <p className="label">增量更新</p>
-                  <strong className="graph-action-title">只补新增或已改章节</strong>
-                  <p className="graph-action-note">优先复用现有结构缓存，不用把整本书重新抽一遍。</p>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => void handleBuildGraph('incremental')}
-                    disabled={buildStartDisabled}
-                  >
-                    {graphBuilding || buildRunning
-                      ? '处理中...'
-                      : build.status === 'paused'
-                        ? '请先继续当前任务'
-                        : build.lastBuiltAt
-                          ? '开始增量更新'
-                          : '开始生成图谱'}
-                  </button>
-                </article>
-                <article className="graph-action-tile">
-                  <p className="label">关系重建</p>
-                  <strong className="graph-action-title">重算实体与关系</strong>
-                  <p className="graph-action-note">直接基于已缓存的结构结果归并，不重新跑章节结构抽取。</p>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => void handleBuildGraph('rebuild')}
-                    disabled={buildStartDisabled}
-                  >
-                    重算实体与关系
-                  </button>
-                </article>
-                <article className="graph-action-tile">
-                  <p className="label">全量重跑</p>
-                  <strong className="graph-action-title">从头重新提取</strong>
-                  <p className="graph-action-note">清掉旧缓存和旧结构，重新跑完整抽取链路，适合大改配置后使用。</p>
-                  <button
-                    type="button"
-                    className="ghost-button danger"
-                    onClick={() => void handleBuildGraph('full')}
-                    disabled={buildStartDisabled}
-                  >
-                    全量重做
-                  </button>
-                </article>
+              <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing="sm" mb="sm">
+                <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)', border: '1px solid rgba(168,133,96,0.14)' }}>
+                  <Text size="xs" c="dimmed" mb={2}>增量更新</Text>
+                  <Text fw={700} size="sm">只补新增或已改章节</Text>
+                  <Text size="xs" c="dimmed" mb="sm">优先复用现有结构缓存，不用把整本书重新抽一遍。</Text>
+                  <Button variant="filled" size="compact-xs" color="brand" fullWidth
+                    onClick={() => void handleBuildGraph('incremental')} disabled={buildStartDisabled}>
+                    {graphBuilding || buildRunning ? '处理中...' : build.status === 'paused' ? '请先继续当前任务' : build.lastBuiltAt ? '开始增量更新' : '开始生成图谱'}
+                  </Button>
+                </Paper>
+                <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)', border: '1px solid rgba(168,133,96,0.14)' }}>
+                  <Text size="xs" c="dimmed" mb={2}>关系重建</Text>
+                  <Text fw={700} size="sm">重算实体与关系</Text>
+                  <Text size="xs" c="dimmed" mb="sm">直接基于已缓存的结构结果归并，不重新跑章节结构抽取。</Text>
+                  <Button variant="subtle" size="compact-xs" fullWidth onClick={() => void handleBuildGraph('rebuild')} disabled={buildStartDisabled}>重算实体与关系</Button>
+                </Paper>
+                <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)', border: '1px solid rgba(168,133,96,0.14)' }}>
+                  <Text size="xs" c="dimmed" mb={2}>全量重跑</Text>
+                  <Text fw={700} size="sm">从头重新提取</Text>
+                  <Text size="xs" c="dimmed" mb="sm">清掉旧缓存和旧结构，重新跑完整抽取链路，适合大改配置后使用。</Text>
+                  <Button variant="subtle" size="compact-xs" color="red" fullWidth onClick={() => void handleBuildGraph('full')} disabled={buildStartDisabled}>全量重做</Button>
+                </Paper>
                 {knowledgeGraph.entities.length > 0 ? (
-                <article className="graph-action-tile">
-                  <p className="label">Neo4j 同步</p>
-                  <strong className="graph-action-title">推送到远端图数据库</strong>
-                  <p className="graph-action-note">将本地已生成的图谱同步到 Neo4j（需先在偏好中配置连接信息）。</p>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => void handleSyncToNeo4j()}
-                    disabled={buildBusy || buildRunning}
-                  >
-                    {graphSyncing ? '同步中...' : '手动同步到 Neo4j'}
-                  </button>
-                </article>
+                <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)', border: '1px solid rgba(168,133,96,0.14)' }}>
+                  <Text size="xs" c="dimmed" mb={2}>Neo4j 同步</Text>
+                  <Text fw={700} size="sm">推送到远端图数据库</Text>
+                  <Text size="xs" c="dimmed" mb="sm">将本地已生成的图谱同步到 Neo4j（需先在偏好中配置连接信息）。</Text>
+                  <Button variant="subtle" size="compact-xs" fullWidth onClick={() => void handleSyncToNeo4j()} disabled={buildBusy || buildRunning}>{graphSyncing ? '同步中...' : '手动同步到 Neo4j'}</Button>
+                </Paper>
                 ) : null}
-              </div>
+              </SimpleGrid>
 
-              <p className="panel-note graph-status-copy">
+              <Text size="xs" c="dimmed" mb="sm">
                 {build.status === 'paused'
-                  ? '当前任务已经暂停。若想继续当前构建，请先点击“继续构建”；若想换模式，先清空当前图谱。'
+                  ? '当前任务已经暂停。若想继续当前构建，请先点击"继续构建"；若想换模式，先清空当前图谱。'
                   : build.message || graphExplorer.summaryMessage}
-              </p>
-
+              </Text>
               <KnowledgeGraphWorkspace
                 namespace={graphNamespace}
                 graphExplorer={graphExplorer}
@@ -718,20 +678,21 @@ export function LibraryIntelligencePanel({
               />
               </>
               ) : null}
-            </section>
+            </Paper>
 
-            <section className={`card intelligence-config-card intelligence-config-span${configExpanded ? '' : ' fold-card'}`}>
-              <button
-                type="button"
-                className="panel-heading compact-heading split fold-header"
+            <Paper p="md" radius="lg" style={{ background: 'rgba(31,21,16,0.6)', border: '1px solid rgba(168,133,96,0.12)' }}>
+              <Group
+                justify="space-between"
+                wrap="wrap"
                 onClick={() => setConfigExpanded((current) => !current)}
+                style={{ cursor: 'pointer' }}
                 aria-expanded={configExpanded}
               >
                 <div>
-                  <p className="label">单书配置</p>
-                  <h3>模型与图库路由</h3>
+                  <Text size="xs" c="dimmed">单书配置</Text>
+                  <Title order={4}>模型与图库路由</Title>
                 </div>
-                <span className="panel-note">
+                <Text size="xs" c="dimmed">
                   {knowledgeGraph.profile.configLocked
                     ? '已锁定'
                     : graphDraft.chatModelKey
@@ -743,371 +704,347 @@ export function LibraryIntelligencePanel({
                     : knowledgeGraph.profile.neo4j.source === 'global'
                       ? 'Neo4j 沿用全局'
                       : 'Neo4j 未启用'}
-                </span>
-              </button>
+                </Text>
+              </Group>
               {configExpanded ? (
                 <div className="fold-content">
-              <div className="intelligence-config-grid">
-                <label>
-                  <span>对话模型</span>
-                  <select
-                    value={graphDraft.chatModelKey}
-                    onChange={(event) => setGraphDraft((current) => ({ ...current, chatModelKey: event.target.value }))}
-                    disabled={knowledgeGraph.profile.configLocked}
-                  >
-                    <option value="">沿用全局默认</option>
-                    {graphModelOptions.chat.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span>向量模型</span>
-                  <select
-                    value={graphDraft.embeddingModelKey}
-                    onChange={(event) => setGraphDraft((current) => ({ ...current, embeddingModelKey: event.target.value }))}
-                    disabled={knowledgeGraph.profile.configLocked}
-                  >
-                    <option value="">沿用全局默认</option>
-                    {graphModelOptions.embedding.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span>重排序模型</span>
-                  <select
-                    value={graphDraft.rerankModelKey}
-                    onChange={(event) => setGraphDraft((current) => ({ ...current, rerankModelKey: event.target.value }))}
-                    disabled={knowledgeGraph.profile.configLocked}
-                  >
-                    <option value="">沿用全局默认</option>
-                    {graphModelOptions.rerank.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span>全局抽取并发</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={12}
-                    step={1}
-                    value={graphDraft.extractionConcurrency}
-                    onChange={(event) => setGraphDraft((current) => ({
-                      ...current,
-                      extractionConcurrency: normalizeDraftExtractionConcurrency(Number(event.target.value)),
-                    }))}
-                    disabled={knowledgeGraph.profile.configLocked}
-                  />
-                </label>
-              </div>
-              <p className="panel-note">默认 2，表示这本书一次最多并行处理多少个片段。</p>
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                <Select
+                  label="对话模型"
+                  data={[{ value: '', label: '沿用全局默认' }, ...graphModelOptions.chat.map((o) => ({ value: o.key, label: o.label }))]}
+                  value={graphDraft.chatModelKey}
+                  onChange={(v) => setGraphDraft((c) => ({ ...c, chatModelKey: v ?? '' }))}
+                  disabled={knowledgeGraph.profile.configLocked}
+                />
+                <Select
+                  label="向量模型"
+                  data={[{ value: '', label: '沿用全局默认' }, ...graphModelOptions.embedding.map((o) => ({ value: o.key, label: o.label }))]}
+                  value={graphDraft.embeddingModelKey}
+                  onChange={(v) => setGraphDraft((c) => ({ ...c, embeddingModelKey: v ?? '' }))}
+                  disabled={knowledgeGraph.profile.configLocked}
+                />
+                <Select
+                  label="重排序模型"
+                  data={[{ value: '', label: '沿用全局默认' }, ...graphModelOptions.rerank.map((o) => ({ value: o.key, label: o.label }))]}
+                  value={graphDraft.rerankModelKey}
+                  onChange={(v) => setGraphDraft((c) => ({ ...c, rerankModelKey: v ?? '' }))}
+                  disabled={knowledgeGraph.profile.configLocked}
+                />
+                <NumberInput
+                  label="全局抽取并发"
+                  min={1} max={12}
+                  value={graphDraft.extractionConcurrency}
+                  onChange={(v) => setGraphDraft((c) => ({ ...c, extractionConcurrency: normalizeDraftExtractionConcurrency(typeof v === 'number' ? v : 2) }))}
+                  disabled={knowledgeGraph.profile.configLocked}
+                  hideControls
+                />
+              </SimpleGrid>
+              <Text size="xs" c="dimmed" mt="xs">默认 2，表示这本书一次最多并行处理多少个片段。</Text>
 
-              <div className="intelligence-log-panel">
-                <div className="assistant-trace-heading split">
-                  <span className="label">抽取模型池</span>
-                  <button
-                    type="button"
-                    className="ghost-button"
+              <Paper p="sm" radius="md" mt="md" style={{ background: 'rgba(38,26,20,0.4)' }}>
+                <Group justify="space-between" mb="xs">
+                  <Text size="sm" fw={600}>抽取模型池</Text>
+                  <Button variant="subtle" size="compact-xs"
                     onClick={() => setGraphDraft((current) => ({
                       ...current,
                       extractionModelEntries: [
                         ...current.extractionModelEntries,
-                        {
-                          key: current.chatModelKey || graphModelOptions.chat[0]?.key || '',
-                          maxConcurrency: 1,
-                        },
+                        { key: current.chatModelKey || graphModelOptions.chat[0]?.key || '', maxConcurrency: 1 },
                       ],
                     }))}
-                    disabled={knowledgeGraph.profile.configLocked || graphModelOptions.chat.length === 0}
-                  >
+                    disabled={knowledgeGraph.profile.configLocked || graphModelOptions.chat.length === 0}>
                     添加抽取模型
-                  </button>
-                </div>
-                <p className="panel-note">这里的模型池只用于章节片段抽取；如果不配置，就沿用上面的对话模型或全局默认聊天模型做单模型抽取。</p>
+                  </Button>
+                </Group>
+                <Text size="xs" c="dimmed" mb="xs">这里的模型池只用于章节片段抽取；不配置则沿用对话模型或全局默认做单模型抽取。</Text>
                 {graphDraft.extractionModelEntries.length === 0 ? (
-                  <p className="panel-note">当前未单独配置抽取模型池，会回退到单模型抽取。</p>
+                  <Text size="xs" c="dimmed">当前未单独配置抽取模型池，会回退到单模型抽取。</Text>
                 ) : (
-                  <div className="intelligence-log-list">
+                  <Stack gap="xs">
                     {graphDraft.extractionModelEntries.map((entry, index) => (
-                      <div key={`${entry.key || 'empty'}-${index}`} className="intelligence-config-grid">
-                        <label>
-                          <span>抽取模型 {index + 1}</span>
-                          <select
-                            value={entry.key}
-                            onChange={(event) => setGraphDraft((current) => ({
-                              ...current,
-                              extractionModelEntries: current.extractionModelEntries.map((item, itemIndex) => (
-                                itemIndex === index ? { ...item, key: event.target.value } : item
-                              )),
-                            }))}
-                            disabled={knowledgeGraph.profile.configLocked}
-                          >
-                            <option value="">请选择模型</option>
-                            {graphModelOptions.chat.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-                          </select>
-                        </label>
-                        <label>
-                          <span>单模型并发</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={12}
-                            step={1}
-                            value={entry.maxConcurrency}
-                            onChange={(event) => setGraphDraft((current) => ({
-                              ...current,
-                              extractionModelEntries: current.extractionModelEntries.map((item, itemIndex) => (
-                                itemIndex === index
-                                  ? { ...item, maxConcurrency: normalizeDraftExtractionConcurrency(Number(event.target.value)) }
-                                  : item
-                              )),
-                            }))}
-                            disabled={knowledgeGraph.profile.configLocked}
-                          />
-                        </label>
-                        <div className="action-row wrap compact-actions">
-                          <button
-                            type="button"
-                            className="ghost-button danger"
-                            onClick={() => setGraphDraft((current) => ({
-                              ...current,
-                              extractionModelEntries: current.extractionModelEntries.filter((_, itemIndex) => itemIndex !== index),
-                            }))}
-                            disabled={knowledgeGraph.profile.configLocked}
-                          >
-                            移除
-                          </button>
-                        </div>
-                      </div>
+                      <Group key={`${entry.key || 'empty'}-${index}`} gap="sm" wrap="wrap" align="end">
+                        <Select
+                          label={`抽取模型 ${index + 1}`}
+                          data={graphModelOptions.chat.map((o) => ({ value: o.key, label: o.label }))}
+                          value={entry.key}
+                          onChange={(v) => setGraphDraft((c) => ({
+                            ...c,
+                            extractionModelEntries: c.extractionModelEntries.map((item, i) =>
+                              i === index ? { ...item, key: v ?? '' } : item),
+                          }))}
+                          disabled={knowledgeGraph.profile.configLocked}
+                          style={{ flex: 1, minWidth: 160 }}
+                        />
+                        <NumberInput
+                          label="单模型并发"
+                          min={1} max={12}
+                          value={entry.maxConcurrency}
+                          onChange={(v) => setGraphDraft((c) => ({
+                            ...c,
+                            extractionModelEntries: c.extractionModelEntries.map((item, i) =>
+                              i === index ? { ...item, maxConcurrency: normalizeDraftExtractionConcurrency(typeof v === 'number' ? v : 1) } : item),
+                          }))}
+                          disabled={knowledgeGraph.profile.configLocked}
+                          hideControls
+                          style={{ maxWidth: 100 }}
+                        />
+                        <Button variant="subtle" size="compact-xs" color="red"
+                          onClick={() => setGraphDraft((c) => ({
+                            ...c,
+                            extractionModelEntries: c.extractionModelEntries.filter((_, i) => i !== index),
+                          }))}
+                          disabled={knowledgeGraph.profile.configLocked}>
+                          移除
+                        </Button>
+                      </Group>
                     ))}
-                  </div>
+                  </Stack>
                 )}
-              </div>
+              </Paper>
 
-              <label className="checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={graphDraft.neo4jOverrideEnabled}
-                  onChange={(event) => setGraphDraft((current) => ({ ...current, neo4jOverrideEnabled: event.target.checked }))}
-                  disabled={knowledgeGraph.profile.configLocked}
-                />
-                <span>给这本书单独指定 Neo4j 连接</span>
-              </label>
+              <Checkbox
+                label="给这本书单独指定 Neo4j 连接"
+                checked={graphDraft.neo4jOverrideEnabled}
+                onChange={(e) => setGraphDraft((c) => ({ ...c, neo4jOverrideEnabled: e.currentTarget.checked }))}
+                disabled={knowledgeGraph.profile.configLocked}
+                mt="md"
+              />
 
               {graphDraft.neo4jOverrideEnabled ? (
-                <div className="neo4j-grid intelligence-config-grid">
-                  <label>
-                    <span>Neo4j 地址</span>
-                    <input
-                      value={graphDraft.neo4jUri}
-                      onChange={(event) => setGraphDraft((current) => ({ ...current, neo4jUri: event.target.value }))}
-                      placeholder={neo4jPreferences?.config.uri || 'neo4j://127.0.0.1:7687'}
-                      disabled={knowledgeGraph.profile.configLocked}
-                    />
-                  </label>
-                  <label>
-                    <span>用户名</span>
-                    <input
-                      value={graphDraft.neo4jUsername}
-                      onChange={(event) => setGraphDraft((current) => ({ ...current, neo4jUsername: event.target.value }))}
-                      placeholder={neo4jPreferences?.config.username || 'neo4j'}
-                      disabled={knowledgeGraph.profile.configLocked}
-                    />
-                  </label>
-                  <label>
-                    <span>密码</span>
-                    <input
-                      type="password"
-                      value={graphDraft.neo4jPassword}
-                      onChange={(event) => setGraphDraft((current) => ({ ...current, neo4jPassword: event.target.value }))}
-                      placeholder="可留空沿用当前值"
-                      disabled={knowledgeGraph.profile.configLocked}
-                    />
-                  </label>
-                  <label>
-                    <span>数据库</span>
-                    <input
-                      value={graphDraft.neo4jDatabase}
-                      onChange={(event) => setGraphDraft((current) => ({ ...current, neo4jDatabase: event.target.value }))}
-                      placeholder={neo4jPreferences?.config.database || 'neo4j'}
-                      disabled={knowledgeGraph.profile.configLocked}
-                    />
-                  </label>
-                </div>
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs" mt="sm">
+                  <TextInput
+                    label="Neo4j 地址"
+                    value={graphDraft.neo4jUri}
+                    onChange={(e) => setGraphDraft((c) => ({ ...c, neo4jUri: e.target.value }))}
+                    placeholder={neo4jPreferences?.config.uri || 'neo4j://127.0.0.1:7687'}
+                    disabled={knowledgeGraph.profile.configLocked}
+                  />
+                  <TextInput
+                    label="用户名"
+                    value={graphDraft.neo4jUsername}
+                    onChange={(e) => setGraphDraft((c) => ({ ...c, neo4jUsername: e.target.value }))}
+                    placeholder={neo4jPreferences?.config.username || 'neo4j'}
+                    disabled={knowledgeGraph.profile.configLocked}
+                  />
+                  <PasswordInput
+                    label="密码"
+                    value={graphDraft.neo4jPassword}
+                    onChange={(e) => setGraphDraft((c) => ({ ...c, neo4jPassword: e.target.value }))}
+                    placeholder="可留空沿用当前值"
+                    disabled={knowledgeGraph.profile.configLocked}
+                  />
+                  <TextInput
+                    label="数据库"
+                    value={graphDraft.neo4jDatabase}
+                    onChange={(e) => setGraphDraft((c) => ({ ...c, neo4jDatabase: e.target.value }))}
+                    placeholder={neo4jPreferences?.config.database || 'neo4j'}
+                    disabled={knowledgeGraph.profile.configLocked}
+                  />
+                </SimpleGrid>
               ) : null}
 
-              <div className="action-row wrap">
-                <button type="button" className="ghost-button" onClick={() => void handleSaveGraphProfile()} disabled={graphSaving || knowledgeGraph.profile.configLocked}>
+              <Group gap="xs" mt="md">
+                <Button variant="subtle" size="compact-xs"
+                  onClick={() => void handleSaveGraphProfile()}
+                  disabled={graphSaving || knowledgeGraph.profile.configLocked}>
                   {graphSaving ? '保存中...' : knowledgeGraph.profile.configLocked ? '配置已锁定' : '保存单书配置'}
-                </button>
+                </Button>
                 {build.status === 'paused' ? (
-                  <button type="button" className="primary-button" onClick={() => void handleResumeGraph()} disabled={graphResuming}>
+                  <Button variant="filled" size="compact-xs"
+                    onClick={() => void handleResumeGraph()} disabled={graphResuming}>
                     {graphResuming ? '继续中...' : '继续构建'}
-                  </button>
+                  </Button>
                 ) : null}
-                <button type="button" className="ghost-button danger" onClick={() => void handleDeleteGraph()} disabled={graphDeleting || buildRunning}>
+                <Button variant="subtle" size="compact-xs" color="red"
+                  onClick={() => void handleDeleteGraph()} disabled={graphDeleting || buildRunning}>
                   {graphDeleting ? '清空中...' : '清空图谱'}
-                </button>
+                </Button>
+              </Group>
               </div>
-                </div>
               ) : null}
-            </section>
+            </Paper>
           </div>
-        </section>
+        </Stack>
       ) : null}
 
-      <button
-        type="button"
-        className="assistant-fab"
-        onClick={() => setAssistantOpen(true)}
-        aria-label="打开 AI 伴读面板"
+      <Affix position={{ bottom: 80, right: 24 }} zIndex={100}>
+        <Button
+          radius="xl"
+          size="sm"
+          color="orange"
+          onClick={() => setAssistantOpen(true)}
+          aria-label="打开 AI 伴读面板"
+          styles={{ root: { boxShadow: '0 4px 16px rgba(255,140,66,0.3)' } }}
+        >
+          伴读
+        </Button>
+      </Affix>
+
+      <Drawer
+        opened={assistantOpen}
+        onClose={() => setAssistantOpen(false)}
+        title={
+          <Stack gap={0}>
+            <Text size="xs" c="dimmed">AI 伴读</Text>
+            <Title order={4}>阅读助手</Title>
+          </Stack>
+        }
+        position="right"
+        size="lg"
+        styles={{
+          content: { background: 'rgba(15,10,8,0.98)' },
+          header: { background: 'rgba(15,10,8,0.98)', borderBottom: '1px solid rgba(168,133,96,0.12)' },
+        }}
       >
-        伴读
-      </button>
+        <ScrollArea.Autosize mah="calc(100vh - 120px)" offsetScrollbars>
+        <Stack gap="md">
+          <Text size="xs" c="dimmed">
+            {location.view === 'reader'
+              ? `当前章节 ${currentChapterTitle ?? location.chapterId ?? '未命名章节'} 会自动带入上下文。`
+              : '当前会自动带入书籍元数据、图谱摘要和相关章节线索。'}
+          </Text>
 
-      {assistantOpen ? (
-        <div className="reader-directory-overlay assistant-overlay" role="presentation" onClick={() => setAssistantOpen(false)}>
-          <aside className="assistant-drawer" role="dialog" aria-modal="true" aria-label="AI 伴读面板" onClick={(event) => event.stopPropagation()}>
-            <div className="reader-directory-drawer-header assistant-header">
-              <div>
-                <p className="eyebrow">AI 伴读</p>
-                <h2>阅读助手</h2>
-                <p className="panel-note">
-                  {location.view === 'reader'
-                    ? `当前章节 ${currentChapterTitle ?? location.chapterId ?? '未命名章节'} 会自动带入上下文。`
-                    : '当前会自动带入书籍元数据、图谱摘要和相关章节线索。'}
-                </p>
-              </div>
-              <button type="button" className="ghost-button reader-directory-close" onClick={() => setAssistantOpen(false)}>
-                关闭
-              </button>
-            </div>
+          {assistantMessages.length === 0 ? (
+            <Paper p="md" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+              <Text size="xs" c="dimmed">试着问人物关系、当前剧情、某个角色最近做了什么，或者让它帮你总结当前章节。</Text>
+            </Paper>
+          ) : (
+            assistantMessages.map((message) => (
+              <Paper
+                key={message.id}
+                p="sm"
+                radius="md"
+                style={{
+                  background: message.role === 'user' ? 'rgba(255,140,66,0.12)' : 'rgba(38,26,20,0.6)',
+                }}
+              >
+                <Group gap="xs" mb={4}>
+                  <Badge size="xs" variant="light" color={message.role === 'user' ? 'orange' : 'blue'}>
+                    {message.role === 'user' ? '你' : message.mode === 'llm' ? 'AI' : '本地整理'}
+                  </Badge>
+                </Group>
+                <Text size="sm" mb="xs">{message.content}</Text>
+                {message.sources && message.sources.length > 0 ? (
+                  <Stack gap={4} mb="xs">
+                    {message.sources.slice(0, 3).map((source, index) => (
+                      <Paper key={`${message.id}-${source.label}-${index}`} p={4} radius="sm" style={{ background: 'rgba(48,36,30,0.4)' }}>
+                        <Group gap={6}>
+                          <Badge size="xs" variant="light" color="gray">{source.type}</Badge>
+                          <Text size="xs">{source.label}</Text>
+                        </Group>
+                      </Paper>
+                    ))}
+                  </Stack>
+                ) : null}
+                {message.trace ? (
+                  <Stack gap="xs">
+                    <Group gap={6}>
+                      <Badge size="xs" variant="light" color={message.trace.usedEmbedding ? 'green' : 'gray'}>
+                        {message.trace.usedEmbedding ? '已走向量召回' : '未走向量召回'}
+                      </Badge>
+                      <Badge size="xs" variant="light" color={message.trace.usedRerank ? 'green' : 'gray'}>
+                        {message.trace.usedRerank ? '已重排' : '未重排'}
+                      </Badge>
+                    </Group>
 
-            <div className="assistant-thread">
-              {assistantMessages.length === 0 ? (
-                <div className="empty-state compact assistant-empty-state">
-                  <p>试着问人物关系、当前剧情、某个角色最近做了什么，或者让它帮你总结当前章节。</p>
-                </div>
-              ) : (
-                assistantMessages.map((message) => (
-                  <article key={message.id} className={`assistant-message ${message.role}`}>
-                    <p className="label">{message.role === 'user' ? '你' : message.mode === 'llm' ? 'AI' : '本地整理'}</p>
-                    <strong>{message.content}</strong>
-                    {message.sources && message.sources.length > 0 ? (
-                      <div className="assistant-source-list">
-                        {message.sources.slice(0, 3).map((source, index) => (
-                          <div key={`${message.id}-${source.label}-${index}`} className="assistant-source-item">
-                            <span className="status-badge state-indexed">{source.type}</span>
-                            <p>{source.label}</p>
-                          </div>
-                        ))}
-                      </div>
+                    {message.trace.graphHits.length > 0 ? (
+                      <Paper p="xs" radius="md" style={{ background: 'rgba(48,36,30,0.4)' }}>
+                        <Text size="xs" fw={600} mb={4}>命中子图</Text>
+                        <Stack gap={4}>
+                          {message.trace.graphHits.slice(0, 4).map((hit, index) => (
+                            <Paper key={`${message.id}-graph-${index}`} p={6} radius="sm" style={{ background: 'rgba(58,46,40,0.3)' }}>
+                              <Group justify="space-between" mb={2}>
+                                <Badge size="xs" variant="light" color={hit.source === 'neo4j' ? 'green' : 'gray'}>
+                                  {hit.source === 'neo4j' ? 'Neo4j' : '本地'}
+                                </Badge>
+                                <Text size="xs" c="dimmed">得分 {hit.score.toFixed(2)}</Text>
+                              </Group>
+                              <Text size="xs" fw={600}>{hit.label}</Text>
+                              <Text size="xs" c="dimmed">{hit.excerpt}</Text>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      </Paper>
                     ) : null}
-                    {message.trace ? (
-                      <div className="assistant-trace">
-                        <div className="assistant-trace-meta">
-                          <span className={`status-badge ${message.trace.usedEmbedding ? 'ok' : 'state-idle'}`}>
-                            {message.trace.usedEmbedding ? '已走向量召回' : '未走向量召回'}
-                          </span>
-                          <span className={`status-badge ${message.trace.usedRerank ? 'ok' : 'state-idle'}`}>
-                            {message.trace.usedRerank ? '已重排' : '未重排'}
-                          </span>
-                        </div>
 
-                        {message.trace.graphHits.length > 0 ? (
-                          <section className="assistant-trace-section">
-                            <div className="assistant-trace-heading split">
-                              <span className="label">命中子图</span>
-                              <span className="panel-note">图谱与 Neo4j 结果</span>
-                            </div>
-                            <div className="assistant-trace-list">
-                              {message.trace.graphHits.slice(0, 4).map((hit, index) => (
-                                <article key={`${message.id}-graph-${index}`} className={`assistant-trace-item ${hit.source}`}>
-                                  <div className="assistant-trace-item-head">
-                                    <span className={`status-badge ${hit.source === 'neo4j' ? 'ok' : 'state-indexed'}`}>
-                                      {hit.source === 'neo4j' ? 'Neo4j' : '本地'}
-                                    </span>
-                                    <span className="assistant-trace-score">得分 {hit.score.toFixed(2)}</span>
-                                  </div>
-                                  <strong>{hit.label}</strong>
-                                  <p>{hit.excerpt}</p>
-                                </article>
-                              ))}
-                            </div>
-                          </section>
-                        ) : null}
-
-                        {message.trace.chunkHits.length > 0 ? (
-                          <section className="assistant-trace-section">
-                            <div className="assistant-trace-heading split">
-                              <span className="label">片段候选</span>
-                              <span className="panel-note">最终被送进回答的片段会高亮</span>
-                            </div>
-                            <div className="assistant-trace-list">
-                              {message.trace.chunkHits.slice(0, 5).map((hit) => (
-                                <article key={hit.chunkId} className={`assistant-trace-item chunk-hit${hit.selected ? ' selected' : ''}`}>
-                                  <div className="assistant-trace-item-head">
-                                    <span className={`status-badge ${hit.selected ? 'ok' : 'state-idle'}`}>
-                                      {hit.selected ? '已采用' : '候选'}
-                                    </span>
-                                    <span className="assistant-trace-score">最终 {hit.finalScore.toFixed(2)}</span>
-                                  </div>
-                                  <strong>{hit.label}</strong>
-                                  <p>{hit.excerpt}</p>
-                                  <div className="assistant-score-grid">
-                                    <span>关键词 {hit.keywordScore.toFixed(2)}</span>
-                                    <span>向量 {hit.semanticScore.toFixed(2)}</span>
-                                    <span>重排 {hit.rerankScore === null ? '未用' : hit.rerankScore.toFixed(2)}</span>
-                                  </div>
-                                </article>
-                              ))}
-                            </div>
-                          </section>
-                        ) : null}
-                      </div>
+                    {message.trace.chunkHits.length > 0 ? (
+                      <Paper p="xs" radius="md" style={{ background: 'rgba(48,36,30,0.4)' }}>
+                        <Text size="xs" fw={600} mb={4}>片段候选</Text>
+                        <Stack gap={4}>
+                          {message.trace.chunkHits.slice(0, 5).map((hit) => (
+                            <Paper key={hit.chunkId} p={6} radius="sm"
+                              style={{ background: hit.selected ? 'rgba(97,212,166,0.08)' : 'rgba(58,46,40,0.3)', border: hit.selected ? '1px solid rgba(97,212,166,0.25)' : undefined }}>
+                              <Group justify="space-between" mb={2}>
+                                <Badge size="xs" variant="light" color={hit.selected ? 'green' : 'gray'}>
+                                  {hit.selected ? '已采用' : '候选'}
+                                </Badge>
+                                <Text size="xs" c="dimmed">最终 {hit.finalScore.toFixed(2)}</Text>
+                              </Group>
+                              <Text size="xs" fw={600}>{hit.label}</Text>
+                              <Text size="xs" c="dimmed">{hit.excerpt}</Text>
+                              <Group gap="xs" mt={2}>
+                                <Text size="xs" c="dimmed">关键词 {hit.keywordScore.toFixed(2)}</Text>
+                                <Text size="xs" c="dimmed">向量 {hit.semanticScore.toFixed(2)}</Text>
+                                <Text size="xs" c="dimmed">重排 {hit.rerankScore === null ? '未用' : hit.rerankScore.toFixed(2)}</Text>
+                              </Group>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      </Paper>
                     ) : null}
-                  </article>
-                ))
-              )}
-            </div>
+                  </Stack>
+                ) : null}
+              </Paper>
+            ))
+          )}
 
-            <div className="assistant-composer">
-              <textarea
-                value={assistantInput}
-                onChange={(event) => setAssistantInput(event.target.value)}
-                placeholder="例如：艾琳和莱昂现在更像同伴还是盟友？"
-              />
-              <div className="action-row wrap compact-actions">
-                <button type="button" className="ghost-button" onClick={() => setAssistantMessages([])} disabled={assistantBusy || assistantMessages.length === 0}>
-                  清空对话
-                </button>
-                <button type="button" className="primary-button" onClick={() => void handleAssistantSubmit()} disabled={assistantBusy || assistantInput.trim().length === 0}>
-                  {assistantBusy ? '发送中...' : '发送问题'}
-                </button>
-              </div>
-            </div>
-          </aside>
-        </div>
-      ) : null}
+          <Group gap="xs">
+            <Textarea
+              value={assistantInput}
+              onChange={(event) => setAssistantInput(event.currentTarget.value)}
+              placeholder="例如：艾琳和莱昂现在更像同伴还是盟友？"
+              autosize
+              minRows={2}
+              maxRows={5}
+              style={{ flex: 1 }}
+            />
+          </Group>
+          <Group justify="flex-end" gap="xs">
+            <Button variant="subtle" size="compact-sm"
+              onClick={() => setAssistantMessages([])} disabled={assistantBusy || assistantMessages.length === 0}>
+              清空对话
+            </Button>
+            <Button variant="filled" size="compact-sm" color="brand"
+              onClick={() => void handleAssistantSubmit()} disabled={assistantBusy || assistantInput.trim().length === 0}>
+              {assistantBusy ? '发送中...' : '发送问题'}
+            </Button>
+          </Group>
+        </Stack>
+        </ScrollArea.Autosize>
+      </Drawer>
 
-      {graphPreview ? (
-        <div className="reader-directory-overlay graph-preview-overlay" role="presentation" onClick={() => setGraphPreview(null)}>
-          <div className="graph-preview-dialog" role="dialog" aria-modal="true" aria-label={graphPreview.title} onClick={(event) => event.stopPropagation()}>
-            <div className="reader-directory-drawer-header graph-preview-header">
-              <div>
-                <p className="eyebrow">图谱详情</p>
-                <h3>{graphPreview.title}</h3>
-                <p className="panel-note">{graphPreview.subtitle}</p>
-              </div>
-              <button type="button" className="ghost-button reader-directory-close" onClick={() => setGraphPreview(null)}>
-                关闭
-              </button>
-            </div>
-            <div className="graph-preview-body">
-              {graphPreview.body.map((paragraph, index) => (
-                <p key={`${graphPreview.title}-${index}`}>{paragraph}</p>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <Modal
+        opened={!!graphPreview}
+        onClose={() => setGraphPreview(null)}
+        title={
+          <Stack gap={0}>
+            <Text size="xs" c="dimmed">图谱详情</Text>
+            <Title order={4}>{graphPreview?.title ?? ''}</Title>
+            <Text size="xs" c="dimmed">{graphPreview?.subtitle ?? ''}</Text>
+          </Stack>
+        }
+        size="md"
+        styles={{
+          content: { background: 'rgba(15,10,8,0.98)' },
+          header: { background: 'rgba(15,10,8,0.98)', borderBottom: '1px solid rgba(168,133,96,0.12)' },
+        }}
+      >
+        <Stack gap="sm">
+          {graphPreview?.body.map((paragraph, index) => (
+            <Text key={`${graphPreview.title}-${index}`} size="sm">{paragraph}</Text>
+          ))}
+        </Stack>
+      </Modal>
     </>
   );
 }

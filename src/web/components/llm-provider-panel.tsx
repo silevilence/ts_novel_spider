@@ -8,11 +8,14 @@ import {
   Group,
   Indicator,
   Modal,
+  NumberInput,
+  Paper,
   PasswordInput,
   ScrollArea,
   Select,
   SimpleGrid,
   Stack,
+  Switch,
   Table,
   Text,
   TextInput,
@@ -24,8 +27,6 @@ import { useDisclosure } from '@mantine/hooks';
 import {
   IconBrain,
   IconCheck,
-  IconChevronDown,
-  IconChevronUp,
   IconDownload,
   IconPencil,
   IconPlugConnected,
@@ -131,8 +132,12 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
   // Modal state
   const [editModalOpen, { open: openEdit, close: closeEdit }] = useDisclosure(false);
   const [discoverModalOpen, { open: openDiscover, close: closeDiscover }] = useDisclosure(false);
+  const [modelEditModalOpen, { open: openModelEdit, close: closeModelEdit }] = useDisclosure(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [discoveringProviderId, setDiscoveringProviderId] = useState<string | null>(null);
+  const [editingModelProviderId, setEditingModelProviderId] = useState<string | null>(null);
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [formData, setFormData] = useState<ProviderFormData>(emptyProviderForm());
 
   // Discovery state
@@ -316,9 +321,18 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
     setValidatingKey(key);
     try {
       const payload = await validateLlmProviderModel(providerId, modelId);
+      const validation = payload.validations.find(
+        (entry) => entry.providerId === providerId && entry.modelId === modelId,
+      );
       applyServerPayload(payload);
-    } catch {
-      onNotice?.({ tone: 'error', title: '测试失败', message: '模型连通性测试出错。' });
+      onNotice?.({
+        tone: validation?.ok ? 'success' : 'error',
+        title: validation?.ok ? '模型连通性测试通过' : '模型连通性测试失败',
+        message: validation?.message ?? '模型连通性测试已完成。',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '模型连通性测试出错。';
+      onNotice?.({ tone: 'error', title: '模型连通性测试失败', message });
     } finally {
       setValidatingKey(null);
     }
@@ -363,18 +377,8 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
   const providerCount = draft.length;
   const modelCount = draft.reduce((s, p) => s + p.models.length, 0);
 
-  const editingProvider = editingProviderId ? draft.find((p) => p.id === editingProviderId) : null;
-  const editingServerProvider = editingProviderId ? serverState?.providers.find((p) => p.id === editingProviderId) : null;
-
-  const discoverProvider = discoveringProviderId ? draft.find((p) => p.id === discoveringProviderId) : null;
-  const existingModelIds = new Set(
-    (discoverProvider?.models ?? []).map((m) => m.modelId.trim().toLowerCase()).filter(Boolean),
-  );
-  const filteredCatalog = catalogFilter.trim()
-    ? catalogModels.filter((m) =>
-        [m.label, m.modelId, m.description ?? ''].join(' ').toLowerCase().includes(catalogFilter.trim().toLowerCase()),
-      )
-    : catalogModels;
+  const selectedProvider = selectedProviderId ? draft.find((p) => p.id === selectedProviderId) : null;
+  const selectedServerProvider = selectedProviderId ? serverState?.providers.find((p) => p.id === selectedProviderId) : null;
 
   // ── Render ──
   if (loading) {
@@ -415,7 +419,6 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
         </Button>
       </Group>
 
-      {/* Provider Cards Grid */}
       {draft.length === 0 ? (
         <Card p="lg" radius="lg" style={{ background: 'rgba(31,21,16,0.6)' }}>
           <Stack align="center" gap="md">
@@ -427,121 +430,272 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
           </Stack>
         </Card>
       ) : (
-        <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-          {draft.map((provider) => {
-            const serverProv = serverState?.providers.find((p) => p.id === provider.id);
-            const configured = serverProv?.isConfigured ?? false;
-            const typeMeta = getTypeMeta(provider.type);
-            const enabledModelCount = provider.models.filter((m) => m.enabled).length;
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 280px) 1fr', gap: '1rem', alignItems: 'start', maxHeight: 'max(60vh, 520px)' }}>
+          {/* ── Left: Provider List ── */}
+          <ScrollArea.Autosize mah="max(60vh, 520px)" offsetScrollbars>
+          <Stack gap="xs">
+            {draft.map((provider) => {
+              const typeMeta = getTypeMeta(provider.type);
+              const enabledModelCount = provider.models.filter((m) => m.enabled).length;
+              const isSelected = selectedProviderId === provider.id;
 
-            return (
-              <Card
-                key={provider.id}
-                padding="md"
-                radius="lg"
-                style={{
-                  background: provider.enabled
-                    ? 'rgba(31,21,16,0.84)'
-                    : 'rgba(20,14,10,0.6)',
-                  border: `1px solid ${theme.other.lineColor as string}`,
-                  opacity: provider.enabled ? 1 : 0.6,
-                }}
-              >
-                <Stack gap="xs">
-                  {/* Header row */}
+              return (
+                <Paper
+                  key={provider.id}
+                  p="sm"
+                  radius="md"
+                  onClick={() => setSelectedProviderId(provider.id)}
+                  style={{
+                    cursor: 'pointer',
+                    background: isSelected
+                      ? 'rgba(255, 140, 66, 0.15)'
+                      : provider.enabled
+                        ? 'rgba(31,21,16,0.84)'
+                        : 'rgba(20,14,10,0.6)',
+                    border: `1px solid ${isSelected ? 'rgba(255, 140, 66, 0.4)' : (theme.other.lineColor as string)}`,
+                    opacity: provider.enabled ? 1 : 0.6,
+                    transition: 'border-color 150ms ease, background 150ms ease',
+                  }}
+                >
                   <Group justify="space-between" wrap="nowrap">
-                    <Text fw={700} size="sm" truncate>
-                      {provider.label.trim() || '未命名'}
-                    </Text>
+                    <div style={{ minWidth: 0 }}>
+                      <Text fw={700} size="sm" truncate>
+                        {provider.label.trim() || '未命名'}
+                      </Text>
+                      <Text size="xs" c="dimmed" truncate>
+                        {typeMeta.label} · {provider.models.length} 模型
+                        {enabledModelCount < provider.models.length ? `（${enabledModelCount} 启用）` : ''}
+                      </Text>
+                    </div>
                     <Group gap={4} wrap="nowrap">
-                      <Tooltip label="编辑">
+                      <Tooltip label={provider.enabled ? '停用' : '启用'}>
                         <ActionIcon
                           variant="subtle"
-                          size="sm"
-                          color="gray"
-                          onClick={() => handleEditProvider(provider.id)}
+                          size="xs"
+                          color={provider.enabled ? 'green' : 'gray'}
+                          onClick={(e) => { e.stopPropagation(); handleToggleProvider(provider.id); }}
                         >
-                          <IconPencil size={15} />
+                          {provider.enabled ? <IconCheck size={13} /> : <IconX size={13} />}
                         </ActionIcon>
                       </Tooltip>
                       <Tooltip label="删除">
                         <ActionIcon
                           variant="subtle"
-                          size="sm"
+                          size="xs"
                           color="red"
-                          onClick={() => handleDeleteProvider(provider.id)}
+                          onClick={(e) => { e.stopPropagation(); handleDeleteProvider(provider.id); }}
                         >
-                          <IconTrash size={15} />
+                          <IconTrash size={13} />
                         </ActionIcon>
                       </Tooltip>
                     </Group>
                   </Group>
+                </Paper>
+              );
+            })}
+          </Stack>
+          </ScrollArea.Autosize>
 
-                  {/* Status indicators */}
-                  <Group gap={6} wrap="wrap">
-                    <Badge size="xs" variant="light" color="gray">
-                      {typeMeta.label}
-                    </Badge>
-                    <Indicator
-                      color={configured ? 'green' : 'yellow'}
-                      size={6}
-                      withBorder
-                      label=""
+          {/* ── Right: Provider Detail Panel ── */}
+          {selectedProvider ? (
+            <ScrollArea.Autosize mah="max(60vh, 520px)" offsetScrollbars>
+            <Paper p="md" radius="lg" style={{ background: 'rgba(31,21,16,0.84)', border: `1px solid ${theme.other.lineColor as string}` }}>
+              <Stack gap="md">
+                <Group justify="space-between">
+                  <Title order={5}>{selectedProvider.label.trim() || '未命名'}</Title>
+                  <Group gap="xs">
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      leftSection={<IconDownload size={14} />}
+                      onClick={() => handleOpenDiscover(selectedProvider.id)}
                     >
-                      <Badge size="xs" variant="light" color={configured ? 'green' : 'yellow'}>
-                        {configured ? '已配置' : '待补凭证'}
-                      </Badge>
-                    </Indicator>
+                      发现模型
+                    </Button>
                   </Group>
+                </Group>
 
-                  {/* Model count */}
-                  <Text size="xs" c="dimmed">
-                    {provider.models.length} 个模型
-                    {enabledModelCount < provider.models.length ? `（${enabledModelCount} 个启用）` : ''}
+                {/* Provider fields */}
+                <TextInput
+                  label="服务名称"
+                  value={selectedProvider.label}
+                  onChange={(e) => {
+                    setDraft((prev) => prev.map((p) => p.id === selectedProvider.id ? { ...p, label: e.target.value } : p));
+                  }}
+                  placeholder="例如 深度求索"
+                />
+                <Select
+                  label="协议类型"
+                  data={PROVIDER_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                  value={selectedProvider.type}
+                  onChange={(v) => {
+                    const newType = (v as LlmProviderType) ?? 'openai-compatible';
+                    const meta = getTypeMeta(newType);
+                    setDraft((prev) => prev.map((p) => p.id === selectedProvider.id ? { ...p, type: newType, baseUrl: p.baseUrl || meta.defaultBaseUrl } : p));
+                  }}
+                />
+                <TextInput
+                  label="API 地址"
+                  value={selectedProvider.baseUrl}
+                  onChange={(e) => {
+                    setDraft((prev) => prev.map((p) => p.id === selectedProvider.id ? { ...p, baseUrl: e.target.value } : p));
+                  }}
+                  placeholder={getTypeMeta(selectedProvider.type).defaultBaseUrl}
+                />
+                {selectedProvider.type === 'openai-compatible' ? (
+                  <TextInput
+                    label="组织 ID（可选）"
+                    value={selectedProvider.organization ?? ''}
+                    onChange={(e) => {
+                      setDraft((prev) => prev.map((p) => p.id === selectedProvider.id ? { ...p, organization: e.target.value } : p));
+                    }}
+                    placeholder="可选"
+                  />
+                ) : null}
+                <PasswordInput
+                  label={selectedProvider.type === 'ollama' ? 'API Key（可选）' : 'API Key'}
+                  value={selectedProvider.apiKey}
+                  onChange={(e) => {
+                    setDraft((prev) => prev.map((p) => p.id === selectedProvider.id ? { ...p, apiKey: e.target.value } : p));
+                  }}
+                  placeholder={selectedProvider.type === 'ollama' ? '本地部署通常留空' : '输入 API Key'}
+                />
+
+                {/* Model list */}
+                <Group justify="space-between" mt="md">
+                  <Text fw={600} size="sm">
+                    模型列表（{selectedProvider.models.length} 个）
                   </Text>
+                  <Button
+                    variant="light"
+                    size="compact-xs"
+                    leftSection={<IconPlus size={14} />}
+                    onClick={() => handleAddModel(selectedProvider.id)}
+                  >
+                    手动添加
+                  </Button>
+                </Group>
 
-                  {/* Actions */}
-                  <Group gap={4} mt="auto">
-                    <Tooltip label="切换启停">
-                      <Button
-                        variant="subtle"
-                        size="compact-xs"
-                        color={provider.enabled ? 'green' : 'gray'}
-                        onClick={() => handleToggleProvider(provider.id)}
-                        leftSection={provider.enabled ? <IconCheck size={14} /> : <IconX size={14} />}
-                      >
-                        {provider.enabled ? '已启用' : '已停用'}
-                      </Button>
-                    </Tooltip>
-                    <Tooltip label="从接口拉取模型列表">
-                      <ActionIcon
-                        variant="subtle"
-                        size="sm"
-                        color="gray"
-                        onClick={() => handleOpenDiscover(provider.id)}
-                      >
-                        <IconDownload size={15} />
-                      </ActionIcon>
-                    </Tooltip>
-                  </Group>
-                </Stack>
-              </Card>
-            );
-          })}
-        </SimpleGrid>
+                {selectedProvider.models.length === 0 ? (
+                  <Text size="xs" c="dimmed">暂无模型，可从接口拉取或手动添加。</Text>
+                ) : (
+                  <ScrollArea.Autosize mah={360} mx="auto">
+                    <Table verticalSpacing="xs" fz="xs">
+                      <Table.Thead>
+                        <Table.Tr>
+                          <Table.Th>显示名 / ID</Table.Th>
+                          <Table.Th>能力</Table.Th>
+                          <Table.Th>状态</Table.Th>
+                          <Table.Th w={90}>操作</Table.Th>
+                        </Table.Tr>
+                      </Table.Thead>
+                      <Table.Tbody>
+                        {selectedProvider.models.map((model) => {
+                          const serverModel = selectedServerProvider?.models.find((m) => m.id === model.id);
+                          const resolvedCaps = serverModel?.resolvedCapabilities ?? model.capabilities;
+                          const validation = serverState?.validations.find(
+                            (v) => v.providerId === selectedProvider.id && v.modelId === model.id,
+                          );
+
+                          return (
+                            <Table.Tr key={model.id}>
+                              <Table.Td>
+                                <Text size="xs" fw={600} truncate maw={180}>
+                                  {model.label.trim() || '未命名'}
+                                </Text>
+                                <Text size="xs" c="dimmed" truncate maw={180}>
+                                  {model.modelId.trim() || '未填 ID'}
+                                </Text>
+                              </Table.Td>
+                              <Table.Td>
+                                <Group gap={3} wrap="wrap">
+                                  {resolvedCaps.map((cap) => (
+                                    <Badge key={cap} size="xs" variant="light" color={CAPABILITY_COLORS[cap]}>
+                                      {CAPABILITY_LABELS[cap]}
+                                    </Badge>
+                                  ))}
+                                </Group>
+                              </Table.Td>
+                              <Table.Td>
+                                <Group gap={4} wrap="nowrap">
+                                  <Indicator
+                                    color={validation?.ok ? 'green' : validation ? 'red' : 'gray'}
+                                    size={6}
+                                    processing={validatingKey === `${selectedProvider.id}:${model.id}`}
+                                    withBorder
+                                  />
+                                  <div>
+                                    <Text size="xs" c="dimmed">
+                                      {model.enabled ? '启用' : '停用'}
+                                    </Text>
+                                    <Text size="xs" c={validation?.ok ? 'green' : validation ? 'red' : 'dimmed'}>
+                                      {validation ? (validation.ok ? '测试通过' : '测试失败') : '未测试'}
+                                    </Text>
+                                  </div>
+                                </Group>
+                              </Table.Td>
+                              <Table.Td>
+                                <Group gap={2}>
+                                  <Tooltip label="配置">
+                                    <ActionIcon
+                                      variant="subtle"
+                                      size="xs"
+                                      onClick={() => {
+                                        setEditingModelProviderId(selectedProvider.id);
+                                        setEditingModelId(model.id);
+                                        openModelEdit();
+                                      }}
+                                    >
+                                      <IconPencil size={13} />
+                                    </ActionIcon>
+                                  </Tooltip>
+                                  <Tooltip label="测试连通性">
+                                    <ActionIcon
+                                      variant="subtle"
+                                      size="xs"
+                                      color="blue"
+                                      loading={validatingKey === `${selectedProvider.id}:${model.id}`}
+                                      onClick={() => void handleValidate(selectedProvider.id, model.id)}
+                                    >
+                                      <IconPlugConnected size={13} />
+                                    </ActionIcon>
+                                  </Tooltip>
+                                  <Tooltip label="删除模型">
+                                    <ActionIcon
+                                      variant="subtle"
+                                      size="xs"
+                                      color="red"
+                                      onClick={() => handleRemoveModel(selectedProvider.id, model.id)}
+                                    >
+                                      <IconTrash size={13} />
+                                    </ActionIcon>
+                                  </Tooltip>
+                                </Group>
+                              </Table.Td>
+                            </Table.Tr>
+                          );
+                        })}
+                      </Table.Tbody>
+                    </Table>
+                  </ScrollArea.Autosize>
+                )}
+              </Stack>
+            </Paper>
+            </ScrollArea.Autosize>
+          ) : (
+            <Paper p="lg" radius="lg" style={{ background: 'rgba(31,21,16,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200 }}>
+              <Text size="sm" c="dimmed">← 从左侧选择一个服务以查看和编辑详情</Text>
+            </Paper>
+          )}
+        </div>
       )}
 
-      {/* ── Edit Provider Modal ── */}
+      {/* ── Add New Provider Modal ── */}
       <Modal
         opened={editModalOpen}
         onClose={closeEdit}
-        title={
-          <Title order={4}>
-            {editingProviderId ? '编辑服务' : '添加服务'}
-          </Title>
-        }
-        size="lg"
-        styles={{ body: { maxHeight: '70vh', overflow: 'auto' } }}
+        title={<Title order={4}>添加服务</Title>}
+        size="sm"
       >
         <Stack gap="md">
           <TextInput
@@ -580,179 +734,39 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
             onChange={(e) => setFormData((f) => ({ ...f, apiKey: e.target.value }))}
             placeholder={formData.type === 'ollama' ? '本地部署通常留空' : '输入 API Key'}
           />
-
-          {/* Model list inside edit modal */}
-          {editingProvider && editingProviderId ? (
-            <>
-              <Group justify="space-between" mt="md">
-                <Text fw={600} size="sm">
-                  模型列表（{editingProvider.models.length} 个）
-                </Text>
-                <Button
-                  variant="light"
-                  size="compact-xs"
-                  leftSection={<IconPlus size={14} />}
-                  onClick={() => handleAddModel(editingProviderId!)}
-                >
-                  手动添加
-                </Button>
-              </Group>
-
-              {editingProvider.models.length === 0 ? (
-                <Text size="xs" c="dimmed">暂无模型，可从接口拉取或手动添加。</Text>
-              ) : (
-                <ScrollArea.Autosize mah={300} mx="auto">
-                  <Table verticalSpacing="xs" fz="xs">
-                    <Table.Thead>
-                      <Table.Tr>
-                        <Table.Th>显示名 / ID</Table.Th>
-                        <Table.Th>能力</Table.Th>
-                        <Table.Th>状态</Table.Th>
-                        <Table.Th w={80}>操作</Table.Th>
-                      </Table.Tr>
-                    </Table.Thead>
-                    <Table.Tbody>
-                      {editingProvider.models.map((model) => {
-                        const serverModel = editingServerProvider?.models.find((m) => m.id === model.id);
-                        const resolvedCaps = serverModel?.resolvedCapabilities ?? model.capabilities;
-                        const validation = serverState?.validations.find(
-                          (v) => v.providerId === editingProviderId && v.modelId === model.id,
-                        );
-                        const isExpanded = expandedModelIds.has(model.id);
-
-                        return (
-                          <>
-                            <Table.Tr key={model.id}>
-                              <Table.Td>
-                                <Text size="xs" fw={600} truncate maw={180}>
-                                  {model.label.trim() || '未命名'}
-                                </Text>
-                                <Text size="xs" c="dimmed" truncate maw={180}>
-                                  {model.modelId.trim() || '未填 ID'}
-                                </Text>
-                              </Table.Td>
-                              <Table.Td>
-                                <Group gap={3} wrap="wrap">
-                                  {resolvedCaps.map((cap) => (
-                                    <Badge key={cap} size="xs" variant="light" color={CAPABILITY_COLORS[cap]}>
-                                      {CAPABILITY_LABELS[cap]}
-                                    </Badge>
-                                  ))}
-                                </Group>
-                              </Table.Td>
-                              <Table.Td>
-                                <Group gap={4} wrap="nowrap">
-                                  <Indicator
-                                    color={validation?.ok ? 'green' : validation ? 'red' : 'gray'}
-                                    size={6}
-                                    processing={validatingKey === `${editingProviderId}:${model.id}`}
-                                    withBorder
-                                  />
-                                  <Text size="xs" c="dimmed">
-                                    {model.enabled ? '启用' : '停用'}
-                                  </Text>
-                                </Group>
-                              </Table.Td>
-                              <Table.Td>
-                                <Group gap={2}>
-                                  <Tooltip label="展开详情">
-                                    <ActionIcon
-                                      variant="subtle"
-                                      size="xs"
-                                      onClick={() => {
-                                        setExpandedModelIds((prev) => {
-                                          const next = new Set(prev);
-                                          if (next.has(model.id)) next.delete(model.id);
-                                          else next.add(model.id);
-                                          return next;
-                                        });
-                                      }}
-                                    >
-                                      {isExpanded ? <IconChevronUp size={13} /> : <IconChevronDown size={13} />}
-                                    </ActionIcon>
-                                  </Tooltip>
-                                  <Tooltip label="测试连通性">
-                                    <ActionIcon
-                                      variant="subtle"
-                                      size="xs"
-                                      color="blue"
-                                      loading={validatingKey === `${editingProviderId}:${model.id}`}
-                                      onClick={() => void handleValidate(editingProviderId!, model.id)}
-                                    >
-                                      <IconPlugConnected size={13} />
-                                    </ActionIcon>
-                                  </Tooltip>
-                                  <Tooltip label="删除模型">
-                                    <ActionIcon
-                                      variant="subtle"
-                                      size="xs"
-                                      color="red"
-                                      onClick={() => handleRemoveModel(editingProviderId!, model.id)}
-                                    >
-                                      <IconTrash size={13} />
-                                    </ActionIcon>
-                                  </Tooltip>
-                                </Group>
-                              </Table.Td>
-                            </Table.Tr>
-
-                            {/* Expanded row */}
-                            {isExpanded ? (
-                              <Table.Tr key={`${model.id}-expanded`}>
-                                <Table.Td colSpan={4}>
-                                  <Stack gap="xs" p="xs">
-                                    <TextInput
-                                      label="显示名称"
-                                      size="xs"
-                                      value={model.label}
-                                      onChange={(e) => handleModelField(editingProviderId!, model.id, 'label', e.target.value)}
-                                    />
-                                    <TextInput
-                                      label="模型 ID"
-                                      size="xs"
-                                      value={model.modelId}
-                                      onChange={(e) => handleModelField(editingProviderId!, model.id, 'modelId', e.target.value)}
-                                      placeholder={editingProvider.type === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'}
-                                    />
-                                    {resolvedCaps.includes('chat') ? (
-                                      <TextInput
-                                        label="上下文 Token 上限（0=不限制）"
-                                        size="xs"
-                                        type="number"
-                                        value={model.contextWindowTokens ?? 0}
-                                        onChange={(e) => handleModelField(editingProviderId!, model.id, 'contextWindowTokens', Number(e.target.value) || 0)}
-                                      />
-                                    ) : null}
-                                    <Checkbox
-                                      label="参与默认调度"
-                                      size="xs"
-                                      checked={model.enabled}
-                                      onChange={(e) => handleModelField(editingProviderId!, model.id, 'enabled', e.currentTarget.checked)}
-                                    />
-                                  </Stack>
-                                </Table.Td>
-                              </Table.Tr>
-                            ) : null}
-                          </>
-                        );
-                      })}
-                    </Table.Tbody>
-                  </Table>
-                </ScrollArea.Autosize>
-              )}
-            </>
-          ) : null}
-
-          <Group justify="flex-end" mt="sm">
+          <Group justify="flex-end">
             <Button variant="subtle" onClick={closeEdit}>取消</Button>
-            <Button onClick={handleSaveProvider} color="brand">
-              {editingProviderId ? '保存' : '添加'}
-            </Button>
+            <Button onClick={handleSaveProvider} color="brand">添加</Button>
           </Group>
         </Stack>
       </Modal>
 
+      {/* ── Model Edit Modal ── */}
+      {editingModelProviderId && editingModelId ? (
+        <ModelEditModal
+          providerId={editingModelProviderId}
+          modelId={editingModelId}
+          draft={draft}
+          serverState={serverState}
+          opened={modelEditModalOpen}
+          onClose={closeModelEdit}
+          onUpdateModel={(modelId, field, value) => handleModelField(editingModelProviderId, modelId, field, value)}
+        />
+      ) : null}
+
       {/* ── Model Discovery Modal ── */}
+      {(() => {
+        const discoverProvider = discoveringProviderId ? draft.find((p) => p.id === discoveringProviderId) : null;
+        const existingModelIds = new Set(
+          (discoverProvider?.models ?? []).map((m) => m.modelId.trim().toLowerCase()).filter(Boolean),
+        );
+        const filteredCatalog = catalogFilter.trim()
+          ? catalogModels.filter((m) =>
+              [m.label, m.modelId, m.description ?? ''].join(' ').toLowerCase().includes(catalogFilter.trim().toLowerCase()),
+            )
+          : catalogModels;
+
+        return (
       <Modal
         opened={discoverModalOpen}
         onClose={closeDiscover}
@@ -820,6 +834,8 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
           </Group>
         </Stack>
       </Modal>
+        );
+      })()}
     </Stack>
   );
 }
@@ -858,4 +874,131 @@ function buildDiscoveryInput(provider: ProviderDraft): DiscoverLlmProviderModels
     organization: provider.organization || '',
     models: [] as never[],
   } as DiscoverLlmProviderModelsInput;
+}
+
+// ── Model Edit Modal ──
+
+interface ModelEditModalProps {
+  providerId: string;
+  modelId: string;
+  draft: ProviderDraft[];
+  serverState: ControlLlmProvidersPayload | null;
+  opened: boolean;
+  onClose: () => void;
+  onUpdateModel: (modelId: string, field: keyof ModelDraft, value: unknown) => void;
+}
+
+function ModelEditModal({ providerId, modelId, draft, serverState, opened, onClose, onUpdateModel }: ModelEditModalProps) {
+  const theme = useMantineTheme();
+  const provider = draft.find((p) => p.id === providerId);
+  const model = provider?.models.find((m) => m.id === modelId);
+  const serverModel = serverState?.providers.find((p) => p.id === providerId)?.models.find((m) => m.id === modelId);
+
+  if (!model || !provider) return null;
+
+  const resolvedCaps = serverModel?.resolvedCapabilities ?? model.capabilities;
+
+  return (
+    <Modal opened={opened} onClose={onClose} title={<Title order={4}>配置模型</Title>} size="lg">
+      <ScrollArea.Autosize mah="max(60vh, 400px)" offsetScrollbars>
+        <Stack gap="md">
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+          <TextInput
+            label="显示名称"
+            value={model.label}
+            onChange={(e) => onUpdateModel(modelId, 'label', e.target.value)}
+          />
+          <TextInput
+            label="模型 ID"
+            value={model.modelId}
+            onChange={(e) => onUpdateModel(modelId, 'modelId', e.target.value)}
+            placeholder={provider.type === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'}
+          />
+          </SimpleGrid>
+
+          {resolvedCaps.includes('chat') ? (
+            <NumberInput
+              label="上下文 Token 上限（0=不限制）"
+              min={0}
+              value={model.contextWindowTokens ?? 0}
+              onChange={(v: number | string) => onUpdateModel(modelId, 'contextWindowTokens', typeof v === 'number' ? v : 0)}
+              hideControls
+            />
+          ) : null}
+
+          <Paper
+            p="md"
+            radius="lg"
+            style={{
+              background: 'rgba(38, 26, 20, 0.6)',
+              border: `1px solid ${theme.other.lineColor as string}`,
+            }}
+          >
+            <Stack gap="md">
+              <Group justify="space-between" align="flex-start" wrap="wrap">
+                <div>
+                  <Text size="sm" fw={600}>参与默认调度</Text>
+                  <Text size="xs" c="dimmed" mt={4}>
+                    系统在没有指定具体模型时，才会把这个模型作为该能力的默认候选。
+                  </Text>
+                </div>
+                <Switch
+                  checked={model.enabled}
+                  onChange={(e) => onUpdateModel(modelId, 'enabled', e.currentTarget.checked)}
+                  label={model.enabled ? '已启用' : '已停用'}
+                  onLabel="开"
+                  offLabel="关"
+                  color="brand"
+                  size="md"
+                />
+              </Group>
+
+              <div>
+                <Text size="sm" fw={600} mb="xs">能力标签</Text>
+                <Text size="xs" c="dimmed" mb="sm">
+                  选择这个模型可以承担的能力；至少保留一个，图谱和翻译会按这里的能力映射来挑选模型。
+                </Text>
+                <Group gap="sm" wrap="wrap">
+              {(['chat', 'embedding', 'rerank'] as ModelCapability[]).map((cap) => (
+                <Button
+                  key={cap}
+                  variant={model.capabilities.includes(cap) ? 'filled' : 'outline'}
+                  size="compact-sm"
+                  color={CAPABILITY_COLORS[cap]}
+                  onClick={() => {
+                    const has = model.capabilities.includes(cap);
+                    const next = has
+                      ? model.capabilities.filter((c) => c !== cap)
+                      : [...model.capabilities, cap];
+                    onUpdateModel(modelId, 'capabilities', next.length > 0 ? next : (['chat'] as ModelCapability[]));
+                  }}
+                >
+                  {CAPABILITY_LABELS[cap]}
+                </Button>
+              ))}
+                </Group>
+              </div>
+
+              <div>
+                <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.06em', color: theme.other.accentStrong as string }} mb="xs">
+                  当前识别能力
+                </Text>
+                <Group gap="xs" wrap="wrap">
+                  {resolvedCaps.map((cap) => (
+                    <Badge key={cap} variant="light" color={CAPABILITY_COLORS[cap]}>
+                      {CAPABILITY_LABELS[cap]}
+                    </Badge>
+                  ))}
+                </Group>
+              </div>
+            </Stack>
+          </Paper>
+
+          <Group justify="flex-end" mt="sm">
+            <Button variant="subtle" onClick={onClose}>关闭</Button>
+          </Group>
+        </Stack>
+      </ScrollArea.Autosize>
+    </Modal>
+  );
 }
