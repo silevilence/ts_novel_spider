@@ -10,6 +10,8 @@
 - **离线阅读**：内置沉浸式阅读器，支持字体、字号、行高、段间距个性化排版，图片资源可本地化缓存
 - **多格式导出**：支持导出为 Markdown、EPUB、TXT 三种格式，已翻译内容可按原文、纯译文或双语对照模式导出
 - **章节翻译**：接入大语言模型对已下载章节进行逐段翻译与 AI 审校，翻译结果自动保存，支持进度追踪与从零重译
+- **双语阅读**：阅读器支持原文 / 纯译文 / 段落级双语对照三种视图实时切换，方便对照学习
+- **模型网关**：可为对话、向量嵌入、重排序等不同 AI 能力分别指定默认模型，按任务自动路由
 - **网络代理**：支持配置 HTTP/SOCKS 代理，代理配置持久化跨重启保留
 - **后台守护**：前端界面关闭后，后端抓取任务持续运行，不受影响
 - **实时监控**：通过 SSE 推送任务进度，前端实时展示日志与进度条
@@ -97,7 +99,7 @@ docker compose -f docker-compose.dev.yml up
 3. 在章节目录中勾选需要下载的章节，点击**开始抓取**
 4. 切换至**任务进度**页面查看实时进度与日志
 5. 下载完成后，前往**本地书库**页面离线阅读、导出文件或发起 AI 翻译
-6. 在**下载设置**页面可配置网络代理、大模型服务、图数据库连接、阅读排版偏好以及翻译默认选项
+6. 在**全局设置**页面可配置网络代理、大模型服务、图数据库连接、阅读排版偏好以及翻译默认选项
 
 如需启用 AI 伴读与知识图谱功能（实验性），需先在设置中完成大模型与 Neo4j 的连接配置。
 
@@ -110,11 +112,13 @@ docker compose -f docker-compose.dev.yml up
 │   │   ├── adapters/
 │   │   │   ├── log/             # 日志适配器
 │   │   │   └── spider/          # 站点爬虫适配器（Syosetu / Syosetu18）
-│   │   ├── core/                # 调度器、数据库、导出引擎、网络代理、系统偏好、知识图谱
+│   │   ├── core/
+│   │   │   ├── translation/     # 翻译流水线子节点（分段/翻译/组装/审校/定稿）
+│   │   │   └── ...              # 调度器、数据库、导出引擎、网络代理、系统偏好、知识图谱
 │   │   ├── routes/              # Express API 路由
 │   │   └── index.ts             # 服务入口
-│   └── web/                     # 前端 React 工程（Vite 构建）
-│       ├── components/          # UI 组件（控制台、书库、监控、设置）
+│   └── web/                     # 前端 React 工程（Mantine v7 + Vite 构建）
+│       ├── components/          # UI 组件（控制台、书库、监控、设置、面板）
 │       ├── services/            # API 封装与视图模型
 │       └── App.tsx              # 前端入口与路由配置
 ├── data/
@@ -122,6 +126,7 @@ docker compose -f docker-compose.dev.yml up
 │   └── offline-assets/          # 本地化图片缓存
 ├── .data/                       # 运行时数据（SQLite、代理配置、系统偏好）— 不提交 Git
 ├── docs/                        # UX 设计规范与开发备忘
+├── scripts/ci/                  # CI 发布准备脚本
 ├── Dockerfile                   # 生产镜像构建脚本（multi-stage）
 ├── Dockerfile.dev               # 开发镜像构建脚本（国内加速源）
 ├── docker-compose.yml           # 生产环境编排配置
@@ -133,7 +138,7 @@ docker compose -f docker-compose.dev.yml up
 | 层 | 技术 |
 |---|---|
 | 后端 | Node.js ≥ 20, Express 5, better-sqlite3, Cheerio |
-| 前端 | React 19, Vite 6, TypeScript |
-| AI / 图谱 | Vercel AI SDK, Neo4j, 支持 OpenAI / Anthropic / Google / Ollama |
-| 导出 | JSZip（EPUB 打包）|
-| 工程化 | tsx, concurrently, Docker |
+| 前端 | React 19, Mantine v7, Vite 6, TypeScript strict 模式 |
+| AI / 图谱 / 翻译 | Vercel AI SDK, LangGraph, Neo4j, 支持 OpenAI / Anthropic / Google / Ollama |
+| 导出 | JSZip（EPUB 打包） |
+| 工程化 | tsx, concurrently, Docker multi-stage build |

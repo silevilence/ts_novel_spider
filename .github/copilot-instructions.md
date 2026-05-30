@@ -17,12 +17,12 @@
 | 层 | 技术 |
 |---|---|
 | 后端 | Node.js ≥ 20, Express 5, `better-sqlite3`, `cheerio` |
-| 前端 | React 19, Vite 6, TypeScript strict 模式 |
+| 前端 | React 19, Mantine v7, `@emotion/react`, `@emotion/styled`, `@tabler/icons-react`, Vite 6, TypeScript strict 模式 |
 | AI / 图谱 / 翻译 | `ai` (Vercel AI SDK), `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `ai-sdk-ollama`, `@langchain/core`, `@langchain/langgraph`, `neo4j-driver`, `zod`, `jsonrepair` |
 | 导出 | `jszip`（EPUB 打包） |
 | 工程化 | `tsx` (watch + test runner), `concurrently`, Docker multi-stage build |
 
-**禁止降级**：不得将 Express 5 降回 v4；不得关闭 TypeScript strict 模式。
+**禁止降级**：不得将 Express 5 降回 v4；不得关闭 TypeScript strict 模式；不得将 Mantine 降回 v6 或更早版本。
 
 ## 3. 目录结构规范 (Directory Structure)
 
@@ -35,6 +35,7 @@
 │   │   │   └── spider/            # 站点爬虫适配器
 │   │   │       ├── syosetu-18-spider-adapter.ts   # Syosetu18 具体实现
 │   │   │       ├── syosetu-spider-adapter.ts      # Syosetu（继承 Syosetu18）
+│   │   │       ├── syosetu-spider-adapter.test.ts # 爬虫适配器测试
 │   │   │       └── mock-html-spider-adapter.ts    # 测试用 Mock
 │   │   ├── core/
 │   │   │   ├── spider.ts              # SpiderAdapter 接口 + BaseHtmlSpiderAdapter 抽象类
@@ -45,7 +46,7 @@
 │   │   │   ├── export-engine.ts       # 本地导出引擎（Markdown / EPUB / TXT，含翻译模式）
 │   │   │   ├── network-proxy.ts       # 网络代理服务（持久化至 .data/network-proxy.json）
 │   │   │   ├── logging.ts             # SpiderLogDispatcher + SpiderLogAdapter 接口
-│   │   │   ├── system-preferences.ts  # 系统偏好服务（LLM 配置、Neo4j、阅读排版、翻译偏好）
+│   │   │   ├── system-preferences.ts  # 系统偏好服务（LLM 配置、模型网关、Neo4j、阅读排版、翻译偏好）
 │   │   │   ├── library-intelligence.ts # 知识图谱与 AI 伴读核心服务
 │   │   │   ├── library-intelligence-rag.ts # 图谱提取与 RAG 检索底层实现
 │   │   │   ├── library-search.ts      # 本地书库多维度搜索与相关性排序
@@ -67,23 +68,29 @@
 │       │   ├── control-console.tsx        # 开始抓取页面
 │       │   ├── chapter-directory.tsx      # 章节目录（含增量状态高亮）
 │       │   ├── metadata-board.tsx         # 小说元数据展示
-│       │   ├── library-workspace.tsx      # 本地书库（总览/详情/阅读器）
-│       │   ├── monitor-dashboard.tsx      # 任务进度监控
-│       │   ├── task-monitor.tsx           # 单任务实时日志
-│       │   ├── system-preferences.tsx     # 下载设置页（含 LLM/Neo4j/排版子面板）
-│       │   ├── llm-provider-panel.tsx     # 大模型服务商配置
-│       │   ├── neo4j-panel.tsx            # Neo4j 图数据库连接配置
+│       │   ├── library-workspace.tsx      # 书库路由壳层
+│       │   ├── library-list-view.tsx      # 书库列表页
+│       │   ├── library-detail-view.tsx    # 书库详情页（含工具标签页）
+│       │   ├── library-reader-view.tsx    # 阅读器页（含双语模式）
 │       │   ├── library-intelligence-panel.tsx # AI 伴读对话面板
+│       │   ├── library-shared.ts          # 书库模块共享类型与工具
+│       │   ├── monitor-dashboard.tsx      # 任务进度监控大盘
+│       │   ├── system-preferences.tsx     # 全局设置页（含各子面板路由）
+│       │   ├── llm-provider-panel.tsx     # 大模型服务商配置面板
+│       │   ├── model-gateway-panel.tsx    # 模型网关（按能力路由）
+│       │   ├── neo4j-panel.tsx            # Neo4j 图数据库连接配置
+│       │   ├── network-proxy-panel.tsx    # 网络代理配置
 │       │   ├── reader-typography-panel.tsx # 阅读器排版偏好
 │       │   ├── font-family-picker.tsx     # 字体族选择器
 │       │   ├── language-picker.tsx        # 翻译源/目标语言选择器
-│       │   ├── network-proxy-panel.tsx    # 网络代理配置
-│       │   ├── notification-center.tsx    # 全局通知吐司
 │       │   ├── reader-fab-bar.tsx         # 阅读器悬浮快捷按钮栏
+│       │   ├── scrollspy-nav.tsx          # 页面导航高亮指示
 │       │   ├── status-panel.tsx           # 状态摘要卡片
 │       │   ├── translation-launch-panel.tsx  # 翻译任务发起面板
 │       │   └── translation-profile-panel.tsx # 翻译配置与进度面板
 │       ├── services/              # API 封装（api.ts）+ 视图模型
+│       ├── theme.ts               # Mantine 主题定义（暖色纸质暗调）
+│       ├── styles.css             # 全局样式
 │       ├── App.tsx                # 路由配置入口
 │       └── vite.config.ts
 ├── scripts/ci/                    # CI 发布准备脚本
@@ -136,8 +143,9 @@
 
 ### 4.7 系统偏好：SystemPreferencesService
 
-- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理四类全局配置，均持久化至 `.data/system-preferences.json`：
+- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理五类全局配置，均持久化至 `.data/system-preferences.json`：
   - **LLM 提供商配置**（`LlmProviderConfig`）：支持 openai-compatible / anthropic / google-generative-ai / ollama 四种类型，每个提供商可配置多个模型，每个模型可手动或自动映射能力标签（chat / embedding / rerank）。
+  - **模型网关配置**（`LlmModelGatewayConfig`）：为 chat / embedding / rerank 三种能力分别指定默认模型路由，AI 功能（伴读、图谱、翻译）按能力自动选择相应模型。
   - **Neo4j 图数据库连接**（`Neo4jConfig`）：URI、用户名、密码，支持连接验证。
   - **阅读器排版偏好**（`ReaderTypographyConfig`）：全局默认字体族、字号、行高、段间距。
   - **翻译偏好**（`TranslationPreferencesConfig`）：默认源语言、目标语言、翻译模型、段落并发数等。
@@ -150,6 +158,8 @@
 - 底层抽取与检索逻辑位于 `src/server/core/library-intelligence-rag.ts`，使用 Vercel AI SDK 调用 LLM 进行实体/关系抽取和 RAG 检索。
 - 图谱构建支持 **full**（全量重建）、**incremental**（增量追加）、**rebuild**（先清空再全量）三种模式。
 - 构建过程可暂停/恢复，状态持久化至 SQLite。每个小说可独立配置抽取模型池与并发数。
+- LLM 提取失败时不再回退到本地启发式规则（已移除 `extractChunkHeuristically` 调用路径），失败片段标记 `status='failed'`，可通过 `POST .../graph/retry-failed` 端点单独重试。
+- `knowledge_graph_build_checkpoints` 表有 `status` 字段（`'success' | 'failed'`），构建入口强制要求至少配置一个提取模型。
 - AI 伴读采用混合检索：元数据 + 图谱子图 + 章节块（关键词评分 + 向量余弦相似度 + 可选重排序）。
 - OpenAI 兼容接口需确保 base URL 包含 `/v1` 路径（若原始 URL 无 path 则自动补齐）。
 - 支持将本地图谱数据同步至 Neo4j 图数据库（`POST .../graph/sync-neo4j`），用于与外部工具联动分析。
@@ -193,6 +203,7 @@
 | POST | `/api/control/network-proxy/validate` | 验证代理连通性 |
 | GET/PUT | `/api/control/preferences/llm-providers` | 读取/更新 LLM 提供商配置 |
 | POST | `/api/control/preferences/llm-providers/:providerId/models/:modelId/validate` | 验证单个 LLM 模型 |
+| GET/PUT | `/api/control/preferences/model-gateway` | 读取/更新模型网关配置 |
 | GET/PUT | `/api/control/preferences/neo4j` | 读取/更新 Neo4j 连接配置 |
 | POST | `/api/control/preferences/neo4j/validate` | 验证 Neo4j 连接 |
 | GET/PUT | `/api/control/preferences/reader-typography` | 读取/更新全局阅读排版偏好 |
@@ -206,6 +217,7 @@
 | POST | `/api/library/novels/:sourceId/:novelId/graph/build` | 启动图谱构建 |
 | POST | `/api/library/novels/:sourceId/:novelId/graph/pause` | 暂停图谱构建 |
 | POST | `/api/library/novels/:sourceId/:novelId/graph/resume` | 恢复图谱构建 |
+| POST | `/api/library/novels/:sourceId/:novelId/graph/retry-failed` | 重试失败的图谱提取片段 |
 | DELETE | `/api/library/novels/:sourceId/:novelId/graph` | 清除图谱数据 |
 | POST | `/api/library/novels/:sourceId/:novelId/graph/sync-neo4j` | 同步本地图谱至 Neo4j |
 | POST | `/api/library/novels/:sourceId/:novelId/assistant/chat` | AI 伴读问答 |
@@ -256,10 +268,12 @@
 ## 9. 默认行为 (Default AI Behaviors)
 
 - **新增爬虫**：在 `src/server/adapters/spider/` 下创建适配器文件，继承 `BaseHtmlSpiderAdapter`，并在 `ControlCenterService` 注册表中追加，同时补充测试。
-- **前端组件**：默认使用 React Hooks，通过 `src/web/services/api.ts` 调用后端接口，与现有暗黑模式视觉风格保持一致。
+- **前端组件**：默认使用 React Hooks + Mantine v7 组件库，通过 `src/web/services/api.ts` 调用后端接口。视觉风格遵循 `theme.ts` 中定义的暖色纸质暗调（`warmPaperDark`）。全局通知统一使用 `@mantine/notifications`（`notifications.show()`），不得自行实现通知中心组件。组件交互模式遵循：加载状态 → 草稿态编辑 → 验证反馈（✅/❌ 标识）→ 保存并通知。
+- **前端路由**：四个主路由定义在 `src/web/services/app-routes.ts`（采集工作台 `/`、本地书库 `/library`、任务大盘 `/monitor`、全局设置 `/settings`）。书库模块由 `LibraryWorkspace` 壳层按子路由分发到 `LibraryListView` / `LibraryDetailView` / `LibraryReaderView`。
 - **网络请求**：爬虫 HTTP 请求默认带完整 Headers，并经由 `createProxyAwareHtmlFetcher` 发出。
-- **知识图谱与 AI 伴读**：相关功能为实验性，未经用户明确要求不得主动启用。新增图谱相关代码时需同步更新 `novel-repository.ts` 中的表结构与迁移逻辑。图谱构建测试应使用 SQLite 内存数据库，不得依赖真实 Neo4j 或 LLM 调用。
-- **系统偏好**：新增偏好字段需在 `SystemPreferencesService` 中定义接口与持久化逻辑，并在前端 `SystemPreferences` 组件中提供对应 UI。偏好迁移策略（新增字段默认值）需在 `system-preferences.ts` 中显式处理。
+- **知识图谱与 AI 伴读**：相关功能为实验性，未经用户明确要求不得主动启用。新增图谱相关代码时需同步更新 `novel-repository.ts` 中的表结构与迁移逻辑。构建入口强制要求至少配置一个提取模型（无模型时直接拒绝并给出清晰提示）。LLM 失败不再回退本地规则，改为标记失败 + 重试。图谱构建测试应使用 SQLite 内存数据库，不得依赖真实 Neo4j 或 LLM 调用。
+- **模型网关**：新增 AI 功能需通过 `resolveCapabilityRoute` / `resolveExtractionRoutes` 获取模型路由，不得硬编码模型选择。网关配置变更需同步更新 `system-preferences.ts` 中的 `LlmModelGatewayConfig` 类型与持久化逻辑。
+- **系统偏好**：新增偏好字段需在 `SystemPreferencesService` 中定义接口与持久化逻辑，并在前端 `SystemPreferences` 组件中提供对应 UI。偏好迁移策略（新增字段默认值）需在 `system-preferences.ts` 的 `loadPersistedPreferences` 中显式处理。
 - **书库搜索**：搜索语法变更需同步更新 `library-search.ts` 中的分词器与解析器，并补充测试覆盖。
-- **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
+- **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义（使用 `Annotation.Root()` API）以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
