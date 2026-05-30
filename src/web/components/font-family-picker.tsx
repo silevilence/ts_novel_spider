@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { Badge, Button, Group, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
+import { IconPlus, IconX } from '@tabler/icons-react';
 
 export interface FontFamilyPickerProps {
   preset: 'sans' | 'serif' | 'monospace' | 'custom';
@@ -113,94 +115,60 @@ export function FontFamilyPicker({
   }
 
   return (
-    <fieldset className="reader-typography-group font-family-picker">
-      <legend className="label">字体族</legend>
-      <div className="reader-typography-options">
-        {(Object.entries(PRESET_LABELS) as Array<[FontFamilyPickerProps['preset'], string]>).map(([value, label]) => (
-          <label key={value} className="checkbox-field">
-            <input
-              type="radio"
-              name="fontFamilyPreset"
-              value={value}
-              checked={preset === value}
-              onChange={() => onPresetChange(value)}
-              disabled={disabled}
-            />
-            <span>{label}</span>
-          </label>
-        ))}
-      </div>
+    <Stack gap="xs">
+      <Text size="sm" fw={600}>字体族</Text>
+      <SegmentedControl
+        data={Object.entries(PRESET_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+        value={preset}
+        onChange={(v) => onPresetChange(v as FontFamilyPickerProps['preset'])}
+        disabled={disabled ?? false}
+        fullWidth
+      />
 
       {preset === 'custom' ? (
-        <div className="font-chain-builder">
-          {/* 已选字体链 */}
-          <div className="font-chain-tags">
+        <Stack gap="xs">
+          <Group gap={4} wrap="wrap">
             {chain.length === 0 ? (
-              <p className="panel-note font-chain-placeholder">尚未添加字体，请在下方输入或点击推荐字体。</p>
+              <Text size="xs" c="dimmed">尚未添加字体，请在下方输入或点击推荐字体。</Text>
             ) : (
               chain.map((name, index) => (
-                <span key={`${name}-${index}`} className="font-chain-tag">
-                  <span className="font-chain-index">{index + 1}</span>
-                  {name}
-                  <button
-                    type="button"
-                    className="font-chain-remove"
-                    onClick={() => removeFont(index)}
-                    disabled={disabled}
-                    aria-label={`移除 ${name}`}
-                  >
-                    ×
-                  </button>
-                </span>
+                <Badge key={`${name}-${index}`} variant="light" size="lg"
+                  rightSection={
+                    <IconX size={12} style={{ cursor: 'pointer' }} onClick={() => removeFont(index)} />
+                  }>
+                  {index + 1}. {name}
+                </Badge>
               ))
             )}
-          </div>
+          </Group>
 
-          {/* 手动输入 */}
-          <div className="font-chain-input-row">
-            <input
-              type="text"
-              className="full-width-input"
-              placeholder='输入字体名后回车，如 "Noto Serif CJK SC"'
+          <Group>
+            <TextInput
+              placeholder="输入字体名后回车"
               value={customInput}
-              onChange={(event) => setCustomInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  handleManualAdd();
-                }
-              }}
-              disabled={disabled}
+              onChange={(e) => setCustomInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleManualAdd(); } }}
+              disabled={disabled ?? false}
+              style={{ flex: 1 }}
             />
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={handleManualAdd}
-              disabled={disabled || customInput.trim().length === 0}
-            >
-              添加
-            </button>
-          </div>
+            <Button variant="light" size="compact-sm" onClick={handleManualAdd}
+              disabled={(disabled ?? false) || customInput.trim().length === 0}
+              leftSection={<IconPlus size={14} />}>添加</Button>
+          </Group>
 
-          {/* 推荐字体 */}
-          <div className="font-chain-suggestions">
-            <p className="panel-note">点击快速添加：</p>
-            <div className="font-suggestion-chips">
-              {SUGGESTED_FONTS.map((name) => (
-                <button
-                  key={name}
-                  type="button"
-                  className="preset-chip font-suggestion-chip"
-                  onClick={() => addFont(name)}
-                  disabled={disabled || chain.some((entry) => entry.toLowerCase() === name.toLowerCase())}
-                >
-                  {name}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+          <Text size="xs" c="dimmed">点击快速添加：</Text>
+          <Group gap={4} wrap="wrap">
+            {SUGGESTED_FONTS.map((name) => (
+              <Badge key={name} variant="outline" size="sm"
+                style={{ cursor: 'pointer' }}
+                opacity={chain.some((e) => e.toLowerCase() === name.toLowerCase()) ? 0.4 : 1}
+                onClick={() => { if (!(disabled ?? false) && !chain.some((e) => e.toLowerCase() === name.toLowerCase())) addFont(name); }}>
+                {name}
+              </Badge>
+            ))}
+          </Group>
+        </Stack>
       ) : null}
-    </fieldset>
+    </Stack>
   );
 }

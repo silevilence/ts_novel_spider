@@ -1,4 +1,21 @@
 import { startTransition, useEffect, useEffectEvent, useState } from 'react';
+import {
+  Badge,
+  Button,
+  Card,
+  Group,
+  NumberInput,
+  PasswordInput,
+  Select,
+  SimpleGrid,
+  Stack,
+  Switch,
+  Text,
+  Textarea,
+  TextInput,
+  Title,
+} from '@mantine/core';
+import { IconNetwork, IconPlugConnected } from '@tabler/icons-react';
 
 import {
   fetchNetworkProxy,
@@ -117,150 +134,90 @@ export function NetworkProxyPanel({ onNotice }: NetworkProxyPanelProps) {
   const proxySummary = formatProxySummary(state?.config ?? null);
 
   return (
-    <section className="panel proxy-panel">
-      <div className="panel-heading split align-start">
+    <Stack gap="md">
+      <Group justify="space-between" wrap="wrap">
         <div>
-          <p className="eyebrow">网络代理</p>
-          <h2>设置代理连接</h2>
-          <p className="panel-note">
-            如果访问站点需要代理，可以在这里统一设置。保存后，后续预览和下载都会使用这份配置。
-          </p>
+          <Group mb={4}>
+            <IconNetwork size={18} color="#ffd166" />
+            <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.08em', color: '#ffd166' }}>网络代理</Text>
+          </Group>
+          <Title order={4}>设置代理连接</Title>
+          <Text size="xs" c="dimmed" maw={480}>如果访问站点需要代理，可以在这里统一设置。保存后，后续预览和采集都会使用这份配置。</Text>
         </div>
-        <div className="badge-row">
-          <span className={`status-badge ${draft.enabled ? 'state-running' : 'state-completed'}`}>
-            {draft.enabled ? '代理已启用' : '当前直连'}
-          </span>
-          <span className={`status-badge ${validation?.ok ? 'ok' : 'state-failed'}`}>
-            {validation ? (validation.ok ? '最近校验成功' : '最近校验失败') : '尚未校验'}
-          </span>
-        </div>
-      </div>
+        <Group gap="xs">
+          <Badge variant="light" color={draft.enabled ? 'green' : 'gray'}>{draft.enabled ? '代理已启用' : '当前直连'}</Badge>
+          <Badge variant="light" color={validation?.ok ? 'green' : validation ? 'red' : 'gray'}>
+            {validation ? (validation.ok ? '校验成功' : '校验失败') : '未校验'}
+          </Badge>
+        </Group>
+      </Group>
 
-      <div className="proxy-summary">
-        <article className="card">
-          <h3>当前出口</h3>
-          <p>{proxySummary}</p>
-        </article>
-        <article className="card">
-          <h3>绕过主机</h3>
-          <p>{state?.config.bypassHosts.length ?? 0} 条规则</p>
-        </article>
-        <article className="card">
-          <h3>最近探测</h3>
-          <p>{validation?.checkedAt ?? '等待首次校验'}</p>
-        </article>
-      </div>
+      <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
+        <Card padding="sm" radius="md"><Text size="xs" c="dimmed">当前出口</Text><Text size="sm" fw={600}>{proxySummary}</Text></Card>
+        <Card padding="sm" radius="md"><Text size="xs" c="dimmed">绕过主机</Text><Text size="sm" fw={600}>{state?.config.bypassHosts.length ?? 0} 条规则</Text></Card>
+        <Card padding="sm" radius="md"><Text size="xs" c="dimmed">最近探测</Text><Text size="sm" fw={600}>{validation?.checkedAt ?? '等待首次校验'}</Text></Card>
+      </SimpleGrid>
 
-      <div className="proxy-grid">
-        <label className="checkbox-field proxy-toggle">
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))}
-          />
-          <span>启用代理出站</span>
-        </label>
-        <label>
-          <span>协议</span>
-          <select
-            value={draft.protocol}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, protocol: event.target.value as 'http' | 'https' }))
-            }
-          >
-            <option value="http">HTTP</option>
-            <option value="https">HTTPS</option>
-          </select>
-        </label>
-        <label>
-          <span>主机</span>
-          <input
-            value={draft.host}
-            onChange={(event) => setDraft((current) => ({ ...current, host: event.target.value }))}
-            placeholder="127.0.0.1"
-          />
-        </label>
-        <label>
-          <span>端口</span>
-          <input
-            type="number"
-            min={1}
-            value={draft.port}
-            onChange={(event) => setDraft((current) => ({ ...current, port: event.target.value }))}
-            placeholder="7890"
-          />
-        </label>
-        <label>
-          <span>用户名</span>
-          <input
-            value={draft.username}
-            onChange={(event) => setDraft((current) => ({ ...current, username: event.target.value }))}
-            placeholder="可选"
-          />
-        </label>
-        <label>
-          <span>密码</span>
-          <input
-            type="password"
-            value={draft.password}
-            onChange={(event) => setDraft((current) => ({ ...current, password: event.target.value }))}
-            placeholder="可选"
-          />
-        </label>
-        <label className="proxy-span-full">
-          <span>绕过主机列表</span>
-          <textarea
-            value={draft.bypassHosts}
-            onChange={(event) => setDraft((current) => ({ ...current, bypassHosts: event.target.value }))}
-            placeholder="localhost\n127.0.0.1\ninternal.example"
-            rows={4}
-          />
-        </label>
-        <label className="proxy-span-full">
-          <span>校验目标地址</span>
-          <input
-            value={draft.targetUrl}
-            onChange={(event) => setDraft((current) => ({ ...current, targetUrl: event.target.value }))}
-            placeholder={DEFAULT_TARGET_URL}
-          />
-        </label>
-      </div>
+      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+        <Switch
+          label="启用代理出站"
+          checked={draft.enabled}
+          onChange={(e) => setDraft((c) => ({ ...c, enabled: e.currentTarget.checked }))}
+        />
+        <Select
+          label="协议"
+          data={[{ value: 'http', label: 'HTTP' }, { value: 'https', label: 'HTTPS' }]}
+          value={draft.protocol}
+          onChange={(v) => v && setDraft((c) => ({ ...c, protocol: v as 'http' | 'https' }))}
+        />
+        <TextInput label="主机" value={draft.host} onChange={(e) => setDraft((c) => ({ ...c, host: e.target.value }))} placeholder="127.0.0.1" />
+        <NumberInput label="端口" value={draft.port ? Number(draft.port) : ''} onChange={(v) => setDraft((c) => ({ ...c, port: String(v ?? '') }))} min={1} placeholder="7890" />
+        <TextInput label="用户名" value={draft.username} onChange={(e) => setDraft((c) => ({ ...c, username: e.target.value }))} placeholder="可选" />
+        <PasswordInput label="密码" value={draft.password} onChange={(e) => setDraft((c) => ({ ...c, password: e.target.value }))} placeholder="可选" />
+      </SimpleGrid>
 
-      <div className="card proxy-validation-card">
-        <div className="split align-start">
+      <Textarea
+        label="绕过主机列表（每行一个）"
+        value={draft.bypassHosts}
+        onChange={(e) => setDraft((c) => ({ ...c, bypassHosts: e.target.value }))}
+        placeholder="localhost\n127.0.0.1"
+        rows={4}
+      />
+      <TextInput
+        label="校验目标地址"
+        value={draft.targetUrl}
+        onChange={(e) => setDraft((c) => ({ ...c, targetUrl: e.target.value }))}
+        placeholder={DEFAULT_TARGET_URL}
+      />
+
+      <Card padding="sm" radius="md">
+        <Group justify="space-between">
           <div>
-            <h3>连接状态</h3>
-            <p className="panel-note">
+            <Text size="sm" fw={600}>连接状态</Text>
+            <Text size="xs" c="dimmed">
               {validation
                 ? `${validation.message} ${validation.statusCode ? `HTTP ${validation.statusCode} · ` : ''}${validation.latencyMs} ms`
-                : '先保存设置，再测试是否可以正常连接目标地址。'}
-            </p>
+                : '先保存设置，再测试目标地址连通性。'}
+            </Text>
           </div>
-          <div className="badge-row">
-            <span className={`status-badge ${validation?.usingProxy ? 'state-running' : 'state-completed'}`}>
-              {validation?.usingProxy ? '经代理探测' : '直连探测'}
-            </span>
-          </div>
-        </div>
-      </div>
+          <Badge variant="light" color={validation?.usingProxy ? 'green' : 'gray'}>
+            {validation?.usingProxy ? '经代理' : '直连'}
+          </Badge>
+        </Group>
+      </Card>
 
-      <div className="action-row wrap">
-        <button type="button" className="secondary-button" onClick={handleSave} disabled={loading || saving || validating}>
-          {saving ? '保存中...' : '保存配置'}
-        </button>
-        <button
-          type="button"
-          className="primary-button"
-          onClick={handleValidate}
-          disabled={loading || saving || validating || state === null || isDirty}
-        >
-          {validating ? '测试中...' : '测试连接'}
-        </button>
-      </div>
-
-      {isDirty ? <p className="panel-note">你有未保存的修改，先保存后才能测试连接。</p> : null}
-      {errorMessage ? <p className="error-text">{errorMessage}</p> : null}
-    </section>
+      <Group>
+        <Button variant="default" onClick={handleSave} loading={saving} disabled={validating}>
+          保存配置
+        </Button>
+        <Button color="brand" onClick={handleValidate} loading={validating} disabled={state === null || isDirty || saving}
+          leftSection={<IconPlugConnected size={16} />}>
+          测试连接
+        </Button>
+      </Group>
+      {isDirty ? <Text size="xs" c="dimmed">你有未保存的修改，先保存后才能测试连接。</Text> : null}
+      {errorMessage ? <Text size="sm" c="red">{errorMessage}</Text> : null}
+    </Stack>
   );
 }
 

@@ -347,6 +347,17 @@ function isFontFamilyPreset(value: unknown): value is ReaderFontFamilyPreset {
   return value === 'sans' || value === 'serif' || value === 'monospace' || value === 'custom';
 }
 
+export interface LlmModelGatewayRoute {
+  providerId: string;
+  modelId: string;
+}
+
+export interface LlmModelGatewayConfig {
+  chat?: LlmModelGatewayRoute;
+  embedding?: LlmModelGatewayRoute;
+  rerank?: LlmModelGatewayRoute;
+}
+
 // ──
 
 export interface SystemPreferencesServiceOptions {
@@ -358,6 +369,7 @@ export interface SystemPreferencesServiceOptions {
 interface PersistedSystemPreferences {
   llmProviders: LlmProviderConfigInput[];
   neo4j: Neo4jConfigInput & { updatedAt?: string | null };
+  modelGateway?: LlmModelGatewayConfig;
   readerTypography?: ReaderTypographyConfigInput;
   translation?: TranslationPreferencesInput;
   updatedAt: string | null;
@@ -378,6 +390,7 @@ export class SystemPreferencesService {
   #readerTypographyUpdatedAt: string | null = null;
   #translation: TranslationPreferencesConfig;
   #translationUpdatedAt: string | null = null;
+  #modelGateway: LlmModelGatewayConfig;
   #updatedAt: string | null;
 
   constructor(options: SystemPreferencesServiceOptions = {}) {
@@ -396,6 +409,7 @@ export class SystemPreferencesService {
     this.#readerTypographyUpdatedAt = persisted?.readerTypography ? (persisted.updatedAt ?? null) : null;
     this.#translation = normalizeTranslationPreferencesInput(persisted?.translation ?? {});
     this.#translationUpdatedAt = persisted?.translation ? (persisted.updatedAt ?? null) : null;
+    this.#modelGateway = normalizeModelGatewayConfig(persisted?.modelGateway);
     this.#updatedAt = persisted?.updatedAt ?? null;
   }
 
@@ -413,7 +427,7 @@ export class SystemPreferencesService {
     this.#llmProviders = normalizeProviderInputs(inputs);
     this.#llmValidations = filterValidations(this.#llmValidations, this.#llmProviders);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
     return this.getLlmState();
   }
 
@@ -521,7 +535,7 @@ export class SystemPreferencesService {
     };
     this.#neo4jValidation = null;
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
     return this.getNeo4jState();
   }
 
@@ -571,7 +585,7 @@ export class SystemPreferencesService {
     this.#readerTypography = normalizeReaderTypographyInput(input);
     this.#readerTypographyUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
     return this.getReaderTypography();
   }
 
@@ -586,8 +600,19 @@ export class SystemPreferencesService {
     this.#translation = normalizeTranslationPreferencesInput(input);
     this.#translationUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
     return this.getTranslationState();
+  }
+
+  getModelGateway(): LlmModelGatewayConfig {
+    return { ...this.#modelGateway };
+  }
+
+  updateModelGateway(input: LlmModelGatewayConfig): LlmModelGatewayConfig {
+    this.#modelGateway = normalizeModelGatewayConfig(input);
+    this.touch();
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
+    return this.getModelGateway();
   }
 
   private touch(): void {
@@ -1389,6 +1414,7 @@ function persistPreferences(
   updatedAt: string | null,
   readerTypography?: ReaderTypographyConfig,
   translation?: TranslationPreferencesConfig,
+  modelGateway?: LlmModelGatewayConfig,
 ): void {
   if (!storageFilePath) {
     return;
@@ -1408,6 +1434,10 @@ function persistPreferences(
     updatedAt,
   };
 
+  if (modelGateway && (modelGateway.chat || modelGateway.embedding || modelGateway.rerank)) {
+    payload.modelGateway = modelGateway;
+  }
+
   if (readerTypography) {
     payload.readerTypography = readerTypography;
   }
@@ -1421,6 +1451,28 @@ function persistPreferences(
     JSON.stringify(payload, null, 2),
     'utf8',
   );
+}
+
+function normalizeModelGatewayConfig(input: LlmModelGatewayConfig | undefined): LlmModelGatewayConfig {
+  if (!input) {
+    return {};
+  }
+
+  const result: LlmModelGatewayConfig = {};
+
+  if (input.chat?.providerId && input.chat?.modelId) {
+    result.chat = { providerId: input.chat.providerId, modelId: input.chat.modelId };
+  }
+
+  if (input.embedding?.providerId && input.embedding?.modelId) {
+    result.embedding = { providerId: input.embedding.providerId, modelId: input.embedding.modelId };
+  }
+
+  if (input.rerank?.providerId && input.rerank?.modelId) {
+    result.rerank = { providerId: input.rerank.providerId, modelId: input.rerank.modelId };
+  }
+
+  return result;
 }
 
 async function defaultNeo4jValidator(config: Neo4jConfig): Promise<Pick<Neo4jValidationResult, 'database' | 'message' | 'serverAgent'>> {

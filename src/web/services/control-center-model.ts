@@ -121,7 +121,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
       publishNotice({
         tone: 'success',
         title: '目录解析完成',
-        message: `${payload.metadata.title} 共 ${payload.metadata.chapterCount} 章，待抓取 ${defaultSelectedChapterIds(payload.chapters).length} 章。`,
+        message: `${payload.metadata.title} 共 ${payload.metadata.chapterCount} 章，待采集 ${defaultSelectedChapterIds(payload.chapters).length} 章。`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Preview request failed.';
@@ -235,7 +235,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     ) {
       publishNotice({
         tone: currentTask.status === 'completed' ? 'success' : 'error',
-        title: currentTask.status === 'completed' ? '抓取任务已完成' : '抓取任务失败',
+        title: currentTask.status === 'completed' ? '采集任务已结束' : '采集任务失败',
         message: `${currentTask.novelId} 已结束，失败章节 ${currentTask.failures.length} 章。`,
       });
     }
@@ -274,8 +274,8 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
       await refreshRecentTasks();
       publishNotice({
         tone: 'success',
-        title: '任务已下发',
-        message: `${payload.task.novelId} 已进入 ${formatTaskStatus(payload.task.status)}。`,
+        title: '采集任务已启动',
+        message: `${payload.task.novelId} 已进入 ${formatTaskStatus(payload.task.status)}，可前往任务大盘查看进度。`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Task creation failed.';
@@ -450,7 +450,7 @@ function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
     case 'running':
       return '执行中';
     case 'completed':
-      return '已完成';
+      return '已采集';
     case 'failed':
       return '已失败';
     default:

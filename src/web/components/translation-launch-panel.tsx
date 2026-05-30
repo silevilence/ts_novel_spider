@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-
+import { Anchor, Badge, Button, Group, Paper, Progress, ScrollArea, Select, Stack, Text, Title } from '@mantine/core';
 import type { LibraryModel, TranslationBuildState } from '../services/library-model';
 import { fetchLlmProvidersPreferences, buildLibraryExportDownloadUrl, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
 
@@ -52,153 +52,136 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
   const langs = model.translationLanguages;
 
   return (
-    <section className="panel translation-launch-panel">
-      <div className="panel-heading split align-start">
-        <div>
-          <p className="eyebrow">翻译</p>
-          <h2>{isRunning ? '翻译中' : isDone ? (build?.status === 'completed' ? '翻译完成' : '翻译失败') : '翻译任务'}</h2>
-          <p className="panel-note">
-            {build ? build.message : '使用 AI 将已下载章节翻译为目标语言。'}
-          </p>
-        </div>
-        <div className="badge-row">
+    <Paper p="lg" radius="lg" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
+      <Stack gap="md">
+        <Group justify="space-between" wrap="wrap">
+          <div>
+            <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.12em', color: '#ffd166' }}>翻译</Text>
+            <Title order={3}>{isRunning ? '翻译中' : isDone ? (build?.status === 'completed' ? '翻译完成' : '翻译失败') : '翻译任务'}</Title>
+            <Text size="xs" c="dimmed">{build ? build.message : '使用 AI 将已下载章节翻译为目标语言。'}</Text>
+          </div>
           {build ? (
-            <>
-              <span className="status-badge ok">已译 {build.translatedChapters}</span>
-              {build.failedChapters > 0 ? <span className="status-badge state-failed">失败 {build.failedChapters}</span> : null}
-            </>
+            <Group gap="xs">
+              <Badge variant="light" color="green" size="sm">已译 {build.translatedChapters}</Badge>
+              {build.failedChapters > 0 ? <Badge variant="light" color="red" size="sm">失败 {build.failedChapters}</Badge> : null}
+            </Group>
           ) : null}
-        </div>
-      </div>
+        </Group>
 
-      {/* 双进度条 */}
-      {build && detail ? (
-        <div style={{ margin: '0.35rem 0' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '0.2rem' }}>
-            <span className="label">章节 {build.translatedChapters + build.failedChapters}/{detail.stats.downloaded}</span>
-            <span className="label">{build.progressPercent}%</span>
-          </div>
-          <div className="progress-track" style={{ margin: '0 0 0.5rem', height: '6px' }}>
-            <div className="progress-fill" style={{ width: `${build.progressPercent}%`, background: 'linear-gradient(90deg, #ff8c42, #7fd0ff)' }} />
-          </div>
+        {/* 章节进度条 */}
+        {build && detail ? (
+          <Stack gap={4}>
+            <Group justify="space-between">
+              <Text size="xs" c="dimmed">章节 {build.translatedChapters + build.failedChapters}/{detail.stats.downloaded}</Text>
+              <Text size="xs" c="dimmed">{build.progressPercent}%</Text>
+            </Group>
+            <Progress value={build.progressPercent} size="sm" color="orange" striped={isRunning} animated={isRunning} />
+
+            {isRunning ? (
+              <>
+                <Text size="xs" c="dimmed">当前：{build.message || '准备中…'}</Text>
+                {/* 段落级实时进度 */}
+                {build.currentChapterParagraphs > 0 ? (
+                  <Stack gap={2} mb={4}>
+                    <Group justify="space-between">
+                      <Text size="xs" c="dimmed">段落 {build.currentChapterTranslatedParagraphs}/{build.currentChapterParagraphs}</Text>
+                      <Text size="xs" c="dimmed">{Math.round((build.currentChapterTranslatedParagraphs / build.currentChapterParagraphs) * 100)}%</Text>
+                    </Group>
+                    <Progress value={Math.round((build.currentChapterTranslatedParagraphs / build.currentChapterParagraphs) * 100)} size="xs" color="orange.3" />
+                  </Stack>
+                ) : (
+                  <Progress value={30} size="xs" color="orange.3" animated style={{ opacity: 0.5 }} />
+                )}
+                {build.startedAt ? (
+                  <SpeedEstimate totalParagraphs={build.totalTranslatedParagraphs} startedAt={build.startedAt} totalEstimate={build.totalParagraphEstimate || 0} />
+                ) : null}
+              </>
+            ) : null}
+          </Stack>
+        ) : null}
+
+        {/* 操作区 */}
+        <Group gap="xs" wrap="wrap">
+          {availableModels.length > 0 ? (
+            <Select
+              data={availableModels.map((m) => ({ value: m.key, label: m.label }))}
+              value={selectedModel}
+              onChange={(v) => v && setSelectedModel(v)}
+              disabled={isRunning}
+              searchable
+              style={{ flex: 1, minWidth: 200 }}
+            />
+          ) : (
+            <Text size="xs" c="dimmed" style={{ flex: 1 }}>未配置可用翻译模型</Text>
+          )}
+
           {isRunning ? (
+            <Button variant="outline" color="red" size="compact-sm"
+              onClick={() => { void model.cancelTranslation?.(); }}
+              loading={model.translationBusy}>
+              暂停
+            </Button>
+          ) : null}
+
+          {!isRunning ? (
             <>
-              <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.15rem' }}>
-                当前：{build.message || '准备中…'}
-              </div>
-              {/* 段落级实时进度 */}
-              {build.currentChapterParagraphs > 0 ? (
-                <div style={{ marginBottom: '0.25rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', marginBottom: '0.1rem' }}>
-                    <span className="label">段落 {build.currentChapterTranslatedParagraphs}/{build.currentChapterParagraphs}</span>
-                    <span className="label">{build.currentChapterParagraphs > 0 ? Math.round((build.currentChapterTranslatedParagraphs / build.currentChapterParagraphs) * 100) : 0}%</span>
-                  </div>
-                  <div className="progress-track" style={{ margin: '0', height: '3px', background: 'rgba(255,140,66,0.2)' }}>
-                    <div className="progress-fill" style={{ width: `${build.currentChapterParagraphs > 0 ? Math.round((build.currentChapterTranslatedParagraphs / build.currentChapterParagraphs) * 100) : 0}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
-                  </div>
-                </div>
-              ) : (
-                <div className="progress-track" style={{ margin: '0', height: '3px', background: 'rgba(255,140,66,0.2)' }}>
-                  <div className="progress-fill" style={{ width: '30%', background: 'var(--accent)', animation: 'pulse 1.5s ease-in-out infinite' }} />
-                </div>
-              )}
-              {/* 速率与时间估算 */}
-              {build.startedAt ? (
-                <SpeedEstimate
-                  totalParagraphs={build.totalTranslatedParagraphs}
-                  startedAt={build.startedAt}
-                  totalEstimate={build.totalParagraphEstimate || 0}
-                />
+              <Button color="brand" size="compact-sm"
+                onClick={() => void model.startTranslation(selectedModel)}
+                loading={model.translationBusy}
+                disabled={!detail || detail.stats.downloaded === 0}>
+                {isPaused ? '继续翻译' : isDone && build?.status === 'completed' ? '继续完善' : '发起翻译'}
+              </Button>
+              {(isPaused || isDone) ? (
+                <Button variant="subtle" size="compact-sm"
+                  onClick={() => { void model.startTranslation(selectedModel, true); }}
+                  disabled={model.translationBusy || !detail || detail.stats.downloaded === 0}>
+                  从头开始
+                </Button>
               ) : null}
             </>
+          ) : (
+            <Text size="sm" c="dimmed" style={{ minWidth: 100, textAlign: 'center' }}>翻译中…</Text>
+          )}
+
+          {langs ? (
+            <Anchor
+              href={buildLibraryExportDownloadUrl(detail?.sourceId ?? '', detail?.metadata.novelId ?? '', 'epub', model.translationViewMode, langs.sourceLang, langs.targetLang)}
+              target="_blank" rel="noopener noreferrer" size="sm">
+              导出译文
+            </Anchor>
           ) : null}
-        </div>
-      ) : null}
+        </Group>
 
-      {/* 操作区 */}
-      <div className="action-row wrap" style={{ marginTop: '0.5rem' }}>
-        {availableModels.length > 0 ? (
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            style={{ flex: 1, minWidth: '200px', minHeight: '44px' }}
-            disabled={isRunning}
-          >
-            {availableModels.map((m) => (
-              <option key={m.key} value={m.key}>{m.label}</option>
-            ))}
-          </select>
-        ) : (
-          <span className="panel-note" style={{ flex: 1 }}>未配置可用翻译模型</span>
-        )}
-
-        {isRunning ? (
-          <button type="button" className="ghost-button danger"
-            onClick={() => { void model.cancelTranslation?.(); }}
-            disabled={model.translationBusy}>
-            {model.translationBusy ? '暂停中…' : '暂停'}
-          </button>
-        ) : null}
-
-        {!isRunning ? (
-          <>
-            <button type="button" className="primary-button"
-              onClick={() => void model.startTranslation(selectedModel)}
-              disabled={model.translationBusy || !detail || detail.stats.downloaded === 0}>
-              {model.translationBusy ? '启动中…' : isPaused ? '继续翻译' : isDone && build?.status === 'completed' ? '继续完善' : '发起翻译'}
-            </button>
-            {(isPaused || isDone) ? (
-              <button type="button" className="ghost-button subtle"
-                onClick={() => { void model.startTranslation(selectedModel, true); }}
-                disabled={model.translationBusy || !detail || detail.stats.downloaded === 0}>
-                从头开始
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <span className="ghost-button" style={{ cursor: 'default', textAlign: 'center', minWidth: '100px' }}>翻译中…</span>
-        )}
-
-        {langs ? (
-          <a
-            href={buildLibraryExportDownloadUrl(detail?.sourceId ?? '', detail?.metadata.novelId ?? '', 'epub', model.translationViewMode, langs.sourceLang, langs.targetLang)}
-            className="secondary-link"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ textDecoration: 'none' }}
-          >
-            导出译文
-          </a>
-        ) : null}
-      </div>
-
-      {/* 术语管理入口 */}
-      <div className="action-row" style={{ marginTop: '0.5rem' }}>
-        <button type="button" className="ghost-button subtle"
+        {/* 术语管理入口 */}
+        <Button variant="subtle" size="compact-sm" style={{ alignSelf: 'flex-start' }}
           onClick={() => onNotify({ tone: 'info', title: '术语表', message: '术语管理功能即将上线。当前可先配置全局语言对和模型。' })}>
           管理术语表
-        </button>
-      </div>
+        </Button>
 
-      {/* 翻译日志区 */}
-      {build ? (
-        <div className="card" style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', background: 'rgba(4,12,22,0.9)' }}>
-          <p className="label" style={{ marginBottom: '0.35rem' }}>翻译日志 {isRunning ? <span style={{ color: 'var(--warn)', marginLeft: '0.5rem' }}>● 实时</span> : null}</p>
-          <div className="log-list" style={{ maxHeight: '190px' }}>
-            <div className="log-item level-info" style={{ padding: '0.45rem 0.6rem' }}>
-              <strong>{build.status === 'running' ? '翻译中' : build.status === 'completed' ? '已完成' : build.status === 'failed' ? '已失败' : build.status}</strong>
-              <p className="panel-note">已译 {build.translatedChapters} / 失败 {build.failedChapters}｜{build.startedAt ? new Date(build.startedAt).toLocaleTimeString('zh-CN') : '-'} 起</p>
-            </div>
-            {logs.map((l, i) => (
-              <div key={i} className="log-item level-info" style={{ fontSize: '0.82rem', padding: '0.35rem 0.6rem' }}>
-                <span style={{ opacity: 0.45, marginRight: '0.5rem' }}>{l.time}</span>
-                {l.msg}
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </section>
+        {/* 翻译日志区 */}
+        {build ? (
+          <Paper p="xs" radius="md" style={{ background: 'rgba(12,8,6,0.8)' }}>
+            <Group mb="xs"><Text size="xs" fw={600} c="dimmed">翻译日志</Text>
+              {isRunning ? <Badge variant="dot" color="orange" size="xs">实时</Badge> : null}</Group>
+            <ScrollArea.Autosize mah={190}>
+              <Stack gap={2}>
+                <Paper p={6} radius="sm" style={{ background: 'rgba(38,26,20,0.4)' }}>
+                  <Text size="xs" fw={600}>
+                    {build.status === 'running' ? '翻译中' : build.status === 'completed' ? '已完成' : build.status === 'failed' ? '已失败' : build.status}
+                  </Text>
+                  <Text size="xs" c="dimmed">已译 {build.translatedChapters} / 失败 {build.failedChapters}｜{build.startedAt ? new Date(build.startedAt).toLocaleTimeString('zh-CN') : '-'} 起</Text>
+                </Paper>
+                {logs.map((l, i) => (
+                  <Paper key={i} p={4} radius="sm" style={{ background: 'transparent' }}>
+                    <Text size="xs"><span style={{ opacity: 0.45, marginRight: 8 }}>{l.time}</span>{l.msg}</Text>
+                  </Paper>
+                ))}
+              </Stack>
+            </ScrollArea.Autosize>
+          </Paper>
+        ) : null}
+      </Stack>
+    </Paper>
   );
 }
 

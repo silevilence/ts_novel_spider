@@ -405,7 +405,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     ) {
       publishNotice({
         tone: currentTask.status === 'completed' ? 'success' : 'error',
-        title: currentTask.status === 'completed' ? '同步任务已完成' : '同步任务已结束',
+        title: currentTask.status === 'completed' ? '同步任务已结束' : '同步任务已结束',
         message: `${currentTask.novelId} 已处理完成，失败章节 ${currentTask.failures.length} 章。`,
       });
       void loadLocation(latestLocationRef.current);
@@ -634,7 +634,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       publishNotice({
         tone: 'success',
         title: '补录任务已启动',
-        message: `${payload.task.novelId} 将补抓 ${pendingIds.length} 个缺失章节。`,
+        message: `${payload.task.novelId} 将补采集 ${pendingIds.length} 个缺失章节。`,
       });
       await refresh();
     } catch (error) {
@@ -676,7 +676,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       publishNotice({
         tone: 'success',
         title: '重新下载任务已启动',
-        message: `${payload.task.novelId} 将重新抓取 ${chapterIds.length} 个${taskLabel}。`,
+        message: `${payload.task.novelId} 将重新采集 ${chapterIds.length} 个${taskLabel}。`,
       });
       await refresh();
     } catch (error) {

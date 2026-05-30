@@ -807,6 +807,34 @@ export async function updateTranslationPreferences(
   return (await response.json()) as TranslationPreferencesPayload;
 }
 
+// ── Model Gateway ──
+
+export interface ModelGatewayPayload {
+  chat?: { providerId: string; modelId: string };
+  embedding?: { providerId: string; modelId: string };
+  rerank?: { providerId: string; modelId: string };
+}
+
+export async function fetchModelGateway(): Promise<ModelGatewayPayload> {
+  return requestJson<ModelGatewayPayload>('/api/control/preferences/model-gateway');
+}
+
+export async function updateModelGateway(
+  input: ModelGatewayPayload,
+): Promise<ModelGatewayPayload> {
+  const response = await fetch('/api/control/preferences/model-gateway', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    throw await buildRequestError(response, 'Model gateway update failed');
+  }
+
+  return (await response.json()) as ModelGatewayPayload;
+}
+
 async function requestJson<TPayload>(url: string, init?: RequestInit): Promise<TPayload> {
   const response = await fetch(url, init);
 

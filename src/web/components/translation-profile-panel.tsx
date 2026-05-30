@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Badge, Button, Group, Paper, SegmentedControl, Stack, Text } from '@mantine/core';
 
 import type { LibraryModel } from '../services/library-model';
 import { buildLibraryExportDownloadUrl, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
@@ -21,97 +22,74 @@ export function TranslationProfilePanel({ model, onNotify }: TranslationProfileP
   const langs = model.translationLanguages;
 
   return (
-    <div className="panel translation-panel">
-      <div className="translation-status-bar">
-        <span className="label">翻译模式</span>
-        <div className="chip-row">
-          {TRANSLATION_MODE_OPTIONS.map((opt) => (
-            <button
-              key={opt.mode}
-              type="button"
-              className={`preset-chip${model.translationViewMode === opt.mode ? ' active' : ''}`}
-              title={opt.summary}
-              onClick={() => model.setTranslationViewMode(opt.mode)}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
+    <Stack gap="md">
+      <Text size="sm" fw={600}>翻译模式</Text>
+      <SegmentedControl
+        data={TRANSLATION_MODE_OPTIONS.map((o) => ({ value: o.mode, label: o.label }))}
+        value={model.translationViewMode}
+        onChange={(v) => model.setTranslationViewMode(v as TranslationExportMode)}
+      />
 
       {langs ? (
-        <p className="panel-note">
+        <Text size="xs" c="dimmed">
           当前语言对：{langLabel(langs.sourceLang)} → {langLabel(langs.targetLang)}
-          。在「系统偏好 → 翻译默认值」中可以修改全局语言对和模型配置。
-        </p>
+          。在「全局设置 → 翻译默认值」中可以修改全局语言对和模型配置。
+        </Text>
       ) : (
-        <p className="panel-note">尚未设置翻译语言对，请在系统偏好中先配置翻译默认值。</p>
+        <Text size="xs" c="dimmed">尚未设置翻译语言对，请在全局设置中先配置翻译默认值。</Text>
       )}
 
-      <div className="action-row">
-        <button type="button" className="ghost-button" onClick={() => setIsConfigOpen((v) => !v)}>
+      <Group>
+        <Button variant="subtle" size="compact-sm" onClick={() => setIsConfigOpen((v) => !v)}>
           {isConfigOpen ? '收起配置' : '翻译配置'}
-        </button>
-        <button type="button" className="ghost-button" onClick={() => setIsExportOpen((v) => !v)}>
+        </Button>
+        <Button variant="subtle" size="compact-sm" onClick={() => setIsExportOpen((v) => !v)}>
           {isExportOpen ? '收起导出' : '导出译文'}
-        </button>
-      </div>
+        </Button>
+      </Group>
 
       {isConfigOpen ? (
-        <div className="card fold-content" style={{ marginTop: '0.75rem' }}>
-          <h3>翻译配置摘要</h3>
-          <p className="panel-note">
-            当前翻译流水线依赖「系统偏好」中的全局翻译默认值和已配置的 LLM 模型。
-            如需修改语言对、翻译模型等参数，请前往「系统偏好 → 翻译默认值」。
-            翻译配置一旦有产物将自动锁定，需先清除翻译数据才能修改。
-          </p>
-        </div>
+        <Paper p="md" radius="md" style={{ background: 'rgba(31,21,16,0.6)' }}>
+          <Text size="sm" fw={600} mb="xs">翻译配置摘要</Text>
+          <Text size="xs" c="dimmed">
+            当前翻译流水线依赖「全局设置」中的翻译默认值和已配置的 LLM 模型。
+            如需修改语言对、翻译模型等参数，请前往「全局设置 → 翻译默认值」。
+          </Text>
+        </Paper>
       ) : null}
 
       {isExportOpen ? (
-        <div className="card fold-content" style={{ marginTop: '0.75rem' }}>
-          <h3>导出译文文件</h3>
-          <p className="panel-note">
-            选择导出格式，下载包含翻译内容的文件。如果当前书籍还没有翻译数据，导出会回落为原文。
-          </p>
-          <div className="export-option-list" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' }}>
+        <Paper p="md" radius="md" style={{ background: 'rgba(31,21,16,0.6)' }}>
+          <Text size="sm" fw={600} mb="xs">导出译文文件</Text>
+          <Text size="xs" c="dimmed" mb="sm">
+            选择导出格式下载包含翻译内容的文件。如果当前书籍还没有翻译数据，导出会回落为原文。
+          </Text>
+          <Stack gap="xs">
             {(['markdown', 'epub', 'txt'] as LibraryExportFormat[]).map((fmt) => {
               if (!model.detail?.novel) return null;
-
               const baseUrl = buildLibraryExportDownloadUrl(
-                model.detail.novel.sourceId,
-                model.detail.novel.metadata.novelId,
-                fmt,
-                model.translationViewMode,
-                langs?.sourceLang,
-                langs?.targetLang,
+                model.detail.novel.sourceId, model.detail.novel.metadata.novelId,
+                fmt, model.translationViewMode, langs?.sourceLang, langs?.targetLang,
               );
-
               return (
-                <a
+                <Button
                   key={fmt}
+                  variant="light"
+                  size="compact-sm"
+                  component="a"
                   href={baseUrl}
-                  className="ghost-button"
-                  style={{ textAlign: 'left' }}
                   target="_blank"
                   rel="noopener noreferrer"
-                  onClick={() => onNotify({
-                    tone: 'info',
-                    title: '导出已开始',
-                    message: `${fmt.toUpperCase()} 文件下载中。`,
-                  })}
+                  onClick={() => onNotify({ tone: 'info', title: '导出已开始', message: `${fmt.toUpperCase()} 文件下载中。` })}
                 >
-                  <strong>{fmt.toUpperCase()}</strong>
-                  <span style={{ opacity: 0.55, marginLeft: '0.5rem' }}>
-                    — {model.translationViewMode === 'bilingual' ? '双语对照' : model.translationViewMode === 'translated' ? '纯译文' : '原文'}
-                  </span>
-                </a>
+                  {fmt.toUpperCase()} — {model.translationViewMode === 'bilingual' ? '双语对照' : model.translationViewMode === 'translated' ? '纯译文' : '原文'}
+                </Button>
               );
             })}
-          </div>
-        </div>
+          </Stack>
+        </Paper>
       ) : null}
-    </div>
+    </Stack>
   );
 }
 

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
+import { notifications } from '@mantine/notifications';
 
 import { AppShell } from './components/app-shell';
 import { ControlConsole } from './components/control-console';
 import { LibraryWorkspace } from './components/library-workspace';
 import { MonitorDashboard } from './components/monitor-dashboard';
-import { NotificationCenter } from './components/notification-center';
 import { SystemPreferences } from './components/system-preferences';
 import {
   APP_ROUTES,
@@ -17,21 +17,21 @@ import {
 } from './services/control-center-model';
 import { useLibraryModel } from './services/library-model';
 
-interface AppNotice extends NoticeInput {
-  id: string;
-}
-
 export function App() {
   const [currentLocation, setCurrentLocation] = useState(() => resolveAppLocation(window.location.pathname));
-  const [notices, setNotices] = useState<AppNotice[]>([]);
 
   function pushNotice(input: NoticeInput) {
-    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setNotices((current) => [...current, { id, ...input }]);
-
-    window.setTimeout(() => {
-      setNotices((current) => current.filter((notice) => notice.id !== id));
-    }, 4200);
+    notifications.show({
+      title: input.title,
+      message: input.message,
+      color: input.tone === 'success' ? 'green' : input.tone === 'error' ? 'red' : 'blue',
+      autoClose: 4000,
+      withBorder: true,
+      style: {
+        background: 'rgba(26,20,16,0.94)',
+        borderColor: input.tone === 'success' ? 'rgba(97,212,166,0.3)' : input.tone === 'error' ? 'rgba(255,123,114,0.3)' : 'rgba(127,208,255,0.3)',
+      },
+    });
   }
 
   const model = useControlCenterModel(pushNotice);
@@ -99,7 +99,6 @@ export function App() {
           />
         ) : null}
       </AppShell>
-      <NotificationCenter notices={notices} onDismiss={(id) => setNotices((current) => current.filter((notice) => notice.id !== id))} />
     </>
   );
 }

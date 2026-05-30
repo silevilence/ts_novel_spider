@@ -109,7 +109,7 @@ export function formatLibraryTaskStatus(status: ApiTaskSnapshot['status']): stri
     case 'running':
       return '执行中';
     case 'completed':
-      return '已完成';
+      return '已采集';
     case 'failed':
       return '已失败';
     default:

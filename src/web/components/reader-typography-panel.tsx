@@ -1,4 +1,14 @@
 import { useEffect, useState } from 'react';
+import {
+  Button,
+  Group,
+  NumberInput,
+  SegmentedControl,
+  Slider,
+  Stack,
+  Text,
+} from '@mantine/core';
+import { IconDeviceFloppy } from '@tabler/icons-react';
 
 import {
   fetchReaderTypographyPreferences,
@@ -166,121 +176,71 @@ export function ReaderTypographyPanel({ onNotice }: ReaderTypographyPanelProps) 
   })();
 
   return (
-    <div className="reader-typography-panel">
-      {draft.loading ? (
-        <p className="panel-note">正在加载阅读器排版配置…</p>
-      ) : null}
+    <Stack gap="md">
+      {draft.loading ? <Text size="sm" c="dimmed">正在加载阅读器排版配置…</Text> : null}
+      {draft.errorMessage && !draft.saving ? <Text size="sm" c="red">{draft.errorMessage}</Text> : null}
 
-      {draft.errorMessage && !draft.saving ? (
-        <div className="notice-banner warn">
-          <p>{draft.errorMessage}</p>
-        </div>
-      ) : null}
+      {/* 字体族 */}
+      <FontFamilyPicker
+        preset={draft.fontFamilyPreset}
+        fontFamilyCustom={draft.fontFamilyCustom}
+        onPresetChange={(preset) => setField('fontFamilyPreset', preset)}
+        onCustomChange={(value) => setField('fontFamilyCustom', value)}
+      />
 
-      <div className="reader-typography-grid">
-        {/* 字体族预设 + 自定义选择器 */}
-        <FontFamilyPicker
-          preset={draft.fontFamilyPreset}
-          fontFamilyCustom={draft.fontFamilyCustom}
-          onPresetChange={(preset) => setField('fontFamilyPreset', preset)}
-          onCustomChange={(value) => setField('fontFamilyCustom', value)}
+      {/* 字号 */}
+      <div>
+        <Text size="sm" fw={600} mb="xs">字号</Text>
+        <SegmentedControl
+          data={[
+            { value: 'small', label: '小 (0.95rem)' },
+            { value: 'medium', label: '中 (1.03rem)' },
+            { value: 'large', label: '大 (1.16rem)' },
+          ]}
+          value={draft.fontSizePreset}
+          onChange={(v) => applyFontSizePreset(v as TypographyDraft['fontSizePreset'])}
+          mb="xs"
+          fullWidth
         />
+        <NumberInput
+          label="精确值 (rem)"
+          min={0.7} max={2.2} step={0.01}
+          value={draft.fontSize}
+          onChange={(v) => { if (typeof v === 'number' && isFinite(v)) setField('fontSize', Math.max(0.7, Math.min(2.2, v))); }}
+        />
+      </div>
 
-        {/* 字号 */}
-        <fieldset className="reader-typography-group">
-          <legend className="label">字号</legend>
-          <div className="reader-typography-preset-row">
-            {(Object.entries({ small: '小 (0.95rem)', medium: '中 (1.03rem)', large: '大 (1.16rem)' }) as Array<[TypographyDraft['fontSizePreset'], string]>).map(([preset, label]) => (
-              <button
-                key={preset}
-                type="button"
-                className={`preset-chip ${draft.fontSizePreset === preset ? 'active' : ''}`}
-                onClick={() => applyFontSizePreset(preset)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <label className="reader-typography-number">
-            <span>精确值 (rem)</span>
-            <input
-              type="number"
-              min={0.7}
-              max={2.2}
-              step={0.01}
-              value={draft.fontSize}
-              onChange={(event) => {
-                const raw = Number(event.target.value);
-                if (Number.isFinite(raw)) {
-                  setField('fontSize', Math.max(0.7, Math.min(2.2, raw)));
-                }
-              }}
-            />
-          </label>
-        </fieldset>
+      {/* 行高 */}
+      <div>
+        <Text size="sm" fw={600}>行高：{draft.lineHeight.toFixed(2)}</Text>
+        <Slider min={1.2} max={3} step={0.05} value={draft.lineHeight} onChange={(v) => setField('lineHeight', v)} />
+      </div>
 
-        {/* 行高 */}
-        <fieldset className="reader-typography-group">
-          <legend className="label">行高</legend>
-          <div className="reader-typography-range">
-            <input
-              type="range"
-              min={1.2}
-              max={3}
-              step={0.05}
-              value={draft.lineHeight}
-              onChange={(event) => setField('lineHeight', Number(event.target.value))}
-            />
-            <span className="range-value">{draft.lineHeight.toFixed(2)}</span>
-          </div>
-        </fieldset>
-
-        {/* 段间距 */}
-        <fieldset className="reader-typography-group">
-          <legend className="label">段间距 (rem)</legend>
-          <div className="reader-typography-range">
-            <input
-              type="range"
-              min={0}
-              max={3.5}
-              step={0.05}
-              value={draft.paragraphSpacing}
-              onChange={(event) => setField('paragraphSpacing', Number(event.target.value))}
-            />
-            <span className="range-value">{draft.paragraphSpacing.toFixed(2)}</span>
-          </div>
-        </fieldset>
+      {/* 段间距 */}
+      <div>
+        <Text size="sm" fw={600}>段间距：{draft.paragraphSpacing.toFixed(2)} rem</Text>
+        <Slider min={0} max={3.5} step={0.05} value={draft.paragraphSpacing} onChange={(v) => setField('paragraphSpacing', v)} />
       </div>
 
       {/* 多语种排版沙箱 */}
-      <fieldset className="reader-typography-group reader-typography-sandbox">
-        <legend className="label">多语种排版预览 (实时)</legend>
-        <div
-          className="reader-typography-preview"
-          style={{
-            fontSize: `${draft.fontSize}rem`,
-            lineHeight: draft.lineHeight,
-            fontFamily: resolvedFontFamily,
-          }}
-        >
+      <div>
+        <Text size="sm" fw={600} mb="xs">多语种排版预览（实时）</Text>
+        <div style={{
+          fontSize: `${draft.fontSize}rem`, lineHeight: draft.lineHeight, fontFamily: resolvedFontFamily,
+          background: 'rgba(31,21,16,0.6)', borderRadius: 12, padding: '1rem', border: '1px solid rgba(168,133,96,0.15)',
+        }}>
           {SAMPLE_MIXED_TEXT.split('\n\n').map((paragraph, index) => (
-            <p key={index} style={{ marginBottom: `${draft.paragraphSpacing}rem` }}>
-              {paragraph}
-            </p>
+            <p key={index} style={{ marginBottom: `${draft.paragraphSpacing}rem` }}>{paragraph}</p>
           ))}
         </div>
-      </fieldset>
-
-      <div className="action-row wrap reader-typography-actions">
-        <button
-          type="button"
-          className="primary-button"
-          onClick={handleSave}
-          disabled={draft.saving || draft.loading}
-        >
-          {draft.saving ? '保存中…' : '保存全局排版'}
-        </button>
       </div>
-    </div>
+
+      <Group>
+        <Button color="brand" onClick={handleSave} loading={draft.saving} disabled={draft.loading}
+          leftSection={<IconDeviceFloppy size={16} />}>
+          保存排版
+        </Button>
+      </Group>
+    </Stack>
   );
 }

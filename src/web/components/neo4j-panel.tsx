@@ -1,4 +1,18 @@
 import { startTransition, useEffect, useEffectEvent, useState } from 'react';
+import {
+  Badge,
+  Button,
+  Card,
+  Group,
+  PasswordInput,
+  SimpleGrid,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+  Title,
+} from '@mantine/core';
+import { IconDatabase, IconPlugConnected } from '@tabler/icons-react';
 
 import {
   fetchNeo4jPreferences,
@@ -126,119 +140,67 @@ export function Neo4jPanel({ onNotice }: Neo4jPanelProps) {
     : false;
 
   return (
-    <section className="panel neo4j-panel">
-      <div className="panel-heading split align-start">
+    <Stack gap="md">
+      <Group justify="space-between" wrap="wrap">
         <div>
-          <p className="eyebrow">图数据库</p>
-          <h2>配置 Neo4j 连接</h2>
-          <p className="panel-note">
-            用于后续的实体关系图谱和检索增强功能。保存后可以直接测试当前地址、账号和数据库是否可用。
-          </p>
+          <Group mb={4}>
+            <IconDatabase size={18} color="#ffd166" />
+            <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.08em', color: '#ffd166' }}>图数据库</Text>
+          </Group>
+          <Title order={4}>配置 Neo4j 连接</Title>
+          <Text size="xs" c="dimmed" maw={480}>用于实体关系图谱和检索增强功能。保存后可测试连接是否可用。</Text>
         </div>
-        <div className="badge-row">
-          <span className={`status-badge ${draft.enabled ? 'state-running' : 'state-completed'}`}>
-            {draft.enabled ? '已启用' : '未启用'}
-          </span>
-          <span className={`status-badge ${validation?.ok ? 'ok' : 'state-failed'}`}>
-            {validation ? (validation.ok ? '最近测试成功' : '最近测试失败') : '尚未测试'}
-          </span>
-        </div>
-      </div>
+        <Group gap="xs">
+          <Badge variant="light" color={draft.enabled ? 'green' : 'gray'}>{draft.enabled ? '已启用' : '未启用'}</Badge>
+          <Badge variant="light" color={validation?.ok ? 'green' : validation ? 'red' : 'gray'}>
+            {validation ? (validation.ok ? '测试成功' : '测试失败') : '未测试'}
+          </Badge>
+        </Group>
+      </Group>
 
-      <div className="provider-summary">
-        <article className="card">
-          <h3>连接地址</h3>
-          <p>{state?.config.uri || '尚未填写'}</p>
-        </article>
-        <article className="card">
-          <h3>默认数据库</h3>
-          <p>{state?.config.database || '使用服务器默认数据库'}</p>
-        </article>
-        <article className="card">
-          <h3>最近探测</h3>
-          <p>{validation?.checkedAt ?? '等待首次测试'}</p>
-        </article>
-      </div>
+      <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
+        <Card padding="sm" radius="md"><Text size="xs" c="dimmed">连接地址</Text><Text size="sm" fw={600}>{state?.config.uri || '未填写'}</Text></Card>
+        <Card padding="sm" radius="md"><Text size="xs" c="dimmed">默认数据库</Text><Text size="sm" fw={600}>{state?.config.database || '服务器默认'}</Text></Card>
+        <Card padding="sm" radius="md"><Text size="xs" c="dimmed">最近探测</Text><Text size="sm" fw={600}>{validation?.checkedAt ?? '等待首次测试'}</Text></Card>
+      </SimpleGrid>
 
-      <div className="neo4j-grid">
-        <label className="checkbox-field proxy-toggle">
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))}
-          />
-          <span>启用 Neo4j</span>
-        </label>
-        <label>
-          <span>连接 URI</span>
-          <input
-            value={draft.uri}
-            onChange={(event) => setDraft((current) => ({ ...current, uri: event.target.value }))}
-            placeholder="neo4j://127.0.0.1:7687"
-          />
-        </label>
-        <label>
-          <span>用户名</span>
-          <input
-            value={draft.username}
-            onChange={(event) => setDraft((current) => ({ ...current, username: event.target.value }))}
-            placeholder="neo4j"
-          />
-        </label>
-        <label>
-          <span>密码</span>
-          <input
-            type="password"
-            value={draft.password}
-            onChange={(event) => setDraft((current) => ({ ...current, password: event.target.value }))}
-            placeholder="输入密码"
-          />
-        </label>
-        <label className="span-full">
-          <span>数据库名</span>
-          <input
-            value={draft.database}
-            onChange={(event) => setDraft((current) => ({ ...current, database: event.target.value }))}
-            placeholder="留空时使用服务器默认数据库"
-          />
-        </label>
-      </div>
+      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+        <Switch
+          label="启用 Neo4j"
+          checked={draft.enabled}
+          onChange={(e) => setDraft((c) => ({ ...c, enabled: e.currentTarget.checked }))}
+        />
+        <TextInput label="连接 URI" value={draft.uri} onChange={(e) => setDraft((c) => ({ ...c, uri: e.target.value }))} placeholder="neo4j://127.0.0.1:7687" />
+        <TextInput label="用户名" value={draft.username} onChange={(e) => setDraft((c) => ({ ...c, username: e.target.value }))} placeholder="neo4j" />
+        <PasswordInput label="密码" value={draft.password} onChange={(e) => setDraft((c) => ({ ...c, password: e.target.value }))} placeholder="输入密码" />
+        <TextInput label="数据库名" value={draft.database} onChange={(e) => setDraft((c) => ({ ...c, database: e.target.value }))} placeholder="留空使用默认" />
+      </SimpleGrid>
 
-      <div className="card model-validation-card">
-        <div className="split align-start">
+      <Card padding="sm" radius="md">
+        <Group justify="space-between">
           <div>
-            <h3>连通性状态</h3>
-            <p className="panel-note">
+            <Text size="sm" fw={600}>连通性状态</Text>
+            <Text size="xs" c="dimmed">
               {validation
                 ? `${validation.message} ${validation.serverAgent ? `${validation.serverAgent} · ` : ''}${validation.latencyMs} ms`
                 : '先保存配置，再测试图数据库是否可连通。'}
-            </p>
+            </Text>
           </div>
-          <div className="badge-row">
-            <span className={`status-badge ${state?.config.isConfigured ? 'state-completed' : 'state-failed'}`}>
-              {state?.config.isConfigured ? '连接信息完整' : '连接信息未填完'}
-            </span>
-          </div>
-        </div>
-      </div>
+          <Badge variant="light" color={state?.config.isConfigured ? 'green' : 'yellow'}>
+            {state?.config.isConfigured ? '信息完整' : '待补充'}
+          </Badge>
+        </Group>
+      </Card>
 
-      <div className="action-row wrap">
-        <button type="button" className="secondary-button" onClick={handleSave} disabled={loading || saving || validating}>
-          {saving ? '保存中...' : '保存 Neo4j 配置'}
-        </button>
-        <button
-          type="button"
-          className="primary-button"
-          onClick={handleValidate}
-          disabled={loading || saving || validating || state === null || isDirty}
-        >
-          {validating ? '测试中...' : '测试连接'}
-        </button>
-      </div>
+      <Group>
+        <Button variant="default" onClick={handleSave} loading={saving} disabled={validating}>保存 Neo4j 配置</Button>
+        <Button color="brand" onClick={handleValidate} loading={validating} disabled={state === null || isDirty || saving}
+          leftSection={<IconPlugConnected size={16} />}>测试连接</Button>
+      </Group>
 
-      {isDirty ? <p className="panel-note">你有未保存的修改，先保存后才能测试连接。</p> : null}
-      {errorMessage ? <p className="error-text">{errorMessage}</p> : null}
-    </section>
+      {isDirty ? <Text size="xs" c="dimmed">你有未保存的修改，先保存后才能测试连接。</Text> : null}
+      {errorMessage ? <Text size="sm" c="red">{errorMessage}</Text> : null}
+    </Stack>
   );
 }
 

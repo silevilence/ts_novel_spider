@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useRef, useState } from 'react';
-
+import { Badge, Button, Group, Paper, Progress, ScrollArea, Select, Stack, Text, TextInput, Textarea, Title } from '@mantine/core';
 import type { AppLocation } from '../services/app-routes';
 import {
   askLibraryAssistant,
@@ -458,21 +458,21 @@ export function LibraryIntelligencePanel({
     <>
       {location.view === 'detail' ? (
         <section className="panel intelligence-panel">
-          <section className="card intelligence-hero">
+          <section className={`card ${graphProgressExpanded ? 'intelligence-hero-expanded' : 'intelligence-hero'}`}>
             <div className="panel-heading split align-start">
               <div>
-                <p className="eyebrow">知识图谱</p>
-                <h2>实体关系图谱</h2>
+                <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.12em', color: '#ffd166' }}>知识图谱</Text>
+                <Title order={3}>实体关系图谱</Title>
                 <p className="panel-note">
                   支持增量更新、关系重建和全量重跑。下方关系图可拖拽、缩放、联动检索，也能放大到弹窗里单独操作。
                 </p>
               </div>
               <div className="badge-row intelligence-status-row wrap compact-actions">
-                <span className={`status-badge state-${build.status}`}>{formatGraphStatus(build.status)}</span>
-                <span className="status-badge state-downloaded">阶段 {formatGraphStage(build.stage)}</span>
-                {knowledgeGraph.profile.configLocked ? <span className="status-badge ok">配置已锁定</span> : null}
-                <span className="status-badge state-idle">实体 {knowledgeGraph.entities.length}</span>
-                <span className="status-badge state-indexed">关系 {knowledgeGraph.relations.length}</span>
+                <Badge variant="light" color={build.status === 'completed' ? 'green' : build.status === 'failed' ? 'red' : build.status === 'running' ? 'blue' : 'gray'} size="sm">{formatGraphStatus(build.status)}</Badge>
+                <Badge variant="light" color="gray" size="sm">阶段 {formatGraphStage(build.stage)}</Badge>
+                {knowledgeGraph.profile.configLocked ? <Badge variant="light" color="green" size="sm">配置已锁定</Badge> : null}
+                <Badge variant="light" color="gray" size="sm">实体 {knowledgeGraph.entities.length}</Badge>
+                <Badge variant="light" color="gray" size="sm">关系 {knowledgeGraph.relations.length}</Badge>
               </div>
             </div>
 

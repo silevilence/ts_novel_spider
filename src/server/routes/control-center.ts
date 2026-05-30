@@ -15,6 +15,7 @@ import type {
 } from '../core/network-proxy';
 import type {
   LlmDiscoveredModel,
+  LlmModelGatewayConfig,
   LlmModelValidationResult,
   LlmProviderConfig,
   LlmProviderConfigInput,
@@ -295,6 +296,21 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     } catch (error) {
       response.status(400).json({
         message: error instanceof Error ? error.message : 'Invalid translation preferences request.',
+      });
+    }
+  });
+
+  router.get('/preferences/model-gateway', (_request, response) => {
+    response.json(service.getModelGateway());
+  });
+
+  router.put('/preferences/model-gateway', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as LlmModelGatewayConfig;
+      response.json(service.updateModelGateway(body));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid model gateway request.',
       });
     }
   });

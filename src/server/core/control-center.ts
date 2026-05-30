@@ -14,6 +14,7 @@ import {
 import {
   SystemPreferencesService,
   type LlmDiscoveredModel,
+  type LlmModelGatewayConfig,
   type LlmPreferencesState,
   type LlmProviderConfigInput,
   type Neo4jConfigInput,
@@ -712,6 +713,14 @@ export class ControlCenterService {
 
   updateTranslationPreferences(input: TranslationPreferencesInput): TranslationPreferencesState {
     return this.#systemPreferences.updateTranslationPreferences(input);
+  }
+
+  getModelGateway(): LlmModelGatewayConfig {
+    return this.#systemPreferences.getModelGateway();
+  }
+
+  updateModelGateway(input: LlmModelGatewayConfig): LlmModelGatewayConfig {
+    return this.#systemPreferences.updateModelGateway(input);
   }
 
   async previewNovel(input: PreviewNovelInput): Promise<PreviewNovelResult> {

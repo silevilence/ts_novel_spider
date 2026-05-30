@@ -184,6 +184,6 @@ test('summarizeChapterMedia distinguishes no-image, partial-cache and full-cache
 test('formatLibraryTaskStatus returns user-facing task labels', () => {
   assert.equal(formatLibraryTaskStatus('queued'), '排队中');
   assert.equal(formatLibraryTaskStatus('running'), '执行中');
-  assert.equal(formatLibraryTaskStatus('completed'), '已完成');
+  assert.equal(formatLibraryTaskStatus('completed'), '已采集');
   assert.equal(formatLibraryTaskStatus('failed'), '已失败');
 });
