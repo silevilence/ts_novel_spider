@@ -11,7 +11,6 @@ interface TranslationLaunchPanelProps {
 export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPanelProps) {
   const [selectedModel, setSelectedModel] = useState('');
   const [availableModels, setAvailableModels] = useState<Array<{ key: string; label: string }>>([]);
-  const [logs, setLogs] = useState<Array<{ time: string; msg: string }>>([]);
 
   useEffect(() => {
     Promise.all([
@@ -36,18 +35,11 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
     }, () => {});
   }, []);
 
-  // 轮询翻译构建状态（运行时每3秒更新，驱动进度条和日志）
+  // 轮询翻译构建状态（运行时每3秒更新，驱动进度条）
   useEffect(() => {
     if (!model.detail?.novel || !(model.translationBuild?.status === 'running' || model.translationBuild?.status === 'queued')) return;
     const timer = setInterval(() => {
-      model.syncTranslationBuild?.().then((p) => {
-        if (!p) return;
-        const msg = `已译 ${p.translation.translatedChapters} 章 / 失败 ${p.translation.failedChapters} 章`;
-        setLogs((prev) => {
-          if (prev.length > 0 && prev[prev.length - 1]!.msg === msg) return prev;
-          return [...prev.slice(-50), { time: new Date().toLocaleTimeString('zh-CN'), msg }];
-        });
-      }).catch(() => {});
+      model.syncTranslationBuild?.().catch(() => {});
     }, 3000);
     return () => clearInterval(timer);
   }, [model.translationBuild?.status, model.detail?.novel]);
@@ -166,26 +158,18 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
           管理术语表
         </Button>
 
-        {/* 翻译日志区 */}
+        {/* 翻译状态摘要 */}
         {build ? (
           <Paper p="xs" radius="md" style={{ background: 'rgba(12,8,6,0.8)' }}>
-            <Group mb="xs"><Text size="xs" fw={600} c="dimmed">翻译日志</Text>
-              {isRunning ? <Badge variant="dot" color="orange" size="xs">实时</Badge> : null}</Group>
-            <ScrollArea.Autosize mah={190}>
-              <Stack gap={2}>
-                <Paper p={6} radius="sm" style={{ background: 'rgba(38,26,20,0.4)' }}>
-                  <Text size="xs" fw={600}>
-                    {build.status === 'running' ? '翻译中' : build.status === 'completed' ? '已完成' : build.status === 'failed' ? '已失败' : build.status}
-                  </Text>
-                  <Text size="xs" c="dimmed">已译 {build.translatedChapters} / 失败 {build.failedChapters}｜{build.startedAt ? new Date(build.startedAt).toLocaleTimeString('zh-CN') : '-'} 起</Text>
-                </Paper>
-                {logs.map((l, i) => (
-                  <Paper key={i} p={4} radius="sm" style={{ background: 'transparent' }}>
-                    <Text size="xs"><span style={{ opacity: 0.45, marginRight: 8 }}>{l.time}</span>{l.msg}</Text>
-                  </Paper>
-                ))}
-              </Stack>
-            </ScrollArea.Autosize>
+            <Group gap="sm" wrap="wrap">
+              <Text size="xs" fw={600} c="dimmed">
+                {build.status === 'running' ? '翻译中' : build.status === 'completed' ? '已完成' : build.status === 'failed' ? '已失败' : build.status}
+              </Text>
+              <Badge variant="light" color="green" size="xs">已译 {build.translatedChapters}</Badge>
+              {build.failedChapters > 0 ? <Badge variant="light" color="red" size="xs">失败 {build.failedChapters}</Badge> : null}
+              {detail ? <Badge variant="light" color="gray" size="xs">待译 {detail.stats.downloaded - build.translatedChapters - build.failedChapters}</Badge> : null}
+              {build.startedAt ? <Text size="xs" c="dimmed">{new Date(build.startedAt).toLocaleTimeString('zh-CN')} 起</Text> : null}
+            </Group>
           </Paper>
         ) : null}
       </Stack>

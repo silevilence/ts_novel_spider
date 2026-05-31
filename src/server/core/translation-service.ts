@@ -460,8 +460,9 @@ export class TranslationService {
     });
 
     // 在后台启动章节翻译
+    const totalChapterCount = downloadedChapters.length;
     queueMicrotask(() => {
-      void this.processChapters(sourceId, novelId, remainingChapterIds, profile.sourceLang, profile.targetLang, glossaryVersion, profileVersion, startedTranslated, startedFailed, canResume ? (existingBuild?.totalTranslatedParagraphs ?? 0) : 0, modelOverride);
+      void this.processChapters(sourceId, novelId, remainingChapterIds, totalChapterCount, profile.sourceLang, profile.targetLang, glossaryVersion, profileVersion, startedTranslated, startedFailed, canResume ? (existingBuild?.totalTranslatedParagraphs ?? 0) : 0, modelOverride);
     });
 
     return {
@@ -487,6 +488,7 @@ export class TranslationService {
     sourceId: string,
     novelId: string,
     chapterIds: string[],
+    totalChapterCount: number,
     sourceLang: string,
     targetLang: string,
     glossaryVersion: number,
@@ -557,7 +559,7 @@ export class TranslationService {
         try {
           this.#repository.saveTranslationBuild({
             sourceId, novelId, status: 'running', stage: 'translating',
-            progressPercent: chapterIds.length > 0 ? Math.round(((translated + failed) / chapterIds.length) * 100) : 0,
+            progressPercent: totalChapterCount > 0 ? Math.round(((translated + failed) / totalChapterCount) * 100) : 0,
             message: `正在翻译… (${totalCompleted}/${progressChapterEstParagraphs}段)`,
             errorMessage: null,
             startedAt: new Date(runStartedAt).toISOString(), completedAt: null,
@@ -622,7 +624,7 @@ export class TranslationService {
         progressChapterEstParagraphs = estParagraphs;
         this.#repository.saveTranslationBuild({
           sourceId, novelId, status: 'running', stage: 'translating',
-          progressPercent: chapterIds.length > 0 ? Math.round(((translated + failed) / chapterIds.length) * 100) : 0,
+          progressPercent: totalChapterCount > 0 ? Math.round(((translated + failed) / totalChapterCount) * 100) : 0,
           message: `正在翻译第 ${chapter.index} 章…`,
           errorMessage: null,
           startedAt: new Date(runStartedAt).toISOString(), completedAt: null,
@@ -695,8 +697,8 @@ export class TranslationService {
         sourceId, novelId,
         status: 'running',
         stage: 'translating',
-        progressPercent: chapterIds.length > 0 ? Math.round((total / chapterIds.length) * 100) : 0,
-        message: `已译 ${translated}/${chapterIds.length} 章 (${chapterParagraphs}段)`,
+        progressPercent: totalChapterCount > 0 ? Math.round((total / totalChapterCount) * 100) : 0,
+        message: `已译 ${translated}/${totalChapterCount} 章 (${chapterParagraphs}段)`,
         errorMessage: null,
         startedAt: new Date(runStartedAt).toISOString(),
         completedAt: null,

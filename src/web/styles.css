@@ -113,7 +113,7 @@ button:disabled {
   opacity: 0.55;
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
   width: 100%;
@@ -130,7 +130,7 @@ textarea {
   resize: vertical;
 }
 
-input:focus,
+input:not([type="checkbox"]):not([type="radio"]):focus,
 select:focus,
 textarea:focus,
 button:focus-visible {
@@ -383,6 +383,14 @@ button:focus-visible {
   gap: 0.35rem;
 }
 
+.provider-workbench {
+  display: grid;
+  grid-template-columns: minmax(240px, 280px) 1fr;
+  gap: 1rem;
+  align-items: start;
+  max-height: max(60vh, 520px);
+}
+
 .chapter-directory .action-row.wrap {
   gap: 0.55rem;
 }
@@ -498,7 +506,10 @@ button:focus-visible {
   .settings-summary-strip,
   .panel-grid,
   .provider-summary,
-  .provider-workbench,
+  .provider-workbench {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
   .proxy-summary,
   .task-layout,
   .reader-layout,

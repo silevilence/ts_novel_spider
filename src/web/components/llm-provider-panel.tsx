@@ -430,7 +430,7 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
           </Stack>
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 280px) 1fr', gap: '1rem', alignItems: 'start', maxHeight: 'max(60vh, 520px)' }}>
+        <div className="provider-workbench">
           {/* ── Left: Provider List ── */}
           <ScrollArea.Autosize mah="max(60vh, 520px)" offsetScrollbars>
           <Stack gap="xs">
