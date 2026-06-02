@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 
 import type { OfflineLibraryAssetService } from './offline-library';
 import type { StoredChapterRecord, StoredNovelSnapshot } from './spider';
+import { stripTranslationNumberPrefix } from './translation/nodes/translate-node';
 
 export const LIBRARY_EXPORT_FORMATS = ['markdown', 'txt', 'epub'] as const;
 
@@ -63,6 +64,14 @@ interface ExportRenderContext {
   translationMode: LibraryExportTranslationMode;
   /** 章节 ID → 段落翻译列表 */
   translatedParagraphsByChapterId: Map<string, TranslatedParagraph[]>;
+  /** 翻译后的小说标题 */
+  translatedNovelTitle?: string | null | undefined;
+  /** 翻译后的小说简介段落 */
+  translatedDescriptionParagraphs?: TranslatedParagraph[] | undefined;
+  /** 卷原标题 → 卷标题译文 */
+  translatedVolumeTitles?: Map<string, string> | undefined;
+  /** 章节 ID → 章节标题译文 */
+  translatedChapterTitles?: Map<string, string> | undefined;
 }
 
 interface StrategyOutput {
@@ -84,6 +93,14 @@ const CHAPTER_SECTION_DIVIDER = '---';
 export interface ExportTranslationOptions {
   mode: LibraryExportTranslationMode;
   translatedParagraphsByChapterId: Map<string, TranslatedParagraph[]>;
+  /** 小说标题译文（来自 __novel_meta__ 单元） */
+  translatedNovelTitle?: string | null | undefined;
+  /** 小说简介译文段落（来自 __novel_meta__ 单元） */
+  translatedDescriptionParagraphs?: TranslatedParagraph[] | undefined;
+  /** 卷标题译文映射：卷 ID → 译文 */
+  translatedVolumeTitles?: Map<string, string> | undefined;
+  /** 真实章节标题译文映射：chapterId → 译文 */
+  translatedChapterTitles?: Map<string, string> | undefined;
 }
 
 export class LocalExportEngine {
@@ -171,6 +188,10 @@ export class LocalExportEngine {
       assetsByChapterId,
       translationMode: translation?.mode ?? 'original',
       translatedParagraphsByChapterId: translation?.translatedParagraphsByChapterId ?? new Map(),
+      translatedNovelTitle: translation?.translatedNovelTitle,
+      translatedDescriptionParagraphs: translation?.translatedDescriptionParagraphs,
+      translatedVolumeTitles: translation?.translatedVolumeTitles,
+      translatedChapterTitles: translation?.translatedChapterTitles,
     };
   }
 }
@@ -292,23 +313,23 @@ class EpubExportStrategy implements LibraryExportStrategy {
       );
       spineItems.push(`<itemref idref="${volumeItemId}"/>`);
 
-      for (const chapter of volume.chapters) {
-        const chapterFileName = `chapter-${String(chapterFileIndex).padStart(4, '0')}.xhtml`;
-        const itemId = `chapter-${chapterFileIndex}`;
-        content.file(chapterFileName, renderEpubChapter(context, chapter, volume.title, chapterFileIndex));
-        manifestItems.push(
-          `<item id="${itemId}" href="${chapterFileName}" media-type="application/xhtml+xml"/>`,
-        );
-        spineItems.push(`<itemref idref="${itemId}"/>`);
-        volumeChapterLinks.push(`<li><a href="${chapterFileName}">${escapeXml(formatChapterHeading(chapter))}</a></li>`);
-        chapterFileIndex += 1;
-      }
-
+      const volTitleLocalized = localizedText(volume.title, context.translatedVolumeTitles?.get(volume.rawTitle), context.translationMode);
       navLinks.push(`
 <li>
-  <a href="${volumeFileName}">${escapeXml(volume.title)}</a>
+  <a href="${volumeFileName}">${escapeXml(volTitleLocalized)}</a>
   <ol>
-    ${volumeChapterLinks.join('\n    ')}
+    ${volume.chapters.map((chapter) => {
+      const chHeading = localizedText(formatChapterHeading(chapter), context.translatedChapterTitles?.get(chapter.id), context.translationMode);
+      const chapterFileName = `chapter-${String(chapterFileIndex).padStart(4, '0')}.xhtml`;
+      const itemId = `chapter-${chapterFileIndex}`;
+      content.file(chapterFileName, renderEpubChapter(context, chapter, volume.title, chapterFileIndex));
+      manifestItems.push(
+        `<item id="${itemId}" href="${chapterFileName}" media-type="application/xhtml+xml"/>`,
+      );
+      spineItems.push(`<itemref idref="${itemId}"/>`);
+      chapterFileIndex += 1;
+      return `<li><a href="${chapterFileName}">${escapeXml(chHeading)}</a></li>`;
+    }).join('\n      ')}
   </ol>
 </li>`.trim());
     }
@@ -318,7 +339,7 @@ class EpubExportStrategy implements LibraryExportStrategy {
       `<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
   <head>
-    <title>${escapeXml(context.snapshot.metadata.title)}</title>
+    <title>${escapeXml(localizedText(context.snapshot.metadata.title, context.translatedNovelTitle, context.translationMode))}</title>
   </head>
   <body>
     <nav epub:type="toc" id="toc">
@@ -331,15 +352,35 @@ class EpubExportStrategy implements LibraryExportStrategy {
 </html>`,
     );
 
+    const opfTitle = localizedText(context.snapshot.metadata.title, context.translatedNovelTitle, context.translationMode);
+    let opfDescription = escapeXml(context.snapshot.metadata.description || '');
+    if (context.translationMode !== 'original' && context.translatedDescriptionParagraphs && context.translatedDescriptionParagraphs.length > 0) {
+      if (context.translationMode === 'translated') {
+        opfDescription = context.translatedDescriptionParagraphs
+          .map((p) => escapeXml(stripTranslationNumberPrefix(p.sourceText, p.translatedText ?? p.sourceText)))
+          .join('<br/>');
+      } else {
+        const td = context.translatedDescriptionParagraphs
+          .map((p) => {
+            const safe = p.translatedText
+              ? stripTranslationNumberPrefix(p.sourceText, p.translatedText)
+              : null;
+            return safe ? `${escapeXml(p.sourceText)}<br/>${escapeXml(safe)}` : escapeXml(p.sourceText);
+          })
+          .join('<br/>');
+        opfDescription = `${escapeXml(context.snapshot.metadata.description || '')}<br/><br/>${td}`;
+      }
+    }
+
     content.file(
       'content.opf',
       `<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" xml:lang="zh-CN">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="bookid">${escapeXml(bookId)}</dc:identifier>
-    <dc:title>${escapeXml(context.snapshot.metadata.title)}</dc:title>
+    <dc:title>${escapeXml(opfTitle)}</dc:title>
     <dc:creator>${escapeXml(context.snapshot.metadata.author || '未知作者')}</dc:creator>
-    <dc:description>${escapeXml(context.snapshot.metadata.description || '')}</dc:description>
+    <dc:description>${opfDescription}</dc:description>
     <dc:language>zh-CN</dc:language>
     <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}</meta>
   </metadata>
@@ -368,8 +409,10 @@ class EpubExportStrategy implements LibraryExportStrategy {
 }
 
 function renderMarkdownDocument(context: ExportRenderContext): string {
+  const { translationMode } = context;
+  const novelTitle = localizedText(context.snapshot.metadata.title, context.translatedNovelTitle, translationMode);
   const lines: string[] = [
-    `# ${context.snapshot.metadata.title}`,
+    `# ${novelTitle}`,
     '',
     `- 作者：${context.snapshot.metadata.author || '未知作者'}`,
     `- 数据源：${context.snapshot.sourceId}`,
@@ -386,16 +429,38 @@ function renderMarkdownDocument(context: ExportRenderContext): string {
     lines.push(`- 导出模式：${context.translationMode === 'translated' ? '纯译文' : '双语对照'}`);
   }
 
-  lines.push('', '## 简介', '', context.snapshot.metadata.description || '暂无简介。', '');
+  // 简介翻译
+  const description = context.snapshot.metadata.description || '暂无简介。';
+  if (translationMode === 'original' || !context.translatedDescriptionParagraphs || context.translatedDescriptionParagraphs.length === 0) {
+    lines.push('', '## 简介', '', description, '');
+  } else if (translationMode === 'translated') {
+    const translatedDesc = context.translatedDescriptionParagraphs
+      .map((p) => stripTranslationNumberPrefix(p.sourceText, p.translatedText ?? p.sourceText))
+      .join('\n\n');
+    lines.push('', '## 简介', '', translatedDesc || description, '');
+  } else {
+    // bilingual
+    const translatedDesc = context.translatedDescriptionParagraphs
+      .map((p) => {
+        const safe = p.translatedText
+          ? stripTranslationNumberPrefix(p.sourceText, p.translatedText)
+          : null;
+        return safe ? `${p.sourceText}\n\n${safe}` : p.sourceText;
+      })
+      .join('\n\n');
+    lines.push('', '## 简介', '', description, '', translatedDesc || description, '');
+  }
 
   for (const volume of context.volumeGroups) {
-    lines.push(`## ${volume.title}`, '');
+    const volTitle = localizedText(volume.title, context.translatedVolumeTitles?.get(volume.rawTitle), translationMode);
+    lines.push(`## ${volTitle}`, '');
 
     for (const chapter of volume.chapters) {
       const assets = context.assetsByChapterId.get(chapter.id) ?? [];
       const content = resolveChapterExportContent(context, chapter);
+      const chHeading = localizedText(formatChapterHeading(chapter), context.translatedChapterTitles?.get(chapter.id), translationMode);
 
-      lines.push(`### ${formatChapterHeading(chapter)}`, '');
+      lines.push(`### ${chHeading}`, '');
       lines.push(rewriteMarkdownContent(content, assets), '');
     }
   }
@@ -404,19 +469,42 @@ function renderMarkdownDocument(context: ExportRenderContext): string {
 }
 
 function renderPlainTextDocument(context: ExportRenderContext): string {
+  const { translationMode } = context;
+  const novelTitle = localizedText(context.snapshot.metadata.title, context.translatedNovelTitle, translationMode);
+
+  // 简介
+  let descriptionText = context.snapshot.metadata.description || '暂无简介。';
+  if (translationMode !== 'original' && context.translatedDescriptionParagraphs && context.translatedDescriptionParagraphs.length > 0) {
+    if (translationMode === 'translated') {
+      descriptionText = context.translatedDescriptionParagraphs
+        .map((p) => stripTranslationNumberPrefix(p.sourceText, p.translatedText ?? p.sourceText))
+        .join('\n\n');
+    } else {
+      const translatedDesc = context.translatedDescriptionParagraphs
+        .map((p) => {
+          const safe = p.translatedText
+            ? stripTranslationNumberPrefix(p.sourceText, p.translatedText)
+            : null;
+          return safe ? `${p.sourceText}\n\n${safe}` : p.sourceText;
+        })
+        .join('\n\n');
+      descriptionText = `${descriptionText}\n\n${translatedDesc}`;
+    }
+  }
+
   const lines: string[] = [
-    context.snapshot.metadata.title,
+    novelTitle,
     `作者：${context.snapshot.metadata.author || '未知作者'}`,
     '',
-    normalizePlainParagraph(context.snapshot.metadata.description || '暂无简介。'),
+    normalizePlainParagraph(descriptionText),
     '',
   ];
 
   context.chapters.forEach((chapter, index) => {
-    const chapterTitle = formatChapterHeading(chapter);
+    const chHeading = localizedText(formatChapterHeading(chapter), context.translatedChapterTitles?.get(chapter.id), translationMode);
     const content = resolveChapterExportContent(context, chapter);
     const paragraphs = splitParagraphs(content).map(normalizePlainParagraph);
-    lines.push(chapterTitle);
+    lines.push(chHeading);
     lines.push(...paragraphs);
 
     if (index < context.chapters.length - 1) {
@@ -428,20 +516,42 @@ function renderPlainTextDocument(context: ExportRenderContext): string {
 }
 
 function renderEpubIntro(context: ExportRenderContext): string {
+  const { translationMode } = context;
+  const novelTitle = localizedText(context.snapshot.metadata.title, context.translatedNovelTitle, translationMode);
+
+  let descriptionHtml = escapeXml(context.snapshot.metadata.description || '暂无简介。');
+  if (translationMode !== 'original' && context.translatedDescriptionParagraphs && context.translatedDescriptionParagraphs.length > 0) {
+    if (translationMode === 'translated') {
+      descriptionHtml = context.translatedDescriptionParagraphs
+        .map((p) => escapeXml(stripTranslationNumberPrefix(p.sourceText, p.translatedText ?? p.sourceText)))
+        .join('<br/>');
+    } else {
+      const td = context.translatedDescriptionParagraphs
+        .map((p) => {
+          const safe = p.translatedText
+            ? stripTranslationNumberPrefix(p.sourceText, p.translatedText)
+            : null;
+          return safe ? `${escapeXml(p.sourceText)}<br/>${escapeXml(safe)}` : escapeXml(p.sourceText);
+        })
+        .join('<br/>');
+      descriptionHtml = `${escapeXml(context.snapshot.metadata.description || '暂无简介。')}<br/><br/>${td}`;
+    }
+  }
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
   <head>
-    <title>${escapeXml(context.snapshot.metadata.title)}</title>
+    <title>${escapeXml(novelTitle)}</title>
     <link rel="stylesheet" type="text/css" href="styles/book.css"/>
   </head>
   <body>
     <section>
-      <h1>${escapeXml(context.snapshot.metadata.title)}</h1>
+      <h1>${escapeXml(novelTitle)}</h1>
       <p class="meta">作者：${escapeXml(context.snapshot.metadata.author || '未知作者')}</p>
       <p class="meta">数据源：${escapeXml(context.snapshot.sourceId)}</p>
       <p class="meta">作品 ID：${escapeXml(context.snapshot.metadata.novelId)}</p>
       <p class="meta">已导出章节：${context.chapters.length}/${context.snapshot.metadata.chapterCount}</p>
-      <p>${escapeXml(context.snapshot.metadata.description || '暂无简介。')}</p>
+      <p>${descriptionHtml}</p>
     </section>
   </body>
 </html>`;
@@ -463,17 +573,19 @@ function renderEpubChapter(
     : context.translationMode === 'translated'
       ? '<p class="meta">译文</p>'
       : '';
+  const chHeading = localizedText(formatChapterHeading(chapter), context.translatedChapterTitles?.get(chapter.id), context.translationMode);
+  const volLocalized = volumeTitle ? localizedText(volumeTitle, context.translatedVolumeTitles?.get(volumeTitle), context.translationMode) : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
   <head>
-    <title>${escapeXml(formatChapterHeading(chapter))}</title>
+    <title>${escapeXml(chHeading)}</title>
     <link rel="stylesheet" type="text/css" href="styles/book.css"/>
   </head>
   <body>
     <article>
-      <h1>${escapeXml(formatChapterHeading(chapter))}</h1>
-      <p class="meta">${escapeXml(volumeTitle)}</p>
+      <h1>${escapeXml(chHeading)}</h1>
+      ${volLocalized ? `<p class="meta">${escapeXml(volLocalized)}</p>` : ''}
       ${modeNote}
       ${body}
     </article>
@@ -482,25 +594,27 @@ function renderEpubChapter(
 }
 
 function renderEpubVolume(
-  _context: ExportRenderContext,
+  context: ExportRenderContext,
   volume: ExportRenderContext['volumeGroups'][number],
 ): string {
+  const volTitleLocalized = localizedText(volume.title, context.translatedVolumeTitles?.get(volume.rawTitle), context.translationMode);
   const chapterLinks = volume.chapters
     .map((chapter) => {
+      const chHeading = localizedText(formatChapterHeading(chapter), context.translatedChapterTitles?.get(chapter.id), context.translationMode);
       const chapterFileName = `chapter-${String(chapter.index).padStart(4, '0')}.xhtml`;
-      return `<li><a href="${chapterFileName}">${escapeXml(formatChapterHeading(chapter))}</a></li>`;
+      return `<li><a href="${chapterFileName}">${escapeXml(chHeading)}</a></li>`;
     })
     .join('\n        ');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
   <head>
-    <title>${escapeXml(volume.title)}</title>
+    <title>${escapeXml(volTitleLocalized)}</title>
     <link rel="stylesheet" type="text/css" href="styles/book.css"/>
   </head>
   <body>
     <section>
-      <h1>${escapeXml(volume.title)}</h1>
+      <h1>${escapeXml(volTitleLocalized)}</h1>
       <p class="meta">本卷目录</p>
       <ol>
         ${chapterLinks}
@@ -603,15 +717,23 @@ function resolveChapterExportContent(context: ExportRenderContext, chapter: Stor
 
   if (context.translationMode === 'translated') {
     return translatedParagraphs
-      .map((tp) => tp.translatedText ?? tp.sourceText)
+      .map((tp) => {
+        const cleaned = tp.translatedText
+          ? stripTranslationNumberPrefix(tp.sourceText, tp.translatedText)
+          : tp.sourceText;
+        return cleaned;
+      })
       .join('\n\n');
   }
 
   // bilingual mode：仅当译文有效且与原文不同时才显示双语对照
   return translatedParagraphs
     .map((tp) => {
-      if (tp.translatedText && tp.translatedText !== tp.sourceText && tp.translatedText.trim().length > 0) {
-        return `${tp.sourceText}\n\n${tp.translatedText}`;
+      const safeText = tp.translatedText && tp.translatedText !== tp.sourceText && tp.translatedText.trim().length > 0
+        ? stripTranslationNumberPrefix(tp.sourceText, tp.translatedText)
+        : null;
+      if (safeText) {
+        return `${tp.sourceText}\n\n${safeText}`;
       }
       return tp.sourceText;
     })
@@ -697,6 +819,19 @@ function escapeXmlAttribute(value: string): string {
 
 export function isLibraryExportFormat(value: string): value is LibraryExportFormat {
   return LIBRARY_EXPORT_FORMATS.includes(value as LibraryExportFormat);
+}
+
+/**
+ * 根据导出模式获取翻译后的文本。
+ *
+ * - original: 返回原文
+ * - translated: 返回译文，缺省回退原文
+ * - bilingual: 返回 原文【译文】，缺译回退原文
+ */
+function localizedText(original: string, translated: string | null | undefined, mode: LibraryExportTranslationMode): string {
+  if (mode === 'original' || !translated) return original;
+  if (mode === 'translated') return translated;
+  return `${original}【${translated}】`;
 }
 
 function formatChapterHeading(chapter: StoredChapterRecord): string {

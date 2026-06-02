@@ -234,12 +234,16 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
           );
           if (transChapter && transChapter.status === 'completed' && transChapter.paragraphs.length > 0) {
             const content = buildTranslatedContent(transChapter.paragraphs, translationViewMode);
-            if (content) {
-              chapterPayload.chapter.chapter = {
-                ...chapterPayload.chapter.chapter,
-                content,
-              };
-            }
+            chapterPayload.chapter.chapter = {
+              ...chapterPayload.chapter.chapter,
+              content: content ?? chapterPayload.chapter.chapter.content,
+              // 翻译后的标题：译文模式下直接替换，双语模式下用原文【译文】
+              title: transChapter.translatedTitle
+                ? (translationViewMode === 'bilingual'
+                  ? `${chapterPayload.chapter.chapter.title}【${transChapter.translatedTitle}】`
+                  : transChapter.translatedTitle)
+                : chapterPayload.chapter.chapter.title,
+            };
           }
         }
 
@@ -1031,6 +1035,17 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   };
 }
 
+/** 翻译编号前缀清洗（前端侧防御副本，规则与服务端 stripTranslationNumberPrefix 一致） */
+function stripNumberPrefix(sourceText: string, translatedText: string): string {
+  const pattern = /^\s*(?:\d+[\.\、\)]\s*|段落\d+[：:]\s*|【\d+】\s*)/;
+  const trimmed = translatedText.trim();
+  const prefixMatch = trimmed.match(pattern);
+  if (!prefixMatch) return trimmed;
+  // 原文若也以同类前缀开头则视为正文一部分，保留
+  if (sourceText.trim().match(pattern)) return trimmed;
+  return trimmed.replace(pattern, '').trim();
+}
+
 /** 根据翻译模式拼接段落内容 */
 function buildTranslatedContent(
   paragraphs: Array<{ paragraphIndex: number; sourceText: string; translatedText: string | null; confidence: number | null }>,
@@ -1040,7 +1055,10 @@ function buildTranslatedContent(
 
   if (mode === 'translated') {
     return paragraphs
-      .map((p) => p.translatedText ?? p.sourceText)
+      .map((p) => {
+        const text = p.translatedText ?? p.sourceText;
+        return p.translatedText ? stripNumberPrefix(p.sourceText, text) : text;
+      })
       .filter((t) => t.length > 0)
       .join('\n\n') || null;
   }
@@ -1049,7 +1067,8 @@ function buildTranslatedContent(
   return paragraphs
     .map((p) => {
       if (p.translatedText && p.translatedText !== p.sourceText) {
-        return `${p.sourceText}\n\n${p.translatedText}`;
+        const cleaned = stripNumberPrefix(p.sourceText, p.translatedText);
+        return `${p.sourceText}\n\n${cleaned}`;
       }
       return p.sourceText;
     })

@@ -16,6 +16,30 @@ const BATCH_SEPARATOR = '\n\n---\n\n';
 /** 备选分隔符列表（按优先级尝试拆分） */
 const FALLBACK_SEPARATORS = ['\n\n---\n\n', '\n---\n', '\n\n---', '---\n\n', '---'];
 
+/** 翻译编号前缀的正则模式——匹配 LLM 在批量/单条响应中可能附带的序号 */
+export const TRANSLATION_PREFIX_PATTERN = /^\s*(?:\d+[\.\、\)]\s*|段落\d+[：:]\s*|【\d+】\s*)/;
+
+/**
+ * 原文感知的翻译编号前缀清洗。
+ *
+ * 仅在译文带编号前缀、原文不带同类前缀时去除前缀。
+ * 若原文本身以编号前缀开头，则视为正文的一部分，保留译文前缀。
+ */
+export function stripTranslationNumberPrefix(sourceText: string, translatedText: string): string {
+  const trimmed = translatedText.trim();
+  const prefixMatch = trimmed.match(TRANSLATION_PREFIX_PATTERN);
+  if (!prefixMatch) {
+    return trimmed;
+  }
+  // 检查原文是否也以同类前缀开头——若有则说明是正文一部分，保留
+  const sourceTrimmed = sourceText.trim();
+  if (sourceTrimmed.match(TRANSLATION_PREFIX_PATTERN)) {
+    return trimmed;
+  }
+  // 去掉译文前缀
+  return trimmed.replace(TRANSLATION_PREFIX_PATTERN, '').trim();
+}
+
 /**
  * 翻译节点：批量段落翻译 + 对话历史上下文。
  *
@@ -298,7 +322,8 @@ async function translateSingleSegment(
   });
   const callDuration = Date.now() - callStart;
 
-  const translatedText = result.text.trim();
+  let translatedText = result.text.trim();
+  translatedText = stripTranslationNumberPrefix(segment.sourceText, translatedText);
 
   llmLogger?.logCall({
     provider: modelIdStr.split(':')[0] ?? 'unknown',
@@ -354,10 +379,10 @@ function splitBatchResponse(
     }
   }
 
-  // 清理各部分：去除编号前缀和首尾空白
-  const cleaned = parts.map((p) => {
-    const stripped = p.replace(/^\s*(?:\d+[\.\、\)]\s*|段落\d+[：:]\s*|【\d+】\s*)/, '').trim();
-    return stripped;
+  // 清理各部分：去除编号前缀（原文感知）和首尾空白
+  const cleaned = parts.map((p, i) => {
+    const sourceText = batch[i]?.sourceText ?? '';
+    return stripTranslationNumberPrefix(sourceText, p);
   }).filter((p) => p.length > 0);
 
   if (cleaned.length !== batch.length) {

@@ -2837,6 +2837,21 @@ export class SqliteNovelRepository {
     transaction();
   }
 
+  /**
+   * 确保傀儡章节记录存在（供元数据/卷标题等合成翻译单元使用）。
+   * 若章节已存在则不做任何操作（幂等）。
+   */
+  ensureSyntheticChapter(sourceId: string, novelId: string, chapterId: string, title: string, index: number): void {
+    this.assertNovelExists(sourceId, novelId);
+    const timestamp = new Date().toISOString();
+    this.#database
+      .prepare(
+        `INSERT OR IGNORE INTO chapters (source_id, novel_id, chapter_id, chapter_index, title, volume_title, url, content, status, error_message, downloaded_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, NULL, '', NULL, 'indexed', NULL, NULL, ?)`,
+      )
+      .run(sourceId, novelId, chapterId, index, title, timestamp);
+  }
+
   /** 查找因术语库更新而需要重译的章节（术语版本号不匹配的已完成翻译章节） */
   listTranslationAffectedChapters(sourceId: string, novelId: string): Array<{
     chapterId: string;

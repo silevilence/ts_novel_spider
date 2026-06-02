@@ -45,6 +45,10 @@ const TranslationState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => 0,
   }),
+  unitKind: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => 'chapter',
+  }),
   chapterTitle: Annotation<string>({
     reducer: (_prev, next) => next,
     default: () => '',

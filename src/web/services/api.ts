@@ -726,6 +726,7 @@ export async function fetchLibraryTranslationChapter(
 ): Promise<{
   chapterId: string;
   status: string;
+  translatedTitle: string | null;
   overallQualityScore: number | null;
   paragraphs: Array<{
     paragraphIndex: number;
@@ -739,6 +740,7 @@ export async function fetchLibraryTranslationChapter(
     return await requestJson(url) as {
       chapterId: string;
       status: string;
+      translatedTitle: string | null;
       overallQualityScore: number | null;
       paragraphs: Array<{
         paragraphIndex: number;

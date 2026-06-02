@@ -25,25 +25,41 @@ export async function finalizeNode(
     return state;
   }
 
-  const paragraphs = state.finalParagraphs.length > 0 ? state.finalParagraphs : state.draftParagraphs;
+  const allParagraphs = state.finalParagraphs.length > 0 ? state.finalParagraphs : state.draftParagraphs;
 
-  if (paragraphs.length === 0) {
+  if (allParagraphs.length === 0) {
     return { errorMessage: '无翻译结果可保存。' };
   }
 
-  const hasValidTranslations = paragraphs.some((p) => p.translatedText && p.translatedText.trim().length > 0);
+  // 按 paragraphIndex 排序，确保首段即为标题段
+  const sortedParagraphs = [...allParagraphs].sort((a, b) => a.paragraphIndex - b.paragraphIndex);
+
+  // 从首段提取标题译文（仅对 chapter / meta / volume 单元有效）
+  let translatedTitle = state.translatedTitle;
+  let bodyParagraphs = sortedParagraphs;
+  if (state.unitKind === 'chapter' || state.unitKind === 'meta' || state.unitKind === 'volume') {
+    const firstSegmentSource = state.segments[0]?.sourceText ?? '';
+    if (sortedParagraphs.length > 0 && !translatedTitle) {
+      translatedTitle = sortedParagraphs[0]!.translatedText;
+      bodyParagraphs = sortedParagraphs.slice(1);
+    }
+  }
+
+  // 检查是否需要保存正文段落（volume 单元可能只有标题无需段落）
+  const hasBodyParagraphs = bodyParagraphs.length > 0;
+  const hasValidTranslations = bodyParagraphs.some((p) => p.translatedText && p.translatedText.trim().length > 0)
+    || (translatedTitle !== null && translatedTitle.trim().length > 0);
 
   if (!hasValidTranslations) {
-    return { errorMessage: '所有段落译文均为空，无法保存。' };
+    return { errorMessage: '所有翻译结果均为空，无法保存。' };
   }
 
   try {
-    // 状态判定：只要有任何段落译文有效就视为成功，缺失部分记入日志
     const status = hasValidTranslations ? 'completed' as const : 'failed' as const;
-    const totalParagraphs = paragraphs.length;
-    const validCount = paragraphs.filter((p) => p.translatedText && p.translatedText.trim().length > 0).length;
+    const totalParagraphs = sortedParagraphs.length;
+    const validCount = sortedParagraphs.filter((p) => p.translatedText && p.translatedText.trim().length > 0).length;
     const partialNote = validCount < totalParagraphs ? ` (${validCount}/${totalParagraphs} 段有效)` : '';
-    console.log(`[translation] finalizeNode: saving chapter ${state.chapterId} with status=${status}, paragraphs=${paragraphs.length}, valid=${validCount}${partialNote}${state.errorMessage ? ', warn: ' + state.errorMessage : ''}`);
+    console.log(`[translation] finalizeNode: saving chapter ${state.chapterId} (unitKind=${state.unitKind}) with status=${status}, paragraphs=${sortedParagraphs.length}, body=${bodyParagraphs.length}, valid=${validCount}${partialNote}${state.errorMessage ? ', warn: ' + state.errorMessage : ''}`);
 
     repository.saveChapterTranslation({
       sourceId: state.sourceId,
@@ -51,7 +67,7 @@ export async function finalizeNode(
       chapterId: state.chapterId,
       sourceLang: state.sourceLang,
       targetLang: state.targetLang,
-      translatedTitle: state.translatedTitle,
+      translatedTitle,
       status,
       overallQualityScore: null,
       translatorModelId: state.translatorModelId,
@@ -62,20 +78,30 @@ export async function finalizeNode(
       profileVersion: state.profileVersion,
     });
 
-    // 批量替换段落翻译
-    repository.replaceChapterTranslationParagraphs(
-      state.sourceId,
-      state.novelId,
-      state.chapterId,
-      paragraphs.map((p) => ({
-        paragraphIndex: p.paragraphIndex,
-        sourceText: p.sourceText,
-        translatedText: p.translatedText,
-        confidence: p.confidence,
-        appliedTermIds: p.appliedTermIds,
-        modelId: p.modelId,
-      })),
-    );
+    // 批量替换段落翻译（仅保存正文段落）
+    if (hasBodyParagraphs) {
+      repository.replaceChapterTranslationParagraphs(
+        state.sourceId,
+        state.novelId,
+        state.chapterId,
+        bodyParagraphs.map((p) => ({
+          paragraphIndex: p.paragraphIndex,
+          sourceText: p.sourceText,
+          translatedText: p.translatedText,
+          confidence: p.confidence,
+          appliedTermIds: p.appliedTermIds,
+          modelId: p.modelId,
+        })),
+      );
+    } else {
+      // 仅标题无正文的单元（如 volume），仍需清空旧段落
+      repository.replaceChapterTranslationParagraphs(
+        state.sourceId,
+        state.novelId,
+        state.chapterId,
+        [],
+      );
+    }
 
     // 审校（QA）功能暂未启用——不写入 chapter_translation_qa 表
 

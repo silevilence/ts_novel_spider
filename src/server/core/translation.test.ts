@@ -17,6 +17,7 @@ import {
 } from '../core/export-engine';
 import { createTranslationPipelineGraph } from '../core/translation-pipeline';
 import { TranslationHistoryManager } from '../core/translation/nodes/history-manager';
+import { stripTranslationNumberPrefix } from '../core/translation/nodes/translate-node';
 
 // ── SQLite 迁移 + CRUD ──
 
@@ -295,6 +296,91 @@ test('system preferences persist model gateway routes across reloads', () => {
       rerank: { providerId: 'provider-rerank', modelId: 'bge-reranker-v2' },
     });
   } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ── 翻译文本编号前缀清洗 ──
+
+test('stripTranslationNumberPrefix retains clean translation unchanged', () => {
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '你好'), '你好');
+  assert.equal(stripTranslationNumberPrefix('世界', '世界'), '世界');
+});
+
+test('stripTranslationNumberPrefix removes number prefix when source has none', () => {
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '【1】你好'), '你好');
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '1.你好'), '你好');
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '1、你好'), '你好');
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '1)你好'), '你好');
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '段落1：你好'), '你好');
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '段落1:你好'), '你好');
+  assert.equal(stripTranslationNumberPrefix('こんにちは', '【10】你好'), '你好');
+});
+
+test('stripTranslationNumberPrefix retains prefix when source text also has it', () => {
+  // 原文本身就带序号，说明是正文一部分
+  assert.equal(stripTranslationNumberPrefix('【1】原文开头', '【1】译文开头'), '【1】译文开头');
+  assert.equal(stripTranslationNumberPrefix('1.原文开头', '1.译文开头'), '1.译文开头');
+  assert.equal(stripTranslationNumberPrefix('1、原文开头', '1、译文开头'), '1、译文开头');
+});
+
+test('stripTranslationNumberPrefix handles edge cases', () => {
+  assert.equal(stripTranslationNumberPrefix('', '【1】仅译文有内容'), '仅译文有内容');
+  assert.equal(stripTranslationNumberPrefix('原文', ''), '');
+  assert.equal(stripTranslationNumberPrefix('原文', '   '), '');
+  assert.equal(stripTranslationNumberPrefix('【1】原文', ''), '');
+});
+
+// ── 合成傀儡章节记录 ──
+
+test('ensureSyntheticChapter creates stub chapter for FK constraint compliance', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-synthetic-'));
+  const db = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+
+  try {
+    db.saveMetadata('syosetu', {
+      novelId: 'n1000syn',
+      title: '合成章节测试',
+      author: '测试',
+      description: '',
+      tags: [],
+      chapterCount: 0,
+      infoPageUrl: 'https://example.com/n1000syn',
+    });
+
+    // 创建傀儡章节
+    db.ensureSyntheticChapter('syosetu', 'n1000syn', '__novel_meta__', '元数据', 0);
+    db.ensureSyntheticChapter('syosetu', 'n1000syn', '__volume_1__', '第一卷', 1);
+
+    // 确认可以读取
+    const metaChapter = db.getChapter('syosetu', 'n1000syn', '__novel_meta__');
+    assert.ok(metaChapter);
+    assert.equal(metaChapter!.title, '元数据');
+    assert.equal(metaChapter!.status, 'indexed');
+
+    const volChapter = db.getChapter('syosetu', 'n1000syn', '__volume_1__');
+    assert.ok(volChapter);
+    assert.equal(volChapter!.title, '第一卷');
+
+    // 确认可以正常写入翻译（不会违反 FK 约束）
+    const saved = db.saveChapterTranslation({
+      sourceId: 'syosetu', novelId: 'n1000syn', chapterId: '__novel_meta__',
+      sourceLang: 'ja', targetLang: 'zh-CN',
+      translatedTitle: '测试元数据',
+      status: 'completed', sourceContentHash: 'abc', glossaryVersion: 1, profileVersion: 1,
+    });
+    assert.equal(saved.status, 'completed');
+    assert.equal(saved.translatedTitle, '测试元数据');
+
+    // 幂等性：再次调用不报错
+    db.ensureSyntheticChapter('syosetu', 'n1000syn', '__novel_meta__', '元数据', 0);
+    assert.ok(db.getChapter('syosetu', 'n1000syn', '__novel_meta__'));
+
+    // 清理后傀儡章节仍然保留
+    db.clearTranslationData('syosetu', 'n1000syn');
+    assert.ok(db.getChapter('syosetu', 'n1000syn', '__novel_meta__'));
+  } finally {
+    db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

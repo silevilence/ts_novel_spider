@@ -512,11 +512,38 @@ export class ControlCenterService {
       return null;
     }
 
-    // 如果指定了翻译模式，从 SQLite 加载段落翻译数据
+    // 如果指定了翻译模式，从 SQLite 加载翻译数据
     if (translationMode && translationMode !== 'original' && sourceLang && targetLang) {
       const translatedParagraphsByChapterId = new Map<string, TranslatedParagraph[]>();
+      const translatedVolumeTitles = new Map<string, string>();
+      const translatedChapterTitles = new Map<string, string>();
 
+      // 1. 加载小说元数据翻译（__novel_meta__ 单元）
+      const metaTranslation = this.#repository.getChapterTranslation(sourceId, novelId, '__novel_meta__', sourceLang, targetLang);
+      let translatedNovelTitle: string | null = null;
+      let translatedDescriptionParagraphs: TranslatedParagraph[] | undefined;
+
+      if (metaTranslation) {
+        translatedNovelTitle = metaTranslation.translatedTitle;
+        const metaParagraphs = this.#repository.listChapterTranslationParagraphs(sourceId, novelId, '__novel_meta__');
+        if (metaParagraphs.length > 0) {
+          translatedDescriptionParagraphs = metaParagraphs.map((p) => ({
+            paragraphIndex: p.paragraphIndex,
+            sourceText: p.sourceText,
+            translatedText: p.translatedText,
+            confidence: p.confidence,
+          }));
+        }
+      }
+
+      // 2. 加载各单元翻译
       for (const chapter of snapshot.chapters) {
+        const translation = this.#repository.getChapterTranslation(sourceId, novelId, chapter.id, sourceLang, targetLang);
+        if (translation && translation.translatedTitle) {
+          translatedChapterTitles.set(chapter.id, translation.translatedTitle);
+        }
+
+        // 正文段落（仅真实章节有）
         const paragraphs = this.#repository.listChapterTranslationParagraphs(sourceId, novelId, chapter.id);
         if (paragraphs.length > 0) {
           translatedParagraphsByChapterId.set(chapter.id, paragraphs.map((p) => ({
@@ -528,9 +555,28 @@ export class ControlCenterService {
         }
       }
 
+      // 3. 加载卷标题翻译（__volume_{N}__ 单元）
+      let volumeIndex = 0;
+      let lastVolumeRaw = '';
+      for (const chapter of snapshot.chapters) {
+        const volumeRaw = chapter.volumeTitle?.trim() || '';
+        if (volumeRaw && volumeRaw !== lastVolumeRaw) {
+          volumeIndex++;
+          lastVolumeRaw = volumeRaw;
+          const volTranslation = this.#repository.getChapterTranslation(sourceId, novelId, `__volume_${volumeIndex}__`, sourceLang, targetLang);
+          if (volTranslation && volTranslation.translatedTitle) {
+            translatedVolumeTitles.set(volumeRaw, volTranslation.translatedTitle);
+          }
+        }
+      }
+
       return this.#exportEngine.generate(snapshot, format, {
         mode: translationMode,
         translatedParagraphsByChapterId,
+        translatedNovelTitle,
+        translatedDescriptionParagraphs,
+        translatedVolumeTitles,
+        translatedChapterTitles,
       });
     }
 

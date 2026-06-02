@@ -72,12 +72,17 @@ export interface TranslationChapterInput {
   profileVersion: number;
 }
 
+/** 翻译单元类型 */
+export type TranslationUnitKind = 'meta' | 'volume' | 'chapter';
+
 /** LangGraph 流水线状态 */
 export interface TranslationPipelineState {
   // 输入
   sourceId: string;
   novelId: string;
   chapterId: string;
+  /** 翻译单元类型：meta(小说元数据) / volume(卷标题) / chapter(真实章节) */
+  unitKind: TranslationUnitKind;
   chapterIndex: number;
   chapterTitle: string;
   sourceContent: string;
