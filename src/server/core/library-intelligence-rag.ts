@@ -286,7 +286,7 @@ const MAX_SCHEMA_EXTRACTION_ATTEMPTS = 2;
 const MAX_PROMPTED_JSON_ATTEMPTS = 3;
 const EXTRACTION_RETRY_BASE_DELAY_MS = 250;
 const EXTRACTION_CONCURRENCY = 2;
-const MODEL_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 1;
+const MODEL_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
 const MODEL_CIRCUIT_BREAKER_BASE_COOLDOWN_MS = 4000;
 const MODEL_CIRCUIT_BREAKER_MAX_COOLDOWN_MS = 20000;
 const MODEL_THROUGHPUT_WINDOW_SIZE = 12;
@@ -1342,17 +1342,32 @@ async function extractChunkWithLlm(
   const prompt = buildChunkExtractionPrompt(snapshot, chunk);
   const heuristicFallback = buildFallbackChunkExtractionObject(extractChunkHeuristically(snapshot, chunk));
 
+  // First attempt: structured output via JSON Schema (generateObject).
+  // If it fails (e.g. the model doesn't support response_format), fall back
+  // to prompted JSON via generateText, which works with any chat model.
+  let schemaError: unknown = null;
+
   try {
     const object = await extractChunkObjectViaSchema(prompt, route);
     return normalizeChunkExtractionObject(object);
   } catch (error) {
-    if (!shouldRetryChunkExtractionAsPromptedJson(error) && !shouldFallbackChunkExtractionToPromptedJson(error)) {
-      throw error;
-    }
+    schemaError = error;
   }
 
-  const object = await extractChunkObjectViaPromptedJson(prompt, route, heuristicFallback);
-  return normalizeChunkExtractionObject(object);
+  try {
+    const object = await extractChunkObjectViaPromptedJson(prompt, route, heuristicFallback);
+    return normalizeChunkExtractionObject(object);
+  } catch (error) {
+    // Both methods failed. Combine messages so the user sees why schema
+    // extraction failed (often a structured-output compatibility issue) in
+    // addition to the prompted-json error.
+    const schemaMsg = describeErrorMessage(schemaError);
+    const promptedMsg = describeErrorMessage(error);
+    if (schemaMsg.length > 0 && promptedMsg !== schemaMsg) {
+      throw new Error(`${promptedMsg}（结构化提取失败: ${schemaMsg}）`);
+    }
+    throw error;
+  }
 }
 
 async function extractChunkObjectViaSchema(
@@ -1373,9 +1388,14 @@ async function extractChunkObjectViaSchema(
     } catch (error) {
       lastError = error;
       if (shouldRetryChunkExtractionAsPromptedJson(error)) {
+        // Model explicitly refused structured output → fall back to prompted JSON
         throw error;
       }
 
+      // Models that don't support response_format at all often return 400 or
+      // similar errors without the keywords checked above. The caller
+      // (extractChunkWithLlm) will catch any error and fall back to prompted
+      // JSON, so only retry transient failures here.
       if (!shouldRetryChunkExtraction(error) || attempt >= MAX_SCHEMA_EXTRACTION_ATTEMPTS) {
         throw error;
       }
@@ -1396,7 +1416,7 @@ function normalizeChunkExtractionObject(
     aliases: entity.aliases.map((alias) => alias.trim()).filter(Boolean),
     summary: entity.summary.trim(),
     evidence: entity.evidence.trim(),
-  })).filter((entity) => entity.name.length > 0);
+  })).filter((entity) => entity.name.length > 0 && !isEntityNameLikelySentence(entity.name));
 
   const relations = object.relations.map((relation) => ({
     from: relation.from.trim(),
@@ -1423,9 +1443,10 @@ function buildChunkExtractionPrompt(snapshot: StoredNovelSnapshot, chunk: ChunkP
     '要求：',
     '1. entities 只保留本片段明确出现或明确指代的人物、地点、组织、概念。',
     '2. entities 的 name 必须使用原文（作品原文中的名称），不得翻译为其他语言。',
-    '3. relations 只保留有明确语义的关系，禁止只因为同段出现就建立关系。',
-    '4. events 用一句话概括片段中的关键事件。',
-    '5. summary 用一句话总结片段；keywordHints 保留检索用关键词。',
+    '3. entities 的 name 必须是专有名词（人名、地名、组织名、特定物品/概念名），禁止将完整句子、动词短语、动作描写作为实体。',
+    '4. relations 只保留有明确语义的关系，禁止只因为同段出现就建立关系。',
+    '5. events 用一句话概括片段中的关键事件。',
+    '6. summary 用一句话总结片段；keywordHints 保留检索用关键词。',
     `作品：${snapshot.metadata.title}`,
     `作者：${snapshot.metadata.author || '未知作者'}`,
     `章节：${chunk.chapterTitle}`,
@@ -2294,6 +2315,25 @@ function isMergeableStandaloneEntityVariant(value: string): boolean {
   return !isDescriptorLikeEntityVariant(canonical);
 }
 
+/**
+ * 检测实体名称是否看起来像完整句子而非专有名词。
+ * 日语人名/地名中助词常见，但句子必然含有动词谓语结尾。
+ */
+function isEntityNameLikelySentence(name: string): boolean {
+  const hiraganaVerbEndings = /(した|している|してる|されて|された|されてる|ない|なかった|れる|られる|せる|させる|ます|ません|ました|ませんでした|ましょう|だろう|だろうか|だった|なので|なのだ|なのである|なのであった|のである|のだ|のです|よう|まい)$/;
+  if (hiraganaVerbEndings.test(name)) {
+    return true;
+  }
+
+  // 长度 >= 6 且以单个平假名「る」结尾 → 大概率是动词终止形
+  // 较短的名称（<=5）可能是简写，谨慎放过
+  if (name.length >= 6 && /[\u3041-\u3093]る$/.test(name)) {
+    return true;
+  }
+
+  return false;
+}
+
 function isDescriptorLikeEntityVariant(value: string): boolean {
   return new Set([
     'protagonist',
@@ -2357,6 +2397,14 @@ function finalizeEntities(
   let rank = 0;
   for (const entity of [...entityMap.values()]
     .filter((entity) => entity.displayName.length > 0)
+    .filter((entity) => {
+      // 聚合阶段过滤：仅出现 1 个片段、提及 1 次、名称 >= 6 字符且像句子的孤例
+      if (entity.chapterIds.size === 1 && entity.mentionCount <= 1 && entity.displayName.length >= 6 && isEntityNameLikelySentence(entity.displayName)) {
+        return false;
+      }
+
+      return true;
+    })
     .sort((left, right) => {
       const chapterDelta = right.chapterIds.size - left.chapterIds.size;
       if (chapterDelta !== 0) {
