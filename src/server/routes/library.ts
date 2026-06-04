@@ -28,6 +28,7 @@ import type {
   LibraryReadingProgress,
 } from '../core/offline-library';
 import type { ReaderTypographyResolved } from '../core/system-preferences';
+import type { StoredTranslationTermRow } from '../core/novel-repository';
 
 export interface LibraryNovelSummaryPayload {
   novels: LibraryNovelSummary[];
@@ -90,6 +91,14 @@ export interface LibraryAssistantPayload {
 
 export interface LibraryReaderTypographyPayload {
   typography: ReaderTypographyResolved;
+}
+
+export interface LibraryTranslationTermsPayload {
+  terms: StoredTranslationTermRow[];
+}
+
+export interface LibraryTranslationTermPayload {
+  term: StoredTranslationTermRow;
 }
 
 export interface LibraryRouterOptions {
@@ -763,6 +772,12 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     }
 
     response.status(204).end();
+  });
+
+  router.post('/novels/:sourceId/:novelId/translate/terms/import-from-graph', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const result = service.importGraphEntitiesToTerms(sourceId, novelId);
+    response.json(result);
   });
 
   router.post('/novels/:sourceId/:novelId/chapters/:chapterId/media/:mediaId/cache', async (request, response) => {

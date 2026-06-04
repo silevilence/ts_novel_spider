@@ -24,6 +24,8 @@ import type {
   LibraryNovelSummaryPayload,
   LibraryReaderTypographyPayload,
   LibraryReadingProgressPayload,
+  LibraryTranslationTermPayload,
+  LibraryTranslationTermsPayload,
 } from '../../server/routes/library';
 
 export type LibraryExportFormat = 'markdown' | 'txt' | 'epub';
@@ -768,6 +770,92 @@ export function buildLibraryExportDownloadUrl(
   if (targetLang) params.set('targetLang', targetLang);
   const qs = params.toString();
   return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/exports/${encodeURIComponent(format)}/download${qs ? `?${qs}` : ''}`;
+}
+
+// ── 术语库 ──
+
+export async function fetchLibraryTranslationTerms(
+  sourceId: string,
+  novelId: string,
+): Promise<LibraryTranslationTermsPayload> {
+  return requestJson<LibraryTranslationTermsPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/terms`,
+  );
+}
+
+export interface CreateTranslationTermInput {
+  sourceTerm: string;
+  targetTerm?: string | null;
+  entityType?: string | null;
+  note?: string | null;
+  priority?: number;
+}
+
+export async function createLibraryTranslationTerm(
+  sourceId: string,
+  novelId: string,
+  input: CreateTranslationTermInput,
+): Promise<LibraryTranslationTermPayload> {
+  return requestJson<LibraryTranslationTermPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/terms`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export interface UpdateTranslationTermInput {
+  targetTerm?: string | null;
+  entityType?: string | null;
+  note?: string | null;
+  priority?: number;
+}
+
+export async function updateLibraryTranslationTerm(
+  sourceId: string,
+  novelId: string,
+  termId: string,
+  updates: UpdateTranslationTermInput,
+): Promise<LibraryTranslationTermPayload> {
+  return requestJson<LibraryTranslationTermPayload>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/terms/${encodeURIComponent(termId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    },
+  );
+}
+
+export async function deleteLibraryTranslationTerm(
+  sourceId: string,
+  novelId: string,
+  termId: string,
+): Promise<void> {
+  await requestVoid(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/terms/${encodeURIComponent(termId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export interface ImportGraphEntitiesToTermsResult {
+  imported: number;
+  updated: number;
+  skipped: number;
+}
+
+export async function importGraphEntitiesToTerms(
+  sourceId: string,
+  novelId: string,
+): Promise<ImportGraphEntitiesToTermsResult> {
+  return requestJson<ImportGraphEntitiesToTermsResult>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/terms/import-from-graph`,
+    { method: 'POST' },
+  );
 }
 
 // ── 翻译 ──

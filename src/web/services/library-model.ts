@@ -9,13 +9,17 @@ import {
   cacheLibraryMedia,
   createLibraryAlias,
   createLibraryBookmark,
+  createLibraryTranslationTerm,
   createControlTask,
   deleteLibraryAlias,
   deleteLibraryBookmark,
+  deleteLibraryTranslationTerm,
   fetchLibraryChapter,
   fetchLibraryNovel,
   fetchLibraryNovels,
   fetchLibraryReaderTypography,
+  fetchLibraryTranslationTerms,
+  importGraphEntitiesToTerms,
   fetchNovelPreview,
   fetchTask,
   fetchTranslationPreferences,
@@ -26,6 +30,7 @@ import {
   updateLibraryAlias,
   updateLibraryBookmark,
   updateLibraryReaderTypography,
+  updateLibraryTranslationTerm,
   deleteLibraryReaderTypography,
   updateLibraryReadingProgress,
   type TranslationExportMode,
@@ -39,6 +44,7 @@ import type {
   LibraryNovelSummaryPayload,
   LibraryReaderTypographyPayload,
 } from '../../server/routes/library';
+import type { StoredTranslationTermRow } from '../../server/core/novel-repository';
 import type { NoticeInput } from './control-center-model';
 
 export interface TranslationBuildState {
@@ -123,6 +129,8 @@ export interface LibraryModel {
   translationLanguages: { sourceLang: string; targetLang: string } | null;
   /** 翻译：当前书籍的构建状态 */
   translationBuild: TranslationBuildState | null;
+  /** 翻译：当前书籍的术语列表 */
+  translationTerms: StoredTranslationTermRow[];
   /** 翻译构建是否忙碌 */
   translationBusy: boolean;
   /** 启动翻译任务 */
@@ -131,6 +139,18 @@ export interface LibraryModel {
   cancelTranslation: () => Promise<void>;
   /** 从 API 同步翻译构建状态（供轮询使用） */
   syncTranslationBuild: () => Promise<TranslationBuildPayload | null>;
+  /** 拉取术语列表 */
+  fetchTranslationTerms: () => Promise<void>;
+  /** 创建术语条目 */
+  addTranslationTerm: (input: { sourceTerm: string; targetTerm?: string | null; entityType?: string | null; note?: string | null; priority?: number }) => Promise<void>;
+  /** 更新术语条目 */
+  updateTranslationTerm: (termId: string, updates: { targetTerm?: string | null; entityType?: string | null; note?: string | null; priority?: number }) => Promise<void>;
+  /** 删除术语条目 */
+  removeTranslationTerm: (termId: string) => Promise<void>;
+  /** 批量删除术语条目 */
+  removeTranslationTerms: (termIds: string[]) => Promise<void>;
+  /** 从知识图谱实体导入术语 */
+  importTermsFromGraph: () => Promise<{ imported: number; updated: number; skipped: number }>;
 }
 
 interface UseLibraryModelOptions {
@@ -162,6 +182,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [translationViewMode, setTranslationViewMode] = useState<TranslationExportMode>('original');
   const [translationLanguages, setTranslationLanguages] = useState<LibraryModel['translationLanguages']>(null);
   const [translationBuild, setTranslationBuild] = useState<TranslationBuildState | null>(null);
+  const [translationTerms, setTranslationTerms] = useState<StoredTranslationTermRow[]>([]);
   const [translationBusy, setTranslationBusy] = useState(false);
   const [mediaBatchBusy, setMediaBatchBusy] = useState(false);
   const [mediaBatchProgress, setMediaBatchProgress] = useState<LibraryModel['mediaBatchProgress']>(null);
@@ -262,6 +283,9 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
           setChapter(chapterPayload);
           setCurrentTask(nextTask);
         });
+
+        // 加载术语列表
+        void handleFetchTranslationTerms();
         return;
       }
 
@@ -281,6 +305,9 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         setChapter(null);
         setCurrentTask(nextTask);
       });
+
+      // 加载术语列表
+      void handleFetchTranslationTerms();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Library request failed.';
       setErrorMessage(message);
@@ -987,6 +1014,140 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     }
   }
 
+  async function handleFetchTranslationTerms() {
+    if (!location.sourceId || !location.novelId) return;
+    try {
+      const payload = await fetchLibraryTranslationTerms(location.sourceId, location.novelId);
+      setTranslationTerms(payload.terms);
+    } catch {
+      // Silently fail — terms are not critical for navigation
+    }
+  }
+
+  async function handleAddTranslationTerm(input: {
+    sourceTerm: string;
+    targetTerm?: string | null;
+    entityType?: string | null;
+    note?: string | null;
+    priority?: number;
+  }) {
+    if (!location.sourceId || !location.novelId) return;
+    setMutationBusyKey('term-create');
+    try {
+      await createLibraryTranslationTerm(location.sourceId, location.novelId, input);
+      publishNotice({
+        tone: 'success',
+        title: '术语已保存',
+        message: '该术语会在下次翻译时自动注入翻译流程。',
+      });
+      await handleFetchTranslationTerms();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Term creation failed.';
+      publishNotice({ tone: 'error', title: '术语保存失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function handleUpdateTranslationTerm(
+    termId: string,
+    updates: {
+      targetTerm?: string | null;
+      entityType?: string | null;
+      note?: string | null;
+      priority?: number;
+    },
+  ) {
+    if (!location.sourceId || !location.novelId) return;
+    setMutationBusyKey(`term:${termId}`);
+    try {
+      await updateLibraryTranslationTerm(location.sourceId, location.novelId, termId, updates);
+      publishNotice({
+        tone: 'success',
+        title: '术语已更新',
+        message: '术语内容已生效。',
+      });
+      await handleFetchTranslationTerms();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Term update failed.';
+      publishNotice({ tone: 'error', title: '术语更新失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function handleRemoveTranslationTerm(termId: string) {
+    if (!location.sourceId || !location.novelId) return;
+    setMutationBusyKey(`term:${termId}`);
+    try {
+      await deleteLibraryTranslationTerm(location.sourceId, location.novelId, termId);
+      publishNotice({
+        tone: 'success',
+        title: '术语已删除',
+        message: '术语已从术语库移除。',
+      });
+      await handleFetchTranslationTerms();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Term deletion failed.';
+      publishNotice({ tone: 'error', title: '术语删除失败', message });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function handleRemoveTranslationTerms(termIds: string[]) {
+    if (!location.sourceId || !location.novelId || termIds.length === 0) return;
+    setMutationBusyKey('term-batch-delete');
+    let successCount = 0;
+    let failCount = 0;
+    try {
+      await Promise.all(
+        termIds.map((id) =>
+          deleteLibraryTranslationTerm(location.sourceId!, location.novelId!, id)
+            .then(() => { successCount++; })
+            .catch(() => { failCount++; }),
+        ),
+      );
+      if (successCount > 0) {
+        publishNotice({
+          tone: 'success',
+          title: '术语已删除',
+          message: `成功删除 ${successCount} 条${failCount > 0 ? `，${failCount} 条失败` : ''}。`,
+        });
+      }
+      await handleFetchTranslationTerms();
+    } catch {
+      publishNotice({ tone: 'error', title: '批量删除失败', message: '操作未能完成。' });
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
+  async function handleImportTermsFromGraph(): Promise<{ imported: number; updated: number; skipped: number }> {
+    if (!location.sourceId || !location.novelId) return { imported: 0, updated: 0, skipped: 0 };
+    setMutationBusyKey('term-import');
+    try {
+      const result = await importGraphEntitiesToTerms(location.sourceId, location.novelId);
+      const parts: string[] = [];
+      if (result.imported > 0) parts.push(`新增 ${result.imported} 条`);
+      if (result.updated > 0) parts.push(`补充类型 ${result.updated} 条`);
+      if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 条`);
+      publishNotice({
+        tone: 'success',
+        title: '术语已导入',
+        message: parts.join('，') || '无新增内容。',
+      });
+      await handleFetchTranslationTerms();
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Term import failed.';
+      publishNotice({ tone: 'error', title: '术语导入失败', message });
+      return { imported: 0, updated: 0, skipped: 0 };
+    } finally {
+      setMutationBusyKey(null);
+    }
+  }
+
   return {
     location,
     libraryOverview,
@@ -1028,10 +1189,17 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     setTranslationViewMode,
     translationLanguages,
     translationBuild,
+    translationTerms,
     translationBusy,
     startTranslation: handleStartTranslation,
     cancelTranslation: handleCancelTranslation,
     syncTranslationBuild: handleSyncTranslationBuild,
+    fetchTranslationTerms: handleFetchTranslationTerms,
+    addTranslationTerm: handleAddTranslationTerm,
+    updateTranslationTerm: handleUpdateTranslationTerm,
+    removeTranslationTerm: handleRemoveTranslationTerm,
+    removeTranslationTerms: handleRemoveTranslationTerms,
+    importTermsFromGraph: handleImportTermsFromGraph,
   };
 }
 

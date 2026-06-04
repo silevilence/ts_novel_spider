@@ -695,6 +695,17 @@ export class ControlCenterService {
     return this.#translation.listMissingTerms(sourceId, novelId);
   }
 
+  /** 从知识图谱实体导入术语（仅原文名称，不修改不删除已有条目） */
+  importGraphEntitiesToTerms(sourceId: string, novelId: string): { imported: number; updated: number; skipped: number } {
+    const entities = this.#repository.listKnowledgeGraphEntities(sourceId, novelId);
+    const result = this.#translation.batchImportTerms(
+      sourceId,
+      novelId,
+      entities.map((e) => ({ sourceTerm: e.name, entityType: e.entityType })),
+    );
+    return { imported: result.created, updated: result.updated, skipped: result.skipped };
+  }
+
   startLibraryTranslation(sourceId: string, novelId: string, modelOverride?: string, fromScratch?: boolean): TranslationBuild {
     return this.#translation.startTranslation(sourceId, novelId, modelOverride, fromScratch);
   }

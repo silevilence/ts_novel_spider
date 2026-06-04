@@ -2337,6 +2337,9 @@ export class SqliteNovelRepository {
         if (!found.targetTerm && input.targetTerm) {
           this.updateTranslationTerm(sourceId, novelId, found.id, { targetTerm: input.targetTerm });
           updated++;
+        } else if (!found.entityType && input.entityType) {
+          this.updateTranslationTerm(sourceId, novelId, found.id, { entityType: input.entityType });
+          updated++;
         } else {
           skipped++;
         }

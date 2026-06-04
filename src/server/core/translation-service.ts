@@ -323,6 +323,19 @@ export class TranslationService {
     return this.#repository.listMissingTranslationTerms(sourceId, novelId);
   }
 
+  /** 批量导入术语（仅源词，不修改不删除已有条目） */
+  batchImportTerms(sourceId: string, novelId: string, terms: Array<{ sourceTerm: string; entityType?: string | null }>): { created: number; updated: number; skipped: number } {
+    return this.#repository.upsertTranslationTerms(
+      sourceId,
+      novelId,
+      terms.map((t) => {
+        const term: { sourceTerm: string; entityType?: string | null } = { sourceTerm: t.sourceTerm };
+        if (t.entityType !== undefined) term.entityType = t.entityType;
+        return term;
+      }),
+    );
+  }
+
   /** 获取构建日志 */
   getBuildLogs(sourceId: string, novelId: string, limit = 200): StoredTranslationBuildLogRow[] {
     return this.#repository.listTranslationBuildLogs(sourceId, novelId, limit);

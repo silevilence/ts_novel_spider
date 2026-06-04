@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Anchor, Badge, Button, Group, Paper, Progress, ScrollArea, Select, Stack, Text, Title } from '@mantine/core';
 import type { LibraryModel, TranslationBuildState } from '../services/library-model';
 import { fetchLlmProvidersPreferences, fetchTranslationPreferences, buildLibraryExportDownloadUrl, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
+import { TranslationGlossaryModal } from './translation-glossary-modal';
 
 interface TranslationLaunchPanelProps {
   model: LibraryModel;
@@ -11,6 +12,7 @@ interface TranslationLaunchPanelProps {
 export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPanelProps) {
   const [selectedModel, setSelectedModel] = useState('');
   const [availableModels, setAvailableModels] = useState<Array<{ key: string; label: string }>>([]);
+  const [glossaryOpened, setGlossaryOpened] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -154,9 +156,16 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
 
         {/* 术语管理入口 */}
         <Button variant="subtle" size="compact-sm" style={{ alignSelf: 'flex-start' }}
-          onClick={() => onNotify({ tone: 'info', title: '术语表', message: '术语管理功能即将上线。当前可先配置全局语言对和模型。' })}>
+          onClick={() => setGlossaryOpened(true)}>
           管理术语表
         </Button>
+
+        <TranslationGlossaryModal
+          opened={glossaryOpened}
+          onClose={() => setGlossaryOpened(false)}
+          model={model}
+          onNotify={onNotify}
+        />
 
         {/* 翻译状态摘要 */}
         {build ? (
