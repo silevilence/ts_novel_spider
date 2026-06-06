@@ -183,10 +183,10 @@
   - `finalize-node.ts`：落盘译文至 SQLite
   - `history-manager.ts`：管理翻译上下文窗口（按 Token 数截断历史记录）
   - `llm-logger.ts`：记录 LLM 交互日志，便于调试与审计
-- 翻译状态类型定义在 `src/server/core/translation-state.ts`，涵盖段落草稿（`ParagraphDraft`）、章节翻译进度、术语条目（`TranslationTermEntry`）。
-- 每本小说拥有独立的术语库，支持 CRUD 操作（`GET/POST/PUT/DELETE .../translate/terms`）。
+- 翻译状态类型定义在 `src/server/core/translation-state.ts`，涵盖段落草稿（`ParagraphDraft`）、章节翻译进度、术语条目（`TranslationTermEntry`），以及翻译单元类型（`TranslationUnitKind`：`'meta'` / `'volume'` / `'chapter'`）。
+- 每本小说拥有独立的术语库，支持 CRUD 操作（`GET/POST/PUT/DELETE .../translate/terms`），也支持从知识图谱实体导入术语（`POST .../translate/terms/import-from-graph`）。
 - 翻译任务支持 `fromScratch` 参数从零重译，可覆盖指定模型（`modelOverride`）。
-- 进度百分比计算：`TranslationService.startLibraryTranslation` 启动时传递 `totalChapterCount`（`downloadedChapters.length`）给 `processChapters`，运行中的所有 `progressPercent` 计算必须以 `totalChapterCount` 为分母，**不得**使用 `chapterIds.length`（剩余章节数）。恢复翻译时历史已译章节数计入分子，分母永远是总章节数，否则百分比会超过 100%。
+- 翻译调度使用 `processUnits` 单元式迭代，按顺序依次处理：小说元数据（书名+简介）→ 各卷标题 → 各真实章节。进度百分比计算：启动时传递 `totalChapterCount`（`downloadedChapters.length`）作为分母，运行中所有 `progressPercent` 计算必须以 `totalChapterCount` 为分母，**不得**使用 `chapterIds.length`（剩余章节数）。恢复翻译时历史已译章节数计入分子，分母永远是总章节数。
 - 导出引擎（`export-engine.ts`）支持三种翻译导出模式：`original`（原文）、`translated`（纯译文）、`bilingual`（双语对照），通过 `?mode=` 查询参数控制。
 - 翻译相关测试集中在 `src/server/core/translation.test.ts`，应使用 SQLite 内存数据库，**不得**依赖真实 LLM 调用。
 
@@ -243,6 +243,7 @@
 | POST | `/api/library/novels/:sourceId/:novelId/translate/terms` | 创建术语条目 |
 | PUT | `/api/library/novels/:sourceId/:novelId/translate/terms/:termId` | 更新术语条目 |
 | DELETE | `/api/library/novels/:sourceId/:novelId/translate/terms/:termId` | 删除术语条目 |
+| POST | `/api/library/novels/:sourceId/:novelId/translate/terms/import-from-graph` | 从知识图谱实体导入术语 |
 
 ## 6. 编码规范 (Coding Standards)
 
@@ -277,7 +278,7 @@
 - **模型网关**：新增 AI 功能需通过 `resolveCapabilityRoute` / `resolveExtractionRoutes` 获取模型路由，不得硬编码模型选择。网关配置变更需同步更新 `system-preferences.ts` 中的 `LlmModelGatewayConfig` 类型与持久化逻辑。
 - **系统偏好**：新增偏好字段需在 `SystemPreferencesService` 中定义接口与持久化逻辑，并在前端 `SystemPreferences` 组件中提供对应 UI。偏好迁移策略（新增字段默认值）需在 `system-preferences.ts` 的 `loadPersistedPreferences` 中显式处理。
 - **书库搜索**：搜索语法变更需同步更新 `library-search.ts` 中的分词器与解析器，并补充测试覆盖。
-- **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义（使用 `Annotation.Root()` API）以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
+- **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义（使用 `Annotation.Root()` API）以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。从知识图谱实体导入术语（`importGraphEntitiesToTerms`）需要校验目标小说存在且术语表已就绪。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
 - **移动端布局**：采集页底部操作浮窗（`control-console.tsx`）的移动端版本必须单独渲染，使用紧凑布局（`p="xs"`、`compact-xs` 按钮、`wrap="nowrap"`），不得复用桌面端大卡片。移动端浮窗只需保留「解析目录」和「下发采集」两个按钮，「全局设置」按钮仅在桌面端出现。浮窗位置使用常量公式：`MOBILE_FOOTER_HEIGHT + MOBILE_AFFIX_GAP`，与 AppShell 的 `footer={{ height: isMobile ? 56 : 0 }}` 对齐。
 - **键盘检测**：`control-console.tsx` 中的移动端键盘检测必须使用基准高度差值模型（记录 `visualViewport.height` 初始值，差值超过 140px 则判定键盘打开），并配合 `focusin`/`focusout` 事件兜底（输入框获焦点即判定键盘打开）。不得使用比例判断（如 `viewport.height < window.innerHeight * 0.78`），因为安卓浏览器中两个值可能同时变化导致检测失效。检测阈值应提取为模块级常量。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
