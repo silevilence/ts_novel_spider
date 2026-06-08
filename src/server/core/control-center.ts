@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { KakuyomuSpiderAdapter } from '../adapters/spider/kakuyomu-spider-adapter';
 import { Syosetu18SpiderAdapter } from '../adapters/spider/syosetu-18-spider-adapter';
 import { SyosetuSpiderAdapter } from '../adapters/spider/syosetu-spider-adapter';
 import { SpiderLogDispatcher, type SpiderLogAdapter, type SpiderLogEvent } from './logging';
@@ -1011,6 +1012,15 @@ export function createDefaultSpiderRegistry(networkProxy = new NetworkProxyServi
         defaultNovelId: 'n1557gm',
       },
       spider: new Syosetu18SpiderAdapter({ fetchHtml }),
+    },
+    {
+      descriptor: {
+        sourceId: 'kakuyomu',
+        label: 'カクヨム',
+        description: 'KADOKAWA 旗下的 Web 小说平台。请输入作品 ID（19 位数字），例如 822139839856110454。',
+        defaultNovelId: '822139839856110454',
+      },
+      spider: new KakuyomuSpiderAdapter({ fetchHtml }),
     },
   ];
 }

@@ -209,11 +209,11 @@ test('createDefaultSpiderRegistry exposes only user-facing real sources', () => 
 
     assert.deepEqual(
       registry.map((entry) => entry.descriptor.sourceId),
-      ['syosetu', 'syosetu18'],
+      ['syosetu', 'syosetu18', 'kakuyomu'],
     );
     assert.deepEqual(
       registry.map((entry) => entry.descriptor.label),
-      ['小説家になろう（全年龄）', 'ノクターンノベルズ（成人向）'],
+      ['小説家になろう（全年龄）', 'ノクターンノベルズ（成人向）', 'カクヨム'],
     );
   } finally {
     networkProxy.close();
