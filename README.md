@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **多站点抓取**：内置 [小説家になろう](https://ncode.syosetu.com)（Syosetu）与 [ノクターンノベルズ](https://novel18.syosetu.com)（Syosetu18）适配器
+- **多站点抓取**：内置 [小説家になろう](https://ncode.syosetu.com)（Syosetu）、[ノクターンノベルズ](https://novel18.syosetu.com)（Syosetu18）与 [カクヨム](https://kakuyomu.jp)（Kakuyomu）适配器
 - **增量同步**：自动对比本地缓存与远端目录，高亮标识新增章节
 - **批量下载**：支持并发抓取，单章失败不阻塞整体任务，失败章节可单点重试
 - **离线阅读**：内置沉浸式阅读器，支持字体、字号、行高、段间距个性化排版，图片资源可本地化缓存
@@ -95,8 +95,8 @@ docker compose -f docker-compose.dev.yml up
 
 ## 使用说明
 
-1. 打开 Web 界面，在**开始抓取**页面选择目标站点（Syosetu / Syosetu18）
-2. 输入小说 ID（如 `n3130lr`），点击**预览**加载元数据与目录
+1. 打开 Web 界面，在**开始抓取**页面选择目标站点（Syosetu / Syosetu18 / Kakuyomu）
+2. 输入小说 ID（Syosetu 如 `n3130lr`，Kakuyomu 如 `822139839856110454`），点击**预览**加载元数据与目录
 3. 在章节目录中勾选需要下载的章节，点击**开始抓取**
 4. 切换至**任务进度**页面查看实时进度与日志
 5. 下载完成后，前往**本地书库**页面离线阅读、导出文件或发起 AI 翻译
@@ -112,7 +112,7 @@ docker compose -f docker-compose.dev.yml up
 │   ├── server/                  # 后端与爬虫核心逻辑
 │   │   ├── adapters/
 │   │   │   ├── log/             # 日志适配器
-│   │   │   └── spider/          # 站点爬虫适配器（Syosetu / Syosetu18）
+│   │   │   └── spider/          # 站点爬虫适配器（Syosetu / Syosetu18 / Kakuyomu）
 │   │   ├── core/
 │   │   │   ├── translation/     # 翻译流水线子节点（分段/翻译/组装/审校/定稿）
 │   │   │   └── ...              # 调度器、数据库、导出引擎、网络代理、系统偏好、知识图谱

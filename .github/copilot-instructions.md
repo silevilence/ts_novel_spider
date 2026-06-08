@@ -33,61 +33,18 @@
 │   │   ├── adapters/
 │   │   │   ├── log/               # 日志适配器（InMemoryLogAdapter 等）
 │   │   │   └── spider/            # 站点爬虫适配器
+│   │   │       ├── kakuyomu-spider-adapter.ts     # Kakuyomu 具体实现（双轨解析）
+│   │   │       ├── kakuyomu-spider-adapter.test.ts # Kakuyomu 适配器测试
 │   │   │       ├── syosetu-18-spider-adapter.ts   # Syosetu18 具体实现
 │   │   │       ├── syosetu-spider-adapter.ts      # Syosetu（继承 Syosetu18）
 │   │   │       ├── syosetu-spider-adapter.test.ts # 爬虫适配器测试
 │   │   │       └── mock-html-spider-adapter.ts    # 测试用 Mock
-│   │   ├── core/
-│   │   │   ├── spider.ts              # SpiderAdapter 接口 + BaseHtmlSpiderAdapter 抽象类
-│   │   │   ├── spider-runner.ts       # 批量抓取调度器（含并发、重试、异常隔离）
-│   │   │   ├── control-center.ts      # ControlCenterService（任务生命周期、Spider 注册表）
-│   │   │   ├── novel-repository.ts    # SQLite ORM（SqliteNovelRepository，含图谱/偏好/书签/翻译等表）
-│   │   │   ├── offline-library.ts     # 离线书库服务（章节详情、媒体资产、别名、书签、进度）
-│   │   │   ├── export-engine.ts       # 本地导出引擎（Markdown / EPUB / TXT，含翻译模式）
-│   │   │   ├── network-proxy.ts       # 网络代理服务（持久化至 .data/network-proxy.json）
-│   │   │   ├── logging.ts             # SpiderLogDispatcher + SpiderLogAdapter 接口
-│   │   │   ├── system-preferences.ts  # 系统偏好服务（LLM 配置、模型网关、Neo4j、阅读排版、翻译偏好）
-│   │   │   ├── library-intelligence.ts # 知识图谱与 AI 伴读核心服务
-│   │   │   ├── library-intelligence-rag.ts # 图谱提取与 RAG 检索底层实现
-│   │   │   ├── library-search.ts      # 本地书库多维度搜索与相关性排序
-│   │   │   ├── translation-pipeline.ts # LangGraph 翻译流水线（分段→翻译→组装→定稿）
-│   │   │   ├── translation-runner.ts  # 翻译任务调度器（并发、重试、异常隔离）
-│   │   │   ├── translation-service.ts # 翻译生命周期管理（启动/取消/进度查询/术语库 CRUD）
-│   │   │   ├── translation-state.ts   # 翻译状态类型定义（段落、草稿、术语条目）
-│   │   │   └── translation/           # 翻译流水线子节点
-│   │   │       └── nodes/             # segment / translate / assemble / review / finalize / history-manager / llm-logger
-│   │   ├── routes/
-│   │   │   ├── control-center.ts  # /api/control 路由
-│   │   │   ├── library.ts         # /api/library 路由
-│   │   │   └── health.ts          # /api/health 路由
+│   │   ├── core/                  # 核心逻辑：爬虫调度、SQLite ORM、导出引擎、网络代理、系统偏好、知识图谱、翻译流水线
+│   │   ├── routes/                # Express API 路由（/api/control, /api/library, /api/health）
 │   │   ├── app.ts                 # createServerApp()，挂载路由与静态资源
 │   │   └── index.ts               # HTTP 监听入口
-│   └── web/
-│       ├── components/
-│       │   ├── app-shell.tsx              # 全局壳层（导航、摘要卡片、通知）
-│       │   ├── control-console.tsx        # 开始抓取页面
-│       │   ├── chapter-directory.tsx      # 章节目录（含增量状态高亮）
-│       │   ├── metadata-board.tsx         # 小说元数据展示
-│       │   ├── library-workspace.tsx      # 书库路由壳层
-│       │   ├── library-list-view.tsx      # 书库列表页
-│       │   ├── library-detail-view.tsx    # 书库详情页（含工具标签页）
-│       │   ├── library-reader-view.tsx    # 阅读器页（含双语模式）
-│       │   ├── library-intelligence-panel.tsx # AI 伴读对话面板
-│       │   ├── library-shared.ts          # 书库模块共享类型与工具
-│       │   ├── monitor-dashboard.tsx      # 任务进度监控大盘
-│       │   ├── system-preferences.tsx     # 全局设置页（含各子面板路由）
-│       │   ├── llm-provider-panel.tsx     # 大模型服务商配置面板
-│       │   ├── model-gateway-panel.tsx    # 模型网关（按能力路由）
-│       │   ├── neo4j-panel.tsx            # Neo4j 图数据库连接配置
-│       │   ├── network-proxy-panel.tsx    # 网络代理配置
-│       │   ├── reader-typography-panel.tsx # 阅读器排版偏好
-│       │   ├── font-family-picker.tsx     # 字体族选择器
-│       │   ├── language-picker.tsx        # 翻译源/目标语言选择器
-│       │   ├── reader-fab-bar.tsx         # 阅读器悬浮快捷按钮栏
-│       │   ├── scrollspy-nav.tsx          # 页面导航高亮指示
-│       │   ├── status-panel.tsx           # 状态摘要卡片
-│       │   ├── translation-launch-panel.tsx  # 翻译任务发起面板
-│       │   └── translation-profile-panel.tsx # 翻译配置与进度面板
+│   └── web/                       # 前端 React 工程（Mantine v7 + Vite 构建）
+│       ├── components/            # UI 组件：控制台、书库列表/详情/阅读器、监控大盘、系统偏好面板、翻译面板
 │       ├── services/              # API 封装（api.ts）+ 视图模型
 │       ├── theme.ts               # Mantine 主题定义（暖色纸质暗调）
 │       ├── styles.css             # 全局样式
@@ -114,6 +71,7 @@
 - 所有站点适配器必须继承 `BaseHtmlSpiderAdapter`（定义于 `src/server/core/spider.ts`）。
 - 必须实现：`sourceId`、`getInfoPageUrl()`、`fetchMetadata()`、`fetchChapterIndex()`、`fetchChapter()`。
 - 注入 `fetchHtml` 函数（`SpiderHtmlFetcher` 类型）实现请求与解析解耦，测试时传入本地 fixture HTML，线上使用 `createProxyAwareHtmlFetcher`。
+- Syosetu 站点基于 HTML 选择器解析；Kakuyomu 使用双轨解析（`__NEXT_DATA__` Apollo State 为主，HTML 选择器降级）。
 - 新增站点爬虫时，在 `src/server/adapters/spider/` 下创建文件，并在 `ControlCenterService` 构造函数的 spider 注册表中追加条目。
 
 ### 4.2 日志适配器：SpiderLogAdapter
