@@ -165,7 +165,8 @@ export class OfflineLibraryAssetService {
   }
 
   buildNovelDetail(snapshot: StoredNovelSnapshot, extras: LibraryStateExtras = {}): LibraryNovelDetail {
-    const chapters = snapshot.chapters.map((chapter) => this.summarizeChapter(snapshot, chapter));
+    const displayChapters = snapshot.chapters.filter((c) => !isSyntheticChapterId(c.id));
+    const chapters = displayChapters.map((chapter) => this.summarizeChapter(snapshot, chapter));
     const mediaAssets = chapters.flatMap((chapter) =>
       this.listMediaAssets(snapshot, chapter),
     );
@@ -499,4 +500,9 @@ function mapLibraryBookmarks(bookmarks: StoredBookmarkRow[]): LibraryBookmark[] 
     createdAt: bookmark.createdAt,
     updatedAt: bookmark.updatedAt,
   }));
+}
+
+/** 判断是否为翻译流水线创建的合成章节傀儡记录（元数据/卷标题） */
+function isSyntheticChapterId(id: string): boolean {
+  return id.startsWith('__') && id.endsWith('__');
 }

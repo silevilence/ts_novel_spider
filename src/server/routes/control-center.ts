@@ -25,6 +25,8 @@ import type {
   ReaderTypographyConfig,
   ReaderTypographyConfigInput,
   ReaderTypographyState,
+  SchedulingConfig,
+  SchedulingConfigInput,
   TranslationPreferencesConfig,
   TranslationPreferencesInput,
 } from '../core/system-preferences';
@@ -428,6 +430,25 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
       unsubscribe();
       response.end();
     });
+  });
+
+  // ── 定时更新 ──
+
+  router.get('/scheduling', (_request, response) => {
+  const config = service.getSchedulingState();
+  const lastCheckRun = service.getLatestCompletedCheckRun();
+  response.json({ ...config, lastCheckRun: lastCheckRun ?? null });
+});
+
+router.put('/scheduling', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as SchedulingConfigInput;
+      response.json(service.updateSchedulingState(body));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid scheduling request.',
+      });
+    }
   });
 
   return router;

@@ -1,21 +1,32 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import parseExpression from 'cron-parser';
+
+import { CronEditor } from './cron-editor';
 import {
   Accordion,
   Badge,
   Button,
+  Checkbox,
+  Chip,
   Group,
+  Input,
+  Modal,
   NumberInput,
   Paper,
   ScrollArea,
+  SegmentedControl,
   Select,
   Stack,
+  Switch,
   Text,
+  TextInput,
   Title,
   useMantineTheme,
 } from '@mantine/core';
 import {
   IconAdjustments,
   IconBrain,
+  IconClock,
   IconDatabase,
   IconDeviceFloppy,
   IconLanguage,
@@ -31,9 +42,15 @@ import { NetworkProxyPanel } from './network-proxy-panel';
 import { ReaderTypographyPanel } from './reader-typography-panel';
 import {
   fetchLlmProvidersPreferences,
+  fetchSchedulingConfig,
+  fetchSchedulingNovels,
   fetchTranslationPreferences,
+  updateSchedulingConfig,
+  updateSchedulingNovels,
   updateTranslationPreferences,
   type ModelCapability,
+  type SchedulingConfig,
+  type SchedulingNovelEntry,
 } from '../services/api';
 import type {
   ControlCenterModel,
@@ -59,6 +76,25 @@ const PANEL_ICON_SIZE = 20;
 
 export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
   const theme = useMantineTheme();
+
+  const [schedulingConfig, setSchedulingConfig] = useState<SchedulingConfig | null>(null);
+  const [schedulingNovels, setSchedulingNovels] = useState<SchedulingNovelEntry[]>([]);
+
+  useEffect(() => {
+    Promise.all([
+      fetchSchedulingConfig().then(setSchedulingConfig).catch(() => {}),
+      fetchSchedulingNovels().then((p) => setSchedulingNovels(p.novels)).catch(() => {}),
+    ]);
+  }, []);
+
+  const handleSchedulingConfigChange = async (input: Partial<SchedulingConfig>): Promise<void> => {
+    const updated = await updateSchedulingConfig(input);
+    setSchedulingConfig(updated);
+  };
+
+  const handleSchedulingNovelsChange = async (entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): Promise<void> => {
+    await updateSchedulingNovels(entries);
+  };
 
   const panels = useMemo<AccordionPanelDef[]>(
     () => [
@@ -147,8 +183,26 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
         description: '设定默认的源语言、目标语言与翻译模型偏好。',
         content: <TranslationDefaultsPanel onNotice={onNotify} />,
       },
+      {
+        id: 'scheduling',
+        icon: <IconClock size={PANEL_ICON_SIZE} />,
+        title: '定时更新',
+        description: '自动检查书库中作品的更新情况，发现新章节后自动下载——你只管看，不用惦记追更。',
+        badge: schedulingConfig?.enabled
+          ? <Badge size="sm" variant="light" color="green">已开启</Badge>
+          : <Badge size="sm" variant="light" color="gray">已关闭</Badge>,
+        content: (
+          <SchedulingPanel
+            config={schedulingConfig}
+            onConfigChange={handleSchedulingConfigChange}
+            novels={schedulingNovels}
+            onNovelsChange={handleSchedulingNovelsChange}
+            onNotify={onNotify}
+          />
+        ),
+      },
     ],
-    [model, onNotify, theme],
+    [model, onNotify, theme, schedulingConfig, schedulingNovels],
   );
 
   return (
@@ -247,6 +301,231 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
           </Accordion.Item>
         ))}
       </Accordion>
+    </Stack>
+  );
+}
+
+// ── Memoized Checkbox Item（避免 Modal 中全量重渲染） ──
+
+interface MemoizedCheckboxItemProps {
+  label: string;
+  checked: boolean;
+  onToggle: (checked: boolean) => void;
+}
+
+const MemoizedCheckboxItem = memo(function MemoizedCheckboxItemFn({ label, checked, onToggle }: MemoizedCheckboxItemProps) {
+  return (
+    <Checkbox
+      label={label}
+      checked={checked}
+      onChange={(event) => onToggle(event.currentTarget.checked)}
+    />
+  );
+});
+
+// ── SchedulingPanel ──
+
+interface SchedulingPanelProps {
+  config: SchedulingConfig | null;
+  onConfigChange: (input: Partial<SchedulingConfig>) => Promise<void>;
+  novels: SchedulingNovelEntry[];
+  onNovelsChange: (entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>) => Promise<void>;
+  onNotify: (notice: NoticeInput) => void;
+}
+
+function SchedulingPanel({ config, onConfigChange, novels, onNovelsChange, onNotify }: SchedulingPanelProps) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalSelections, setModalSelections] = useState<Map<string, boolean>>(new Map());
+
+  if (!config) {
+    return <Text size="sm" c="dimmed">加载中...</Text>;
+  }
+
+  const cronPreviews = config.mode === 'cron' ? computeCronPreviews(config.cronExpression) : [];
+
+  const lastCheckRun = config.lastCheckRun;
+
+  return (
+    <Stack gap="md">
+      <Switch
+        label="启用定时更新"
+        checked={config.enabled}
+        onChange={(event) => {
+          void onConfigChange({ enabled: event.currentTarget.checked });
+        }}
+      />
+
+      {config.enabled && (
+        <>
+          <SegmentedControl
+            value={config.mode}
+            onChange={(value) => {
+              if (value === 'interval' || value === 'cron' || value === 'weekly') {
+                void onConfigChange({ mode: value });
+              }
+            }}
+            data={[
+              { label: '固定间隔', value: 'interval' },
+              { label: 'Cron 表达式', value: 'cron' },
+              { label: '每周定时', value: 'weekly' },
+            ]}
+          />
+
+          {config.mode === 'interval' && (
+            <Stack gap="xs">
+              <NumberInput
+                label="轮询间隔（小时）"
+                min={1}
+                max={168}
+                value={config.intervalHours}
+                onChange={(value) => {
+                  if (typeof value === 'number') {
+                    void onConfigChange({ intervalHours: value });
+                  }
+                }}
+              />
+              <Text size="xs" c="dimmed">
+                下次预计触发：{formatNextTriggerTime(config.intervalHours)}
+              </Text>
+            </Stack>
+          )}
+
+          {config.mode === 'cron' && (
+            <Stack gap="xs">
+              <TextInput
+                label="Cron 表达式"
+                value={config.cronExpression}
+                onChange={(event) => {
+                  void onConfigChange({ cronExpression: event.currentTarget.value });
+                }}
+              />
+              <CronEditor
+                value={config.cronExpression}
+                onChange={(expr: string) => void onConfigChange({ cronExpression: expr })}
+              />
+              {cronPreviews.length > 0 && (
+                <Text size="xs" c="dimmed">
+                  未来 {cronPreviews.length} 次触发：{cronPreviews.join('、')}
+                </Text>
+              )}
+            </Stack>
+          )}
+
+          {config.mode === 'weekly' && (
+            <Stack gap="xs">
+              <Input.Label>每周触发日</Input.Label>
+              <Chip.Group
+                multiple
+                value={config.weeklyDays.map(String)}
+                onChange={(values) => {
+                  void onConfigChange({ weeklyDays: values.map(Number).filter((d) => d >= 0 && d <= 6) });
+                }}
+              >
+                <Group gap={4}>
+                  {['日', '一', '二', '三', '四', '五', '六'].map((label, idx) => (
+                    <Chip key={idx} value={String(idx)} size="xs">{label}</Chip>
+                  ))}
+                </Group>
+              </Chip.Group>
+              <Input.Wrapper label="触发时刻">
+                <input
+                  type="time"
+                  value={config.weeklyTime}
+                  onChange={(event) => {
+                    void onConfigChange({ weeklyTime: event.target.value });
+                  }}
+                  style={{
+                    background: 'rgba(31,21,16,0.78)',
+                    border: '1px solid rgba(168,133,96,0.22)',
+                    borderRadius: 'var(--mantine-radius-sm)',
+                    color: 'var(--mantine-color-dark-text)',
+                    padding: '8px 12px',
+                    fontSize: 'var(--mantine-font-size-sm)',
+                  }}
+                />
+              </Input.Wrapper>
+            </Stack>
+          )}
+
+          <Button
+            variant="default"
+            size="compact-sm"
+            onClick={() => {
+              const map = new Map(novels.map((n) => [`${n.sourceId}:${n.novelId}`, n.enabled]));
+              setModalSelections(map);
+              setModalOpen(true);
+            }}
+          >
+            管理书单
+          </Button>
+
+          {lastCheckRun && (
+            <Paper p="sm" radius="md" withBorder style={{ background: 'rgba(31,21,16,0.78)' }}>
+              <Text size="xs" fw={600} mb={2}>上次检查轮次</Text>
+              <Text size="xs" c="dimmed">
+                {lastCheckRun.status === 'completed'
+                  ? `检查 ${lastCheckRun.totalChecked} 本，发现更新 ${lastCheckRun.newChaptersFound} 本，跳过 ${lastCheckRun.skipped} 本，出错 ${lastCheckRun.errored} 本`
+                  : '轮次进行中…'}
+                {lastCheckRun.completedAt && ` · ${formatTimeAgo(lastCheckRun.completedAt)}前`}
+              </Text>
+            </Paper>
+          )}
+        </>
+      )}
+
+      <Modal
+        opened={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title="管理定时更新书单"
+        size="lg"
+      >
+        <Stack gap="xs">
+          <ScrollArea.Autosize mah={420} type="scroll">
+            <Stack gap="xs">
+              {novels.map((novel) => {
+                const key = `${novel.sourceId}:${novel.novelId}`;
+                return (
+                  <MemoizedCheckboxItem
+                    key={key}
+                    label={`${novel.title} — ${novel.sourceId}`}
+                    checked={modalSelections.get(key) ?? false}
+                    onToggle={(checked) => {
+                      setModalSelections((prev) => {
+                        const next = new Map(prev);
+                        next.set(key, checked);
+                        return next;
+                      });
+                    }}
+                  />
+                );
+              })}
+            </Stack>
+          </ScrollArea.Autosize>
+        </Stack>
+        <Group justify="flex-end" mt="md">
+          <Button variant="default" onClick={() => setModalOpen(false)}>取消</Button>
+          <Button
+            color="brand"
+            onClick={async () => {
+              const entries = [...modalSelections.entries()]
+                .map(([key, enabled]) => {
+                  const [sourceId, novelId] = key.split(':');
+                  return { sourceId: sourceId ?? '', novelId: novelId ?? '', enabled };
+                })
+                .filter((e) => e.sourceId !== '' && e.novelId !== '');
+              try {
+                await onNovelsChange(entries);
+                setModalOpen(false);
+                onNotify({ tone: 'success', title: '已保存', message: '定时更新书单已更新。' });
+              } catch {
+                onNotify({ tone: 'error', title: '保存失败', message: '无法保存书单，请重试。' });
+              }
+            }}
+          >
+            保存
+          </Button>
+        </Group>
+      </Modal>
     </Stack>
   );
 }
@@ -352,4 +631,43 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
       </Button>
     </Stack>
   );
+}
+
+// ── Scheduling helpers ──
+
+function computeCronPreviews(expression: string): string[] {
+  try {
+    const interval = parseExpression.parse(expression);
+    const previews: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const next = interval.next();
+      const year = next.getFullYear();
+      const month = String(next.getMonth() + 1).padStart(2, '0');
+      const day = String(next.getDate()).padStart(2, '0');
+      const hours = String(next.getHours()).padStart(2, '0');
+      const minutes = String(next.getMinutes()).padStart(2, '0');
+      previews.push(`${year}-${month}-${day} ${hours}:${minutes}`);
+    }
+    return previews;
+  } catch {
+    return [];
+  }
+}
+
+function formatNextTriggerTime(intervalHours: number): string {
+  const next = new Date(Date.now() + intervalHours * 3600 * 1000);
+  const year = next.getFullYear();
+  const month = String(next.getMonth() + 1).padStart(2, '0');
+  const day = String(next.getDate()).padStart(2, '0');
+  const hours = String(next.getHours()).padStart(2, '0');
+  const minutes = String(next.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
+function formatTimeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const hours = Math.round(diff / 3600000);
+  if (hours < 1) return '刚刚';
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
 }

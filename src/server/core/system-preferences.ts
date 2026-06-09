@@ -358,6 +358,57 @@ export interface LlmModelGatewayConfig {
   rerank?: LlmModelGatewayRoute;
 }
 
+// ── 定时更新调度策略 ──
+
+export type SchedulingMode = 'interval' | 'cron' | 'weekly';
+
+export interface SchedulingConfigInput {
+  enabled?: boolean;
+  mode?: SchedulingMode;
+  intervalHours?: number;
+  cronExpression?: string;
+  weeklyDays?: number[];
+  weeklyTime?: string;
+}
+
+export interface SchedulingConfig {
+  enabled: boolean;
+  mode: SchedulingMode;
+  intervalHours: number;
+  cronExpression: string;
+  weeklyDays: number[];
+  weeklyTime: string;
+  updatedAt: string | null;
+}
+
+export const SCHEDULING_DEFAULTS: SchedulingConfig = {
+  enabled: false,
+  mode: 'interval',
+  intervalHours: 6,
+  cronExpression: '0 */6 * * *',
+  weeklyDays: [1, 3, 5],
+  weeklyTime: '08:00',
+  updatedAt: null,
+};
+
+export function normalizeSchedulingInput(input: SchedulingConfigInput): SchedulingConfig {
+  return {
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : SCHEDULING_DEFAULTS.enabled,
+    mode: input.mode === 'interval' || input.mode === 'cron' || input.mode === 'weekly'
+      ? input.mode : SCHEDULING_DEFAULTS.mode,
+    intervalHours: typeof input.intervalHours === 'number' && Number.isFinite(input.intervalHours)
+      ? Math.max(1, Math.trunc(input.intervalHours)) : SCHEDULING_DEFAULTS.intervalHours,
+    cronExpression: typeof input.cronExpression === 'string' && input.cronExpression.trim().length > 0
+      ? input.cronExpression.trim() : SCHEDULING_DEFAULTS.cronExpression,
+    weeklyDays: Array.isArray(input.weeklyDays)
+      ? input.weeklyDays.filter((d): d is number => typeof d === 'number' && d >= 0 && d <= 6)
+      : SCHEDULING_DEFAULTS.weeklyDays,
+    weeklyTime: typeof input.weeklyTime === 'string' && /^\d{2}:\d{2}$/.test(input.weeklyTime)
+      ? input.weeklyTime : SCHEDULING_DEFAULTS.weeklyTime,
+    updatedAt: null,
+  };
+}
+
 // ──
 
 export interface SystemPreferencesServiceOptions {
@@ -372,6 +423,7 @@ interface PersistedSystemPreferences {
   modelGateway?: LlmModelGatewayConfig;
   readerTypography?: ReaderTypographyConfigInput;
   translation?: TranslationPreferencesInput;
+  scheduling?: SchedulingConfigInput;
   updatedAt: string | null;
 }
 
@@ -391,6 +443,7 @@ export class SystemPreferencesService {
   #translation: TranslationPreferencesConfig;
   #translationUpdatedAt: string | null = null;
   #modelGateway: LlmModelGatewayConfig;
+  #scheduling: SchedulingConfig;
   #updatedAt: string | null;
 
   constructor(options: SystemPreferencesServiceOptions = {}) {
@@ -410,6 +463,9 @@ export class SystemPreferencesService {
     this.#translation = normalizeTranslationPreferencesInput(persisted?.translation ?? {});
     this.#translationUpdatedAt = persisted?.translation ? (persisted.updatedAt ?? null) : null;
     this.#modelGateway = normalizeModelGatewayConfig(persisted?.modelGateway);
+    this.#scheduling = persisted?.scheduling
+      ? normalizeSchedulingInput(persisted.scheduling)
+      : { ...SCHEDULING_DEFAULTS };
     this.#updatedAt = persisted?.updatedAt ?? null;
   }
 
@@ -427,7 +483,7 @@ export class SystemPreferencesService {
     this.#llmProviders = normalizeProviderInputs(inputs);
     this.#llmValidations = filterValidations(this.#llmValidations, this.#llmProviders);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
     return this.getLlmState();
   }
 
@@ -535,7 +591,7 @@ export class SystemPreferencesService {
     };
     this.#neo4jValidation = null;
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
     return this.getNeo4jState();
   }
 
@@ -585,7 +641,7 @@ export class SystemPreferencesService {
     this.#readerTypography = normalizeReaderTypographyInput(input);
     this.#readerTypographyUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
     return this.getReaderTypography();
   }
 
@@ -600,7 +656,7 @@ export class SystemPreferencesService {
     this.#translation = normalizeTranslationPreferencesInput(input);
     this.#translationUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
     return this.getTranslationState();
   }
 
@@ -611,8 +667,20 @@ export class SystemPreferencesService {
   updateModelGateway(input: LlmModelGatewayConfig): LlmModelGatewayConfig {
     this.#modelGateway = normalizeModelGatewayConfig(input);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
     return this.getModelGateway();
+  }
+
+  getScheduling(): SchedulingConfig {
+    return { ...this.#scheduling };
+  }
+
+  updateScheduling(input: SchedulingConfigInput): SchedulingConfig {
+    this.#scheduling = normalizeSchedulingInput({ ...this.#scheduling, ...input });
+    this.#scheduling = { ...this.#scheduling, updatedAt: new Date().toISOString() };
+    this.touch();
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
+    return this.getScheduling();
   }
 
   private touch(): void {
@@ -1358,6 +1426,7 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       modelGateway?: unknown;
       readerTypography?: unknown;
       translation?: unknown;
+      scheduling?: unknown;
       updatedAt?: unknown;
     };
 
@@ -1400,6 +1469,18 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
 
     if (isRecord(parsed.translation)) {
       result.translation = parsed.translation as TranslationPreferencesInput;
+    }
+
+    if (isRecord(parsed.scheduling)) {
+      const raw = parsed.scheduling as Record<string, unknown>;
+      const sched: SchedulingConfigInput = {};
+      if (typeof raw.enabled === 'boolean') { sched.enabled = raw.enabled; }
+      if (raw.mode === 'interval' || raw.mode === 'cron' || raw.mode === 'weekly') { sched.mode = raw.mode; }
+      if (typeof raw.intervalHours === 'number') { sched.intervalHours = raw.intervalHours; }
+      if (typeof raw.cronExpression === 'string') { sched.cronExpression = raw.cronExpression; }
+      if (Array.isArray(raw.weeklyDays)) { sched.weeklyDays = raw.weeklyDays; }
+      if (typeof raw.weeklyTime === 'string') { sched.weeklyTime = raw.weeklyTime; }
+      result.scheduling = sched;
     }
 
     if (isRecord(parsed.modelGateway)) {
@@ -1446,6 +1527,7 @@ function persistPreferences(
   readerTypography?: ReaderTypographyConfig,
   translation?: TranslationPreferencesConfig,
   modelGateway?: LlmModelGatewayConfig,
+  scheduling?: SchedulingConfig,
 ): void {
   if (!storageFilePath) {
     return;
@@ -1475,6 +1557,18 @@ function persistPreferences(
 
   if (translation) {
     payload.translation = translation;
+  }
+
+  if (scheduling) {
+    payload.scheduling = {
+      enabled: scheduling.enabled,
+      mode: scheduling.mode,
+      intervalHours: scheduling.intervalHours,
+      cronExpression: scheduling.cronExpression,
+      weeklyDays: scheduling.weeklyDays,
+      weeklyTime: scheduling.weeklyTime,
+      updatedAt: scheduling.updatedAt,
+    };
   }
 
   fs.writeFileSync(

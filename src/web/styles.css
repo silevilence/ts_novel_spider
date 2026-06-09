@@ -113,7 +113,26 @@ button:disabled {
   opacity: 0.55;
 }
 
-input:not([type="checkbox"]):not([type="radio"]),
+/* Mantine NumberInput stepper 按钮需重置全局 button 样式 */
+.mantine-NumberInput-control {
+  min-height: unset;
+  padding: unset;
+  border-radius: unset;
+}
+
+/* CronEditor 使用原生 Mantine v7 组件，样式由 MantineProvider 主题自动继承 */
+
+/* Mantine Input 系列组件（Select / MultiSelect / TextInput / NumberInput）
+   通过 [data-mantine-color-scheme] 选择器覆盖 Mantine vanilla-extract 生成的变量，
+   确保暖棕色暗调应用于所有输入控件的外层容器 */
+[data-mantine-color-scheme] {
+  --input-bg: rgba(10, 6, 4, 0.7) !important;
+  --input-bd: rgba(168, 133, 96, 0.2) !important;
+  --input-bd-focus: rgba(255, 140, 66, 0.6) !important;
+  --input-placeholder-color: var(--muted) !important;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not(.mantine-Input-input):not(.mantine-PillsInputField-field),
 select,
 textarea {
   width: 100%;
@@ -130,12 +149,12 @@ textarea {
   resize: vertical;
 }
 
-input:not([type="checkbox"]):not([type="radio"]):focus,
+input:not([type="checkbox"]):not([type="radio"]):not(.mantine-Input-input):not(.mantine-PillsInputField-field):focus,
 select:focus,
 textarea:focus,
 button:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: var(--focus-offset);
+  outline-offset: -2px;
 }
 
 .shell-header,

@@ -28,7 +28,7 @@ import type {
   LibraryReadingProgress,
 } from '../core/offline-library';
 import type { ReaderTypographyResolved } from '../core/system-preferences';
-import type { StoredTranslationTermRow } from '../core/novel-repository';
+import type { StoredScheduledNovelRow, StoredTranslationTermRow } from '../core/novel-repository';
 
 export interface LibraryNovelSummaryPayload {
   novels: LibraryNovelSummary[];
@@ -875,6 +875,88 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     } catch (error) {
       response.status(422).json({
         message: error instanceof Error ? error.message : 'Library export failed.',
+      });
+    }
+  });
+
+  // ── 定时更新 ──
+
+  // 单书定时更新状态
+  router.get('/novels/:sourceId/:novelId/scheduling', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const row = service.getScheduledNovel(sourceId, novelId);
+      response.json(row ?? {
+        sourceId, novelId, enabled: false,
+        lastCheckedAt: null, lastCheckResult: null, lastCheckMessage: null, updatedAt: '',
+      });
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
+      });
+    }
+  });
+
+  router.put('/novels/:sourceId/:novelId/scheduling', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const body = request.body as { enabled?: unknown };
+      const enabled = typeof body.enabled === 'boolean' ? body.enabled : false;
+
+      service.upsertScheduledNovel(sourceId, novelId, enabled);
+      const row = service.getScheduledNovel(sourceId, novelId);
+      response.json(row);
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
+      });
+    }
+  });
+
+  // 批量管理书单
+  router.get('/scheduling/novels', (_request, response) => {
+    try {
+      const novels = service.listLibraryNovelEntries();
+      const scheduledMap = new Map(
+        service.getAllScheduledNovels().map((row) => [`${row.sourceId}:${row.novelId}`, row]),
+      );
+
+      const result = novels.map((novel) => {
+        const key = `${novel.sourceId}:${novel.novelId}`;
+        const scheduled = scheduledMap.get(key);
+        return {
+          sourceId: novel.sourceId,
+          novelId: novel.novelId,
+          title: novel.title,
+          enabled: scheduled?.enabled ?? false,
+        };
+      });
+
+      response.json({ novels: result });
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
+      });
+    }
+  });
+
+  router.put('/scheduling/novels', (request, response) => {
+    try {
+      const body = request.body as { novels?: unknown };
+      const entries = Array.isArray(body.novels)
+        ? body.novels.filter((entry): entry is { sourceId: string; novelId: string; enabled: boolean } =>
+            typeof entry === 'object' && entry !== null &&
+            typeof (entry as Record<string, unknown>).sourceId === 'string' &&
+            typeof (entry as Record<string, unknown>).novelId === 'string' &&
+            typeof (entry as Record<string, unknown>).enabled === 'boolean',
+          )
+        : [];
+
+      service.bulkUpsertScheduledNovels(entries);
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
       });
     }
   });

@@ -925,6 +925,108 @@ export async function updateModelGateway(
   return (await response.json()) as ModelGatewayPayload;
 }
 
+// ── 定时更新调度 ──
+
+export interface SchedulingConfig {
+  enabled: boolean;
+  mode: 'interval' | 'cron' | 'weekly';
+  intervalHours: number;
+  cronExpression: string;
+  weeklyDays: number[];
+  weeklyTime: string;
+  updatedAt: string | null;
+  lastCheckRun?: {
+    id: string;
+    startedAt: string;
+    completedAt: string | null;
+    status: string;
+    totalChecked: number;
+    newChaptersFound: number;
+    skipped: number;
+    errored: number;
+  } | null;
+}
+
+export interface SchedulingNovelEntry {
+  sourceId: string;
+  novelId: string;
+  title: string;
+  enabled: boolean;
+}
+
+export interface SchedulingNovelDetail {
+  sourceId: string;
+  novelId: string;
+  enabled: boolean;
+  lastCheckedAt: string | null;
+  lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
+  lastCheckMessage: string | null;
+  updatedAt: string;
+}
+
+export interface SchedulingNovelsPayload {
+  novels: SchedulingNovelEntry[];
+}
+
+export async function fetchSchedulingConfig(): Promise<SchedulingConfig> {
+  const response = await fetch('/api/control/scheduling');
+  if (!response.ok) {
+    throw new Error(`获取调度配置失败 (${response.status})`);
+  }
+  return response.json();
+}
+
+export async function updateSchedulingConfig(input: Partial<SchedulingConfig>): Promise<SchedulingConfig> {
+  const response = await fetch('/api/control/scheduling', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new Error(`更新调度配置失败 (${response.status})`);
+  }
+  return response.json();
+}
+
+export async function fetchNovelScheduling(sourceId: string, novelId: string): Promise<SchedulingNovelDetail> {
+  const response = await fetch(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/scheduling`);
+  if (!response.ok) {
+    throw new Error(`获取书籍调度状态失败 (${response.status})`);
+  }
+  return response.json();
+}
+
+export async function updateNovelScheduling(sourceId: string, novelId: string, enabled: boolean): Promise<SchedulingNovelDetail> {
+  const response = await fetch(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/scheduling`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) {
+    throw new Error(`更新书籍调度状态失败 (${response.status})`);
+  }
+  return response.json();
+}
+
+export async function fetchSchedulingNovels(): Promise<SchedulingNovelsPayload> {
+  const response = await fetch('/api/library/scheduling/novels');
+  if (!response.ok) {
+    throw new Error(`获取调度书单失败 (${response.status})`);
+  }
+  return response.json();
+}
+
+export async function updateSchedulingNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): Promise<void> {
+  const response = await fetch('/api/library/scheduling/novels', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ novels: entries }),
+  });
+  if (!response.ok) {
+    throw new Error(`更新调度书单失败 (${response.status})`);
+  }
+}
+
 async function requestJson<TPayload>(url: string, init?: RequestInit): Promise<TPayload> {
   const response = await fetch(url, init);
 

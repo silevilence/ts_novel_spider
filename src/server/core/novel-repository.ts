@@ -73,6 +73,27 @@ export interface StoredTaskHistoryRow {
   snapshotJson: string;
 }
 
+export interface StoredScheduledNovelRow {
+  sourceId: string;
+  novelId: string;
+  enabled: boolean;
+  lastCheckedAt: string | null;
+  lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
+  lastCheckMessage: string | null;
+  updatedAt: string;
+}
+
+export interface StoredScheduledCheckRunRow {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: 'running' | 'completed';
+  totalChecked: number;
+  newChaptersFound: number;
+  skipped: number;
+  errored: number;
+}
+
 export interface StoredKnowledgeGraphProfileInput {
   sourceId: string;
   novelId: string;
@@ -685,6 +706,34 @@ export class SqliteNovelRepository {
     };
   }
 
+  /** 返回本地已索引的章节列表（仅 ChapterIndexEntry 字段） */
+  getChapterIndex(sourceId: string, novelId: string): ChapterIndexEntry[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT chapter_id, chapter_index, title, volume_title, url
+         FROM chapters
+         WHERE source_id = ? AND novel_id = ?
+         ORDER BY chapter_index ASC`,
+      )
+      .all(sourceId, novelId) as Array<{
+      chapter_id: string; chapter_index: number; title: string;
+      volume_title: string | null; url: string;
+    }>;
+
+    return rows.map((row) => {
+      const entry: ChapterIndexEntry = {
+        id: row.chapter_id,
+        index: row.chapter_index,
+        title: row.title,
+        url: row.url,
+      };
+      if (row.volume_title) {
+        entry.volumeTitle = row.volume_title;
+      }
+      return entry;
+    });
+  }
+
   listNovels(): StoredNovelLibraryRow[] {
     const rows = this.#database
       .prepare(
@@ -707,6 +756,7 @@ export class SqliteNovelRepository {
           LEFT JOIN chapters c
             ON c.source_id = n.source_id
            AND c.novel_id = n.novel_id
+           AND c.chapter_id NOT GLOB '__*'
           GROUP BY
             n.source_id,
             n.novel_id,
@@ -2886,6 +2936,209 @@ export class SqliteNovelRepository {
       });
   }
 
+  // ── 定时更新: scheduled_novels ──
+
+  getScheduledNovels(): StoredScheduledNovelRow[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT source_id, novel_id, enabled, last_checked_at, last_check_result, last_check_message, updated_at
+         FROM scheduled_novels
+         ORDER BY source_id, novel_id`,
+      )
+      .all() as Array<{
+      source_id: string; novel_id: string; enabled: number;
+      last_checked_at: string | null; last_check_result: string | null;
+      last_check_message: string | null; updated_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      enabled: row.enabled === 1,
+      lastCheckedAt: row.last_checked_at,
+      lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
+      lastCheckMessage: row.last_check_message,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  getEnabledScheduledNovels(): StoredScheduledNovelRow[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT source_id, novel_id, enabled, last_checked_at, last_check_result, last_check_message, updated_at
+         FROM scheduled_novels
+         WHERE enabled = 1
+         ORDER BY source_id, novel_id`,
+      )
+      .all() as Array<{
+      source_id: string; novel_id: string; enabled: number;
+      last_checked_at: string | null; last_check_result: string | null;
+      last_check_message: string | null; updated_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      enabled: row.enabled === 1,
+      lastCheckedAt: row.last_checked_at,
+      lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
+      lastCheckMessage: row.last_check_message,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  getScheduledNovel(sourceId: string, novelId: string): StoredScheduledNovelRow | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT source_id, novel_id, enabled, last_checked_at, last_check_result, last_check_message, updated_at
+         FROM scheduled_novels
+         WHERE source_id = ? AND novel_id = ?`,
+      )
+      .get(sourceId, novelId) as {
+      source_id: string; novel_id: string; enabled: number;
+      last_checked_at: string | null; last_check_result: string | null;
+      last_check_message: string | null; updated_at: string;
+    } | undefined;
+
+    if (!row) return undefined;
+
+    return {
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      enabled: row.enabled === 1,
+      lastCheckedAt: row.last_checked_at,
+      lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
+      lastCheckMessage: row.last_check_message,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean): void {
+    const now = new Date().toISOString();
+    this.#database
+      .prepare(
+        `INSERT INTO scheduled_novels (source_id, novel_id, enabled, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(source_id, novel_id) DO UPDATE SET
+           enabled = excluded.enabled,
+           updated_at = excluded.updated_at`,
+      )
+      .run(sourceId, novelId, enabled ? 1 : 0, now);
+  }
+
+  updateScheduledNovelCheckResult(
+    sourceId: string,
+    novelId: string,
+    result: StoredScheduledNovelRow['lastCheckResult'],
+    message: string | null,
+  ): void {
+    const now = new Date().toISOString();
+    this.#database
+      .prepare(
+        `UPDATE scheduled_novels
+         SET last_checked_at = ?, last_check_result = ?, last_check_message = ?, updated_at = ?
+         WHERE source_id = ? AND novel_id = ?`,
+      )
+      .run(now, result, message, now, sourceId, novelId);
+  }
+
+  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): void {
+    const now = new Date().toISOString();
+    const upsert = this.#database.prepare(
+      `INSERT INTO scheduled_novels (source_id, novel_id, enabled, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(source_id, novel_id) DO UPDATE SET
+         enabled = excluded.enabled,
+         updated_at = excluded.updated_at`,
+    );
+
+    const transaction = this.#database.transaction(() => {
+      for (const entry of entries) {
+        upsert.run(entry.sourceId, entry.novelId, entry.enabled ? 1 : 0, now);
+      }
+    });
+
+    transaction();
+  }
+
+  deleteScheduledNovel(sourceId: string, novelId: string): void {
+    this.#database
+      .prepare(
+        `DELETE FROM scheduled_novels
+         WHERE source_id = ? AND novel_id = ?`,
+      )
+      .run(sourceId, novelId);
+  }
+
+  // ── 定时更新: scheduled_check_runs ──
+
+  createScheduledCheckRun(id: string, startedAt: string): void {
+    this.#database
+      .prepare(
+        `INSERT INTO scheduled_check_runs (id, started_at, status)
+         VALUES (?, ?, 'running')`,
+      )
+      .run(id, startedAt);
+  }
+
+  completeScheduledCheckRun(
+    id: string,
+    completedAt: string,
+    totalChecked: number,
+    newChaptersFound: number,
+    skipped: number,
+    errored: number,
+  ): void {
+    this.#database
+      .prepare(
+        `UPDATE scheduled_check_runs
+         SET completed_at = ?, status = 'completed',
+             total_checked = ?, new_chapters_found = ?, skipped = ?, errored = ?
+         WHERE id = ?`,
+      )
+      .run(completedAt, totalChecked, newChaptersFound, skipped, errored, id);
+  }
+
+  getLatestCompletedCheckRun(): StoredScheduledCheckRunRow | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT id, started_at, completed_at, status, total_checked, new_chapters_found, skipped, errored
+         FROM scheduled_check_runs
+         WHERE status = 'completed'
+         ORDER BY completed_at DESC
+         LIMIT 1`,
+      )
+      .get() as {
+      id: string; started_at: string; completed_at: string | null;
+      status: string; total_checked: number; new_chapters_found: number;
+      skipped: number; errored: number;
+    } | undefined;
+
+    if (!row) return undefined;
+
+    return {
+      id: row.id,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      status: row.status as 'running' | 'completed',
+      totalChecked: row.total_checked,
+      newChaptersFound: row.new_chapters_found,
+      skipped: row.skipped,
+      errored: row.errored,
+    };
+  }
+
+  /** 服务启动恢复：将遗留的 running 记录标记为 completed */
+  recoverIncompleteCheckRuns(): void {
+    this.#database
+      .prepare(
+        `UPDATE scheduled_check_runs
+         SET status = 'completed', completed_at = ?
+         WHERE status = 'running'`,
+      )
+      .run(new Date().toISOString());
+  }
+
   private migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS novels (
@@ -3104,6 +3357,29 @@ export class SqliteNovelRepository {
 
       CREATE INDEX IF NOT EXISTS idx_novel_graph_build_logs_lookup
         ON novel_graph_build_logs(source_id, novel_id, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS scheduled_novels (
+        source_id         TEXT NOT NULL,
+        novel_id          TEXT NOT NULL,
+        enabled           INTEGER NOT NULL DEFAULT 0,
+        last_checked_at   TEXT,
+        last_check_result TEXT,
+        last_check_message TEXT,
+        updated_at        TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS scheduled_check_runs (
+        id                 TEXT NOT NULL PRIMARY KEY,
+        started_at         TEXT NOT NULL,
+        completed_at       TEXT,
+        status             TEXT NOT NULL DEFAULT 'running',
+        total_checked      INTEGER NOT NULL DEFAULT 0,
+        new_chapters_found INTEGER NOT NULL DEFAULT 0,
+        skipped            INTEGER NOT NULL DEFAULT 0,
+        errored            INTEGER NOT NULL DEFAULT 0
+      );
     `);
 
     this.ensureColumnExists('knowledge_graph_entities', 'embedding_json', 'TEXT');

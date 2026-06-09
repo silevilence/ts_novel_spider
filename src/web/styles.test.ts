@@ -34,3 +34,11 @@ test('graph node hover preserves node anchoring instead of replacing its transfo
   assert.match(css, /button\.graph-node:hover:not\(:disabled\)\s*\{/);
   assert.match(css, /button\.graph-node:hover:not\(:disabled\)\s*\{[\s\S]*transform:\s*translate\(-50%,\s*-50%\)/);
 });
+
+test('global form field styles do not override Mantine pills input internals', () => {
+  const stylesPath = path.join(webRoot, 'styles.css');
+  const css = fs.readFileSync(stylesPath, 'utf8');
+
+  assert.match(css, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\.mantine-Input-input\):not\(\.mantine-PillsInputField-field\)/);
+  assert.match(css, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\.mantine-Input-input\):not\(\.mantine-PillsInputField-field\):focus/);
+});

@@ -23,6 +23,8 @@ import {
   type ReaderTypographyConfigInput,
   type ReaderTypographyResolved,
   type ReaderTypographyState,
+  type SchedulingConfig,
+  type SchedulingConfigInput,
   type TranslationPreferencesInput,
   type TranslationPreferencesState,
   resolveEffectiveReaderTypography,
@@ -57,7 +59,7 @@ import {
   type TranslationBuild,
   type TranslationChapterDetail,
 } from './translation-service';
-import type { StoredTranslationTermRow } from './novel-repository';
+import type { StoredScheduledNovelRow, StoredScheduledCheckRunRow, StoredTranslationTermRow } from './novel-repository';
 import {
   LocalExportEngine,
   type GeneratedLibraryExport,
@@ -66,6 +68,7 @@ import {
   type TranslatedParagraph,
 } from './export-engine';
 import { SqliteNovelRepository, type StoredNovelLibraryRow } from './novel-repository';
+import { SchedulingService, type SchedulingServiceDependencies } from './scheduling';
 import { SpiderRunner } from './spider-runner';
 import {
   type ChapterIndexEntry,
@@ -213,6 +216,8 @@ export class ControlCenterService {
   readonly #exportEngine: LocalExportEngine;
   readonly #libraryIntelligence: LibraryIntelligenceService;
   readonly #translation: TranslationService;
+  readonly #taskLogDispatcher: SpiderLogDispatcher;
+  readonly #scheduling: SchedulingService;
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
@@ -243,12 +248,24 @@ export class ControlCenterService {
     );
 
     this.restoreTaskHistory();
+
+    this.#taskLogDispatcher = new SpiderLogDispatcher();
+    this.#scheduling = new SchedulingService({
+      repository: this.#repository,
+      preferences: this.#systemPreferences,
+      spiderRegistry: [...this.#registry.values()],
+      controlCenter: this,
+      logger: this.#taskLogDispatcher,
+    });
+    this.#scheduling.start();
   }
 
   close(): void {
     for (const task of this.#tasks.values()) {
       task.listeners.clear();
     }
+
+    this.#scheduling.stop();
 
     if (this.#ownsRepository) {
       this.#repository.close();
@@ -497,6 +514,61 @@ export class ControlCenterService {
 
   getLibraryActiveTask(sourceId: string, novelId: string): CrawlTaskSnapshot | null {
     return this.findActiveTask(sourceId, novelId);
+  }
+
+  /** 返回所有活跃任务的 novelKey 列表 */
+  getActiveTaskNovelKeys(): Array<{ sourceId: string; novelId: string }> {
+    const keys: Array<{ sourceId: string; novelId: string }> = [];
+    for (const task of this.#tasks.values()) {
+      if (task.status === 'queued' || task.status === 'running') {
+        keys.push({ sourceId: task.sourceId, novelId: task.novelId });
+      }
+    }
+    return keys;
+  }
+
+  /** 获取调度状态 */
+  getSchedulingState(): SchedulingConfig {
+    return this.#systemPreferences.getScheduling();
+  }
+
+  /** 更新调度策略并重载 */
+  updateSchedulingState(input: SchedulingConfigInput): SchedulingConfig {
+    const result = this.#systemPreferences.updateScheduling(input);
+    this.#scheduling.reload();
+    return result;
+  }
+
+  // ── 定时更新：单书调度状态（透传给 library 路由） ──
+
+  getScheduledNovel(sourceId: string, novelId: string): StoredScheduledNovelRow | undefined {
+    return this.#repository.getScheduledNovel(sourceId, novelId);
+  }
+
+  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean): void {
+    this.#repository.upsertScheduledNovel(sourceId, novelId, enabled);
+  }
+
+  getAllScheduledNovels(): StoredScheduledNovelRow[] {
+    return this.#repository.getScheduledNovels();
+  }
+
+  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): void {
+    this.#repository.bulkUpsertScheduledNovels(entries);
+  }
+
+  /** 获取上次完成的调度检查轮次 */
+  getLatestCompletedCheckRun(): StoredScheduledCheckRunRow | undefined {
+    return this.#repository.getLatestCompletedCheckRun();
+  }
+
+  /** 列出所有书库书籍（供调度 Modal 使用） */
+  listLibraryNovelEntries(): Array<{ sourceId: string; novelId: string; title: string }> {
+    return this.#repository.listNovels().map((novel) => ({
+      sourceId: novel.sourceId,
+      novelId: novel.metadata.novelId,
+      title: novel.metadata.title,
+    }));
   }
 
   async exportLibraryNovel(

@@ -11,6 +11,7 @@ import {
   SegmentedControl,
   SimpleGrid,
   Stack,
+  Switch,
   Tabs,
   Text,
   TextInput,
@@ -25,7 +26,10 @@ import { ScrollspyProvider, useScrollspy, type ScrollspySection } from './scroll
 import type { LibraryModel } from '../services/library-model';
 import {
   buildLibraryExportDownloadUrl,
+  fetchNovelScheduling,
+  updateNovelScheduling,
   type LibraryExportFormat,
+  type SchedulingNovelDetail,
   type TranslationExportMode,
 } from '../services/api';
 import {
@@ -86,6 +90,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
   const [editingBookmarkNote, setEditingBookmarkNote] = useState('');
   const [isPageNavOpen, setIsPageNavOpen] = useState(false);
   const [exportTranslationMode, setExportTranslationMode] = useState<TranslationExportMode>('original');
+  const [schedulingDetail, setSchedulingDetail] = useState<SchedulingNovelDetail | null>(null);
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   const detail = model.detail?.novel;
@@ -140,6 +145,14 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [descriptionDialog, isExportDialogOpen, isRedownloadPickerOpen, isPageNavOpen]);
 
+  // 加载定时更新状态
+  useEffect(() => {
+    if (!detail) return;
+    fetchNovelScheduling(detail.sourceId, detail.metadata.novelId)
+      .then(setSchedulingDetail)
+      .catch(() => {});
+  }, [detail?.sourceId, detail?.metadata.novelId]);
+
   function scrollToChapterDirectory() {
     chapterDirectoryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
@@ -175,6 +188,48 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
               </Button>
             ) : null}
           </Group>
+        </Paper>
+
+        {/* ====== 定时更新开关 ====== */}
+        <Paper
+          p="sm"
+          radius="md"
+          style={{
+            border: '1px solid rgba(255,209,102,0.30)',
+            background: 'rgba(255,209,102,0.04)',
+            minWidth: 180,
+          }}
+        >
+          <Group justify="space-between" align="flex-start" wrap="nowrap">
+            <Stack gap={2}>
+              <Text size="xs" fw={600} style={{ color: '#ffd166' }}>
+                🕐 定时更新
+              </Text>
+              <Text size="xs" c="dimmed">
+                {schedulingDetail?.enabled ? '自动追更中' : '开启后自动追更'}
+              </Text>
+            </Stack>
+            <Switch
+              size="sm"
+              checked={schedulingDetail?.enabled ?? false}
+              onChange={(event) => {
+                const next = event.currentTarget.checked;
+                // Optimistic update
+                setSchedulingDetail((prev) => prev ? { ...prev, enabled: next } : null);
+                updateNovelScheduling(detail.sourceId, detail.metadata.novelId, next)
+                  .then(setSchedulingDetail)
+                  .catch(() => {
+                    // Revert on error
+                    setSchedulingDetail((prev) => prev ? { ...prev, enabled: !next } : null);
+                  });
+              }}
+            />
+          </Group>
+          {schedulingDetail && schedulingDetail.enabled && (
+            <Text size="xs" mt={4} c={schedulingStatusColor(schedulingDetail)}>
+              {schedulingStatusMessage(schedulingDetail)}
+            </Text>
+          )}
         </Paper>
 
         {/* ====== 同步任务状态 ====== */}
@@ -558,6 +613,34 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
       </Stack>
     </ScrollspyProvider>
   );
+}
+
+function schedulingStatusColor(detail: SchedulingNovelDetail): string {
+  switch (detail.lastCheckResult) {
+    case 'new_chapters': return '#4caf50';
+    case 'error': return '#f44336';
+    default: return 'dimmed';
+  }
+}
+
+function schedulingStatusMessage(detail: SchedulingNovelDetail): string {
+  if (detail.lastCheckResult === null) return '等待首次检查';
+  if (detail.lastCheckResult === 'new_chapters') return detail.lastCheckMessage ?? '已自动下载';
+  if (detail.lastCheckResult === 'up_to_date') {
+    const ago = detail.lastCheckedAt ? formatSchedulingTimeAgo(detail.lastCheckedAt) : '未知时间';
+    return `上次检查 ${ago} · 已是最新`;
+  }
+  if (detail.lastCheckResult === 'error') return '上次检查失败，下轮重试';
+  return '';
+}
+
+function formatSchedulingTimeAgo(iso: string | null): string {
+  if (!iso) return '未知时间';
+  const diff = Date.now() - new Date(iso).getTime();
+  const hours = Math.round(diff / 3600000);
+  if (hours < 1) return '刚刚';
+  if (hours < 24) return `${hours}h 前`;
+  return `${Math.round(hours / 24)}d 前`;
 }
 
 /** 汉堡菜单弹出面板 —— 使用 useScrollspy 动态列出所有注册面板 */

@@ -9,7 +9,14 @@ export type SpiderLogEventType =
   | 'chapter_persisted'
   | 'chapter_failed'
   | 'task_completed'
-  | 'task_failed';
+  | 'task_failed'
+  | 'scheduling_round_started'
+  | 'scheduling_novel_checking'
+  | 'scheduling_novel_checked'
+  | 'scheduling_novel_skipped'
+  | 'scheduling_novel_error'
+  | 'scheduling_download_triggered'
+  | 'scheduling_round_completed';
 
 export interface SpiderLogContext {
   sourceId: string;
