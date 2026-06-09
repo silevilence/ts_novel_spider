@@ -1,6 +1,6 @@
 # TS Novel Spider
 
-一款基于 TypeScript 的自动化小说抓取与离线阅读工具，提供 Web 管控界面，支持后台守护运行与多格式导出。当前版本 **v0.5.3**。
+一款基于 TypeScript 的自动化小说抓取与离线阅读工具，提供 Web 管控界面，支持后台守护运行与多格式导出。当前版本 **v0.7.0**。
 
 ## 功能特性
 
@@ -20,6 +20,7 @@
 - **阅读进度与书签**：自动记忆每本书的阅读位置，支持手动添加章内书签
 - **书籍别名**：可为本地书籍设置自定义别名，搜索时自动关联
 - **AI 伴读与知识图谱（实验性）**：接入大语言模型自动构建人物关系与情节图谱，支持 AI 问答辅助理解文本内容
+- **自动化定时更新**：支持固定间隔、Cron 表达式、每周定时三种调度策略，自动检查已标记书籍的远端更新并增量下载到本地。每本书可独立开关，可在设置中批量管理参与定时更新的书单
 
 ## 快速上手
 
@@ -115,11 +116,12 @@ docker compose -f docker-compose.dev.yml up
 │   │   │   └── spider/          # 站点爬虫适配器（Syosetu / Syosetu18 / Kakuyomu）
 │   │   ├── core/
 │   │   │   ├── translation/     # 翻译流水线子节点（分段/翻译/组装/审校/定稿）
-│   │   │   └── ...              # 调度器、数据库、导出引擎、网络代理、系统偏好、知识图谱
+│   │   │   ├── scheduling.ts    # 定时更新调度引擎
+│   │   │   └── ...              # 数据库、导出引擎、网络代理、系统偏好、知识图谱
 │   │   ├── routes/              # Express API 路由
 │   │   └── index.ts             # 服务入口
 │   └── web/                     # 前端 React 工程（Mantine v7 + Vite 构建）
-│       ├── components/          # UI 组件（控制台、书库、监控、设置、面板）
+│       ├── components/          # UI 组件（控制台、书库、监控、设置、面板、Cron 编辑器）
 │       ├── services/            # API 封装与视图模型
 │       └── App.tsx              # 前端入口与路由配置
 ├── data/
@@ -138,7 +140,7 @@ docker compose -f docker-compose.dev.yml up
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Node.js ≥ 20, Express 5, better-sqlite3, Cheerio |
+| 后端 | Node.js ≥ 20, Express 5, better-sqlite3, Cheerio, cron-parser |
 | 前端 | React 19, Mantine v7, Vite 6, TypeScript strict 模式 |
 | AI / 图谱 / 翻译 | Vercel AI SDK, LangGraph, Neo4j, 支持 OpenAI / Anthropic / Google / Ollama |
 | 导出 | JSZip（EPUB 打包） |

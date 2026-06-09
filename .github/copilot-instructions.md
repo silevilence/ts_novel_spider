@@ -39,12 +39,12 @@
 │   │   │       ├── syosetu-spider-adapter.ts      # Syosetu（继承 Syosetu18）
 │   │   │       ├── syosetu-spider-adapter.test.ts # 爬虫适配器测试
 │   │   │       └── mock-html-spider-adapter.ts    # 测试用 Mock
-│   │   ├── core/                  # 核心逻辑：爬虫调度、SQLite ORM、导出引擎、网络代理、系统偏好、知识图谱、翻译流水线
+│   │   ├── core/                  # 核心逻辑：爬虫调度、SQLite ORM、导出引擎、网络代理、系统偏好、知识图谱、翻译流水线、定时更新调度
 │   │   ├── routes/                # Express API 路由（/api/control, /api/library, /api/health）
 │   │   ├── app.ts                 # createServerApp()，挂载路由与静态资源
 │   │   └── index.ts               # HTTP 监听入口
 │   └── web/                       # 前端 React 工程（Mantine v7 + Vite 构建）
-│       ├── components/            # UI 组件：控制台、书库列表/详情/阅读器、监控大盘、系统偏好面板、翻译面板
+│       ├── components/            # UI 组件：控制台、书库列表/详情/阅读器、监控大盘、系统偏好面板、翻译面板、Cron 编辑器
 │       ├── services/              # API 封装（api.ts）+ 视图模型
 │       ├── theme.ts               # Mantine 主题定义（暖色纸质暗调）
 │       ├── styles.css             # 全局样式
@@ -101,12 +101,13 @@
 
 ### 4.7 系统偏好：SystemPreferencesService
 
-- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理五类全局配置，均持久化至 `.data/system-preferences.json`：
+- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理六类全局配置，均持久化至 `.data/system-preferences.json`：
   - **LLM 提供商配置**（`LlmProviderConfig`）：支持 openai-compatible / anthropic / google-generative-ai / ollama 四种类型，每个提供商可配置多个模型，每个模型可手动或自动映射能力标签（chat / embedding / rerank）。
   - **模型网关配置**（`LlmModelGatewayConfig`）：为 chat / embedding / rerank 三种能力分别指定默认模型路由，AI 功能（伴读、图谱、翻译）按能力自动选择相应模型。
   - **Neo4j 图数据库连接**（`Neo4jConfig`）：URI、用户名、密码，支持连接验证。
   - **阅读器排版偏好**（`ReaderTypographyConfig`）：全局默认字体族、字号、行高、段间距。
   - **翻译偏好**（`TranslationPreferencesConfig`）：默认源语言、目标语言、翻译模型、段落并发数等。
+  - **定时更新配置**（`SchedulingConfig`）：启用/禁用开关、三种调度模式（`interval` / `cron` / `weekly`）及对应参数（轮询间隔、Cron 表达式、每周几+时刻）。
 - LLM API Key 以明文存储于 JSON 文件中，注意安全边界。
 - 模型能力检测通过发送轻量 API 请求验证，结果缓存在内存中。
 
@@ -148,6 +149,27 @@
 - 导出引擎（`export-engine.ts`）支持三种翻译导出模式：`original`（原文）、`translated`（纯译文）、`bilingual`（双语对照），通过 `?mode=` 查询参数控制。
 - 翻译相关测试集中在 `src/server/core/translation.test.ts`，应使用 SQLite 内存数据库，**不得**依赖真实 LLM 调用。
 
+### 4.11 定时更新调度：SchedulingService
+
+- `SchedulingService`（`src/server/core/scheduling.ts`）管理定时更新任务的全生命周期：启动/停止、策略 reload、轮询检查、增量下载触发。
+- 通过 `setInterval` 每分钟 tick 一次，根据配置的调度策略（`SchedulingConfig.mode`）通过 `calculateNextTriggerTime()` 计算下次触发时间。
+- 三种调度模式由 `SystemPreferencesService` 的 `SchedulingConfig` 定义：
+  - **`interval`**：固定间隔轮询，按小时设定（最小 1h）。
+  - **`cron`**：Cron 表达式模式，前端 `CronEditor` 组件支持可视化快速编排与 `cron-parser` 实时预览。
+  - **`weekly`**：简易周期定时，按"每周几（0-6）+ 固定时刻"组合。
+- 每轮检查串行遍历所有标记为已开启的书籍：
+  - 跳过有活跃抓取任务的书籍，避免冲突。
+  - 拉取远端目录与本地快照差分，发现新章节时自动调用 `SpiderRunner.crawlNovel()` 增量下载。
+  - 单本检查失败不中断整体轮次，结果（`up_to_date` / `new_chapters` / `error`）持久化到 SQLite。
+- 每轮检查写入 `scheduled_check_runs` 表，记录开始/完成时间、检查数量、新增章节数、跳过数、错误数，全链路日志通过 `SpiderLogDispatcher` 推送到控制台实时监控。
+- 服务启动时调用 `start()` 恢复未完成的检查轮次并启动定时器；配置变更时调用 `reload()` 停止旧定时器并应用新策略。
+- 前端通过两套 API 管理调度：
+  - `GET/PUT /api/control/scheduling`：读取/更新全局调度策略，返回含 `lastCheckRun` 的快照。
+  - `GET/PUT /api/library/novels/:sourceId/:novelId/scheduling`：单书定时更新开关。
+  - `GET/PUT /api/library/scheduling/novels`：批量管理参与定时更新的书籍列表。
+- 新增调度相关代码需同步更新 `novel-repository.ts` 中的 `scheduled_novels`、`scheduled_check_runs` 表结构与迁移逻辑。
+- 调度相关测试在 `src/server/core/scheduling.test.ts`，应使用 SQLite 内存数据库。
+
 ## 5. API 路由速查 (API Routes)
 
 | 方法 | 路径 | 说明 |
@@ -167,6 +189,7 @@
 | POST | `/api/control/preferences/neo4j/validate` | 验证 Neo4j 连接 |
 | GET/PUT | `/api/control/preferences/reader-typography` | 读取/更新全局阅读排版偏好 |
 | GET/PUT | `/api/control/preferences/translation` | 读取/更新翻译偏好配置 |
+| GET/PUT | `/api/control/scheduling` | 读取/更新定时更新调度策略 |
 | GET | `/api/library/novels` | 书库列表（支持 `?q=` 搜索） |
 | GET | `/api/library/novels/:sourceId/:novelId` | 书库单本详情（含知识图谱状态） |
 | GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId` | 章节内容 |
@@ -202,6 +225,9 @@
 | PUT | `/api/library/novels/:sourceId/:novelId/translate/terms/:termId` | 更新术语条目 |
 | DELETE | `/api/library/novels/:sourceId/:novelId/translate/terms/:termId` | 删除术语条目 |
 | POST | `/api/library/novels/:sourceId/:novelId/translate/terms/import-from-graph` | 从知识图谱实体导入术语 |
+| GET/PUT | `/api/library/novels/:sourceId/:novelId/scheduling` | 读取/更新单书定时更新状态 |
+| GET | `/api/library/scheduling/novels` | 获取所有书籍的定时更新书单 |
+| PUT | `/api/library/scheduling/novels` | 批量更新定时更新书单 |
 
 ## 6. 编码规范 (Coding Standards)
 
@@ -237,6 +263,7 @@
 - **系统偏好**：新增偏好字段需在 `SystemPreferencesService` 中定义接口与持久化逻辑，并在前端 `SystemPreferences` 组件中提供对应 UI。偏好迁移策略（新增字段默认值）需在 `system-preferences.ts` 的 `loadPersistedPreferences` 中显式处理。
 - **书库搜索**：搜索语法变更需同步更新 `library-search.ts` 中的分词器与解析器，并补充测试覆盖。
 - **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义（使用 `Annotation.Root()` API）以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。从知识图谱实体导入术语（`importGraphEntitiesToTerms`）需要校验目标小说存在且术语表已就绪。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
+- **定时更新调度**：新增调度相关代码需同步更新 `novel-repository.ts` 中的 `scheduled_novels`、`scheduled_check_runs` 表结构与迁移逻辑。调度测试使用 `scheduling.test.ts`，应使用 SQLite 内存数据库。前端 `CronEditor` 组件（`cron-editor.tsx`）使用 `cron-parser` 做表达式校验与实时预览。定时更新书单管理入口收敛至系统偏好设置页面的一个操作按钮，唤起 Modal 浮窗勾选。
 - **移动端布局**：采集页底部操作浮窗（`control-console.tsx`）的移动端版本必须单独渲染，使用紧凑布局（`p="xs"`、`compact-xs` 按钮、`wrap="nowrap"`），不得复用桌面端大卡片。移动端浮窗只需保留「解析目录」和「下发采集」两个按钮，「全局设置」按钮仅在桌面端出现。浮窗位置使用常量公式：`MOBILE_FOOTER_HEIGHT + MOBILE_AFFIX_GAP`，与 AppShell 的 `footer={{ height: isMobile ? 56 : 0 }}` 对齐。
 - **键盘检测**：`control-console.tsx` 中的移动端键盘检测必须使用基准高度差值模型（记录 `visualViewport.height` 初始值，差值超过 140px 则判定键盘打开），并配合 `focusin`/`focusout` 事件兜底（输入框获焦点即判定键盘打开）。不得使用比例判断（如 `viewport.height < window.innerHeight * 0.78`），因为安卓浏览器中两个值可能同时变化导致检测失效。检测阈值应提取为模块级常量。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
