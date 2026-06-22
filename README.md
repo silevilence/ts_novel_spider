@@ -1,6 +1,6 @@
 # TS Novel Spider
 
-一款基于 TypeScript 的自动化小说抓取与离线阅读工具，提供 Web 管控界面，支持后台守护运行与多格式导出。当前版本 **v0.7.0**。
+一款基于 TypeScript 的自动化小说抓取与离线阅读工具，提供 Web 管控界面，支持后台守护运行与多格式导出。当前版本 **v0.8.0**。
 
 ## 功能特性
 
@@ -21,6 +21,7 @@
 - **书籍别名**：可为本地书籍设置自定义别名，搜索时自动关联
 - **AI 伴读与知识图谱（实验性）**：接入大语言模型自动构建人物关系与情节图谱，支持 AI 问答辅助理解文本内容
 - **自动化定时更新**：支持固定间隔、Cron 表达式、每周定时三种调度策略，自动检查已标记书籍的远端更新并增量下载到本地。每本书可独立开关，可在设置中批量管理参与定时更新的书单
+- **OPDS 书源服务**：支持 OPDS 1.2（Atom XML）与 OPDS 2.0（JSON-LD）协议，将本地书库作品分发给阅读器应用。自动为每本上架书籍编译 EPUB 制品，有翻译的作品额外生成译文版和双语对照版
 
 ## 快速上手
 
@@ -105,6 +106,8 @@ docker compose -f docker-compose.dev.yml up
 
 如需启用 AI 伴读与知识图谱功能（实验性），需先在设置中完成大模型与 Neo4j 的连接配置。
 
+如要使用 OPDS 书源服务，前往 **OPDS 书源** 页面开启服务并管理上架书单，支持 OPDS 1.2 与 OPDS 2.0 的阅读器可通过 `/opds/v1` 或 `/opds/v2` 地址浏览和下载。
+
 ## 目录结构
 
 ```
@@ -116,17 +119,24 @@ docker compose -f docker-compose.dev.yml up
 │   │   │   └── spider/          # 站点爬虫适配器（Syosetu / Syosetu18 / Kakuyomu）
 │   │   ├── core/
 │   │   │   ├── translation/     # 翻译流水线子节点（分段/翻译/组装/审校/定稿）
+│   │   │   ├── opds-compilation.ts  # OPDS 制品编译调度器
+│   │   │   ├── opds-feed.ts         # OPDS Feed 生成（Atom XML + JSON-LD）
 │   │   │   ├── scheduling.ts    # 定时更新调度引擎
 │   │   │   └── ...              # 数据库、导出引擎、网络代理、系统偏好、知识图谱
-│   │   ├── routes/              # Express API 路由
+│   │   ├── routes/
+│   │   │   ├── opds.ts          # OPDS 协议路由（v1/v2 Feed + 制品下载）
+│   │   │   └── ...              # health、control-center、library 等路由
 │   │   └── index.ts             # 服务入口
 │   └── web/                     # 前端 React 工程（Mantine v7 + Vite 构建）
-│       ├── components/          # UI 组件（控制台、书库、监控、设置、面板、Cron 编辑器）
+│       ├── components/
+│       │   ├── opds-dashboard.tsx  # OPDS 书源管理面板
+│       │   └── ...              # 控制台、书库、监控、设置、Cron 编辑器等
 │       ├── services/            # API 封装与视图模型
-│       └── App.tsx              # 前端入口与路由配置
+│       └── App.tsx              # 前端入口与路由配置（含 OPDS 路由）
 ├── data/
 │   ├── exports/                 # 导出的小说文件
-│   └── offline-assets/          # 本地化图片缓存
+│   ├── offline-assets/          # 本地化图片缓存
+│   └── opds-artifacts/          # OPDS EPUB 制品
 ├── .data/                       # 运行时数据（SQLite、代理配置、系统偏好）— 不提交 Git
 ├── docs/                        # UX 设计规范与开发备忘
 ├── scripts/ci/                  # CI 发布准备脚本
@@ -143,5 +153,5 @@ docker compose -f docker-compose.dev.yml up
 | 后端 | Node.js ≥ 20, Express 5, better-sqlite3, Cheerio, cron-parser |
 | 前端 | React 19, Mantine v7, Vite 6, TypeScript strict 模式 |
 | AI / 图谱 / 翻译 | Vercel AI SDK, LangGraph, Neo4j, 支持 OpenAI / Anthropic / Google / Ollama |
-| 导出 | JSZip（EPUB 打包） |
+| 导出 / 压缩 | JSZip（EPUB 打包） |
 | 工程化 | tsx, concurrently, Docker multi-stage build |
