@@ -763,6 +763,70 @@ test('reader typography preferences routes load defaults and persist updates', a
   }
 });
 
+test('OPDS preferences and compilation runs API', async () => {
+  const { app, cleanup } = createTestServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    // — GET 默认配置
+    const getResponse = await fetch(`${baseUrl}/api/control/preferences/opds`);
+    assert.equal(getResponse.status, 200);
+    const getPayload = (await getResponse.json()) as { enabled: boolean; scanCronExpression: string; lastRun: unknown };
+    assert.equal(getPayload.enabled, false);
+    assert.ok(typeof getPayload.scanCronExpression === 'string');
+
+    // — PUT 更新配置
+    const putResponse = await fetch(`${baseUrl}/api/control/preferences/opds`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true, scanCronExpression: '0 4 * * *' }),
+    });
+    assert.equal(putResponse.status, 200);
+    const putPayload = (await putResponse.json()) as { enabled: boolean; scanCronExpression: string };
+    assert.equal(putPayload.enabled, true);
+    assert.equal(putPayload.scanCronExpression, '0 4 * * *');
+
+    // — PUT 无效 cron 返回 400
+    const invalidResponse = await fetch(`${baseUrl}/api/control/preferences/opds`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scanCronExpression: 'invalid cron' }),
+    });
+    assert.equal(invalidResponse.status, 400);
+    const invalidPayload = (await invalidResponse.json()) as { message: string };
+    assert.ok(invalidPayload.message.includes('Cron'));
+
+    // — GET /opds/runs 返回分页结果
+    const runsResponse = await fetch(`${baseUrl}/api/control/opds/runs?limit=5&offset=0`);
+    assert.equal(runsResponse.status, 200);
+    const runsPayload = (await runsResponse.json()) as { runs: unknown[] };
+    assert.ok(Array.isArray(runsPayload.runs));
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
 async function waitForCompletedTask(baseUrl: string, taskId: string) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const response = await fetch(`${baseUrl}/api/control/tasks/${taskId}`);

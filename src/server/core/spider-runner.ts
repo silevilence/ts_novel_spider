@@ -148,6 +148,7 @@ export class SpiderRunner {
         }
 
         this.#repository.saveChapterContent(this.#spider.sourceId, options.novelId, result.content);
+        this.#repository.bumpNovelContentUpdatedAt(this.#spider.sourceId, options.novelId);
 
         await this.#logger.dispatch({
           type: 'chapter_fetched',

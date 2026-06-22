@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import CronExpressionParser from 'cron-parser';
 
 import {
   ControlCenterService,
@@ -27,6 +28,8 @@ import type {
   ReaderTypographyState,
   SchedulingConfig,
   SchedulingConfigInput,
+  OpdsConfig,
+  OpdsConfigInput,
   TranslationPreferencesConfig,
   TranslationPreferencesInput,
 } from '../core/system-preferences';
@@ -447,6 +450,50 @@ router.put('/scheduling', (request, response) => {
     } catch (error) {
       response.status(400).json({
         message: error instanceof Error ? error.message : 'Invalid scheduling request.',
+      });
+    }
+  });
+
+  // ── OPDS 引擎 ──
+
+  router.get('/preferences/opds', (_request, response) => {
+    const config = service.getOpdsState();
+    const lastRun = service.getLatestCompletedOpdsCompilationRun();
+    response.json({ ...config, lastRun: lastRun ?? null });
+  });
+
+  router.put('/preferences/opds', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as OpdsConfigInput;
+      // 校验 cron 表达式
+      if (typeof body.scanCronExpression === 'string' && body.scanCronExpression.trim()) {
+        try {
+          CronExpressionParser.parse(body.scanCronExpression.trim());
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'invalid expression';
+          response.status(400).json({ message: `Cron 表达式无效: ${reason}` });
+          return;
+        }
+      }
+      response.json(service.updateOpdsState(body));
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid OPDS preferences request.',
+      });
+    }
+  });
+
+  router.get('/opds/runs', (request, response) => {
+    try {
+      const limitRaw = typeof request.query.limit === 'string' ? parseInt(request.query.limit, 10) : 20;
+      const offsetRaw = typeof request.query.offset === 'string' ? parseInt(request.query.offset, 10) : 0;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 100) : 20;
+      const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+      const runs = service.listOpdsCompilationRuns(limit, offset);
+      response.json({ runs });
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
       });
     }
   });

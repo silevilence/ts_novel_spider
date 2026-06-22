@@ -409,6 +409,34 @@ export function normalizeSchedulingInput(input: SchedulingConfigInput): Scheduli
   };
 }
 
+// ── OPDS 引擎配置 ──
+
+export interface OpdsConfigInput {
+  enabled?: boolean;
+  scanCronExpression?: string;
+}
+
+export interface OpdsConfig {
+  enabled: boolean;
+  scanCronExpression: string;
+  updatedAt: string | null;
+}
+
+export const OPDS_DEFAULTS: OpdsConfig = {
+  enabled: false,
+  scanCronExpression: '0 */6 * * *',
+  updatedAt: null,
+};
+
+export function normalizeOpdsInput(input: OpdsConfigInput): OpdsConfig {
+  return {
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : OPDS_DEFAULTS.enabled,
+    scanCronExpression: typeof input.scanCronExpression === 'string' && input.scanCronExpression.trim()
+      ? input.scanCronExpression.trim() : OPDS_DEFAULTS.scanCronExpression,
+    updatedAt: null,
+  };
+}
+
 // ──
 
 export interface SystemPreferencesServiceOptions {
@@ -424,6 +452,7 @@ interface PersistedSystemPreferences {
   readerTypography?: ReaderTypographyConfigInput;
   translation?: TranslationPreferencesInput;
   scheduling?: SchedulingConfigInput;
+  opds?: OpdsConfigInput;
   updatedAt: string | null;
 }
 
@@ -444,6 +473,7 @@ export class SystemPreferencesService {
   #translationUpdatedAt: string | null = null;
   #modelGateway: LlmModelGatewayConfig;
   #scheduling: SchedulingConfig;
+  #opds: OpdsConfig;
   #updatedAt: string | null;
 
   constructor(options: SystemPreferencesServiceOptions = {}) {
@@ -466,6 +496,9 @@ export class SystemPreferencesService {
     this.#scheduling = persisted?.scheduling
       ? normalizeSchedulingInput(persisted.scheduling)
       : { ...SCHEDULING_DEFAULTS };
+    this.#opds = persisted?.opds
+      ? { ...normalizeOpdsInput(persisted.opds), updatedAt: persisted.updatedAt ?? null }
+      : { ...OPDS_DEFAULTS };
     this.#updatedAt = persisted?.updatedAt ?? null;
   }
 
@@ -483,7 +516,7 @@ export class SystemPreferencesService {
     this.#llmProviders = normalizeProviderInputs(inputs);
     this.#llmValidations = filterValidations(this.#llmValidations, this.#llmProviders);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
     return this.getLlmState();
   }
 
@@ -591,7 +624,7 @@ export class SystemPreferencesService {
     };
     this.#neo4jValidation = null;
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
     return this.getNeo4jState();
   }
 
@@ -641,7 +674,7 @@ export class SystemPreferencesService {
     this.#readerTypography = normalizeReaderTypographyInput(input);
     this.#readerTypographyUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
     return this.getReaderTypography();
   }
 
@@ -656,7 +689,7 @@ export class SystemPreferencesService {
     this.#translation = normalizeTranslationPreferencesInput(input);
     this.#translationUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
     return this.getTranslationState();
   }
 
@@ -667,7 +700,7 @@ export class SystemPreferencesService {
   updateModelGateway(input: LlmModelGatewayConfig): LlmModelGatewayConfig {
     this.#modelGateway = normalizeModelGatewayConfig(input);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
     return this.getModelGateway();
   }
 
@@ -679,8 +712,19 @@ export class SystemPreferencesService {
     this.#scheduling = normalizeSchedulingInput({ ...this.#scheduling, ...input });
     this.#scheduling = { ...this.#scheduling, updatedAt: new Date().toISOString() };
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
     return this.getScheduling();
+  }
+
+  getOpds(): OpdsConfig {
+    return { ...this.#opds };
+  }
+
+  updateOpds(input: OpdsConfigInput): OpdsConfig {
+    this.#opds = { ...normalizeOpdsInput({ ...this.#opds, ...input }), updatedAt: new Date().toISOString() };
+    this.touch();
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    return this.getOpds();
   }
 
   private touch(): void {
@@ -1427,6 +1471,7 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       readerTypography?: unknown;
       translation?: unknown;
       scheduling?: unknown;
+      opds?: unknown;
       updatedAt?: unknown;
     };
 
@@ -1483,6 +1528,14 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       result.scheduling = sched;
     }
 
+    if (isRecord(parsed.opds)) {
+      const raw = parsed.opds as Record<string, unknown>;
+      const opds: OpdsConfigInput = {};
+      if (typeof raw.enabled === 'boolean') { opds.enabled = raw.enabled; }
+      if (typeof raw.scanCronExpression === 'string') { opds.scanCronExpression = raw.scanCronExpression; }
+      result.opds = opds;
+    }
+
     if (isRecord(parsed.modelGateway)) {
       const gateway = parsed.modelGateway as Record<string, unknown>;
       result.modelGateway = {
@@ -1528,6 +1581,7 @@ function persistPreferences(
   translation?: TranslationPreferencesConfig,
   modelGateway?: LlmModelGatewayConfig,
   scheduling?: SchedulingConfig,
+  opds?: OpdsConfig,
 ): void {
   if (!storageFilePath) {
     return;
@@ -1568,6 +1622,14 @@ function persistPreferences(
       weeklyDays: scheduling.weeklyDays,
       weeklyTime: scheduling.weeklyTime,
       updatedAt: scheduling.updatedAt,
+    };
+  }
+
+  if (opds) {
+    payload.opds = {
+      enabled: opds.enabled,
+      scanCronExpression: opds.scanCronExpression,
+      updatedAt: opds.updatedAt,
     };
   }
 

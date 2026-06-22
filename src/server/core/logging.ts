@@ -16,7 +16,12 @@ export type SpiderLogEventType =
   | 'scheduling_novel_skipped'
   | 'scheduling_novel_error'
   | 'scheduling_download_triggered'
-  | 'scheduling_round_completed';
+  | 'scheduling_round_completed'
+  | 'opds_compilation_idle'
+  | 'opds_compilation_round_started'
+  | 'opds_compilation_round_completed'
+  | 'opds_compilation_novel_compiled'
+  | 'opds_compilation_novel_error';
 
 export interface SpiderLogContext {
   sourceId: string;

@@ -23,6 +23,8 @@ import {
   type ReaderTypographyConfigInput,
   type ReaderTypographyResolved,
   type ReaderTypographyState,
+  type OpdsConfig,
+  type OpdsConfigInput,
   type SchedulingConfig,
   type SchedulingConfigInput,
   type TranslationPreferencesInput,
@@ -59,7 +61,8 @@ import {
   type TranslationBuild,
   type TranslationChapterDetail,
 } from './translation-service';
-import type { StoredScheduledNovelRow, StoredScheduledCheckRunRow, StoredTranslationTermRow } from './novel-repository';
+import type { StoredScheduledNovelRow, StoredScheduledCheckRunRow, StoredTranslationTermRow, StoredOpdsNovelRow, StoredOpdsCompilationRunRow } from './novel-repository';
+import type { OpdsNovelFeedEntry } from './opds-feed';
 import {
   LocalExportEngine,
   type GeneratedLibraryExport,
@@ -69,6 +72,7 @@ import {
 } from './export-engine';
 import { SqliteNovelRepository, type StoredNovelLibraryRow } from './novel-repository';
 import { SchedulingService, type SchedulingServiceDependencies } from './scheduling';
+import { OpdsCompilationService, type OpdsCompilationServiceDependencies } from './opds-compilation';
 import { SpiderRunner } from './spider-runner';
 import {
   type ChapterIndexEntry,
@@ -197,6 +201,7 @@ export interface ControlCenterServiceOptions {
   neo4jGraphStore?: Neo4jGraphStore;
   offlineAssetStoragePath?: string;
   exportStoragePath?: string;
+  opdsArtifactsPath?: string;
   assetFetchImpl?: typeof fetch;
 }
 
@@ -218,6 +223,8 @@ export class ControlCenterService {
   readonly #translation: TranslationService;
   readonly #taskLogDispatcher: SpiderLogDispatcher;
   readonly #scheduling: SchedulingService;
+  readonly #opdsCompilation: OpdsCompilationService;
+  readonly #opdsArtifactsRoot: string;
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
@@ -258,6 +265,17 @@ export class ControlCenterService {
       logger: this.#taskLogDispatcher,
     });
     this.#scheduling.start();
+
+    this.#opdsArtifactsRoot = options.opdsArtifactsPath ?? path.resolve(process.cwd(), 'data', 'opds-artifacts');
+
+    this.#opdsCompilation = new OpdsCompilationService({
+      repository: this.#repository,
+      preferences: this.#systemPreferences,
+      exportEngine: this.#exportEngine,
+      logger: this.#taskLogDispatcher,
+      ...(options.opdsArtifactsPath ? { artifactsRoot: options.opdsArtifactsPath } : {}),
+    });
+    this.#opdsCompilation.start();
   }
 
   close(): void {
@@ -266,6 +284,7 @@ export class ControlCenterService {
     }
 
     this.#scheduling.stop();
+    this.#opdsCompilation.stop();
 
     if (this.#ownsRepository) {
       this.#repository.close();
@@ -560,6 +579,76 @@ export class ControlCenterService {
   /** 获取上次完成的调度检查轮次 */
   getLatestCompletedCheckRun(): StoredScheduledCheckRunRow | undefined {
     return this.#repository.getLatestCompletedCheckRun();
+  }
+
+  // ── OPDS 引擎 ──
+
+  getOpdsState(): OpdsConfig {
+    return this.#systemPreferences.getOpds();
+  }
+
+  updateOpdsState(input: OpdsConfigInput): OpdsConfig {
+    const result = this.#systemPreferences.updateOpds(input);
+    this.#opdsCompilation.reload();
+    return result;
+  }
+
+  getOpdsNovel(sourceId: string, novelId: string): StoredOpdsNovelRow | undefined {
+    return this.#repository.getOpdsNovel(sourceId, novelId);
+  }
+
+  updateOpdsNovelVisible(sourceId: string, novelId: string, visible: boolean): void {
+    this.#repository.updateOpdsVisible(sourceId, novelId, visible);
+  }
+
+  listOpdsNovels(): StoredOpdsNovelRow[] {
+    return this.#repository.listOpdsNovels();
+  }
+
+  bulkUpdateOpdsNovels(entries: Array<{ sourceId: string; novelId: string; visible: boolean }>): void {
+    this.#repository.bulkUpdateOpdsVisible(entries);
+  }
+
+  listOpdsCompilationRuns(limit: number, offset: number): StoredOpdsCompilationRunRow[] {
+    return this.#repository.listOpdsCompilationRuns(limit, offset);
+  }
+
+  getLatestCompletedOpdsCompilationRun(): StoredOpdsCompilationRunRow | undefined {
+    return this.#repository.getLatestCompletedOpdsCompilationRun();
+  }
+
+  /** 列出所有 OPDS 可见书籍（含完整元数据，供 feed 构造） */
+  listVisibleOpdsNovelsWithMetadata(): OpdsNovelFeedEntry[] {
+    return this.#repository.listVisibleOpdsNovelsWithMetadata();
+  }
+
+  /** 查询某书某版本制品文件信息 */
+  getOpdsArtifactInfo(sourceId: string, novelId: string, fileName: string): { exists: boolean; filePath: string; size: number } {
+    const allowedFileNames = ['original.epub', 'translated.epub', 'bilingual.epub'];
+    if (!allowedFileNames.includes(fileName)) {
+      return { exists: false, filePath: '', size: 0 };
+    }
+    const filePath = path.join(this.#opdsArtifactsRoot, sourceId, novelId, fileName);
+    if (!fs.existsSync(filePath)) {
+      return { exists: false, filePath, size: 0 };
+    }
+    const stat = fs.statSync(filePath);
+    return { exists: true, filePath, size: stat.size };
+  }
+
+  /** 查询单本书的所有版本制品可用性 */
+  getOpdsNovelArtifactAvailability(sourceId: string, novelId: string): { original: boolean; translated: boolean; bilingual: boolean } {
+    return {
+      original: this.getOpdsArtifactInfo(sourceId, novelId, 'original.epub').exists,
+      translated: this.getOpdsArtifactInfo(sourceId, novelId, 'translated.epub').exists,
+      bilingual: this.getOpdsArtifactInfo(sourceId, novelId, 'bilingual.epub').exists,
+    };
+  }
+
+  /** 获取制品文件绝对路径（供路由 sendFile 使用） */
+  getOpdsArtifactFilePath(sourceId: string, novelId: string, fileName: string): string | null {
+    const info = this.getOpdsArtifactInfo(sourceId, novelId, fileName);
+    return info.exists ? info.filePath : null;
   }
 
   /** 列出所有书库书籍（供调度 Modal 使用） */

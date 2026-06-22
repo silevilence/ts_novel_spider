@@ -340,3 +340,84 @@ test('library reader typography routes resolve global defaults and novel overrid
     cleanup();
   }
 });
+
+test('OPDS visibility API — GET returns 404 for missing novel', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    const baseUrl = await waitForServerListening(server);
+
+    const response = await fetch(`${baseUrl}/api/library/novels/syosetu/missing/opds`);
+    assert.equal(response.status, 404);
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});
+
+test('OPDS visibility API — PUT updates visibility', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    const baseUrl = await waitForServerListening(server);
+
+    const response = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/opds`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visible: true }),
+    });
+    assert.equal(response.status, 200);
+
+    const payload = await response.json() as { opdsVisible: boolean };
+    assert.equal(payload.opdsVisible, true);
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});
+
+test('OPDS visibility API — GET returns all novels with opds state', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    const baseUrl = await waitForServerListening(server);
+
+    const response = await fetch(`${baseUrl}/api/library/opds/novels`);
+    assert.equal(response.status, 200);
+
+    const payload = await response.json() as { novels: Array<{ novelId: string }> };
+    assert.ok(Array.isArray(payload.novels));
+    assert.ok(payload.novels.some((n) => n.novelId === 'n1000lib'));
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});
+
+test('OPDS visibility API — PUT bulk updates visibility', async () => {
+  const { app, cleanup, repository } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    const baseUrl = await waitForServerListening(server);
+
+    const response = await fetch(`${baseUrl}/api/library/opds/novels`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ novels: [{ sourceId: 'syosetu', novelId: 'n1000lib', visible: true }] }),
+    });
+    assert.equal(response.status, 200);
+
+    const payload = await response.json() as { ok: boolean };
+    assert.equal(payload.ok, true);
+
+    const row = repository.getOpdsNovel('syosetu', 'n1000lib');
+    assert.equal(row?.opdsVisible, true);
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});

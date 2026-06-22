@@ -866,6 +866,11 @@ export class TranslationService {
       currentChapterTranslatedParagraphs: 0,
       totalTranslatedParagraphs: totalParagraphsDone,
     });
+
+    // 翻译完成（非中止）后 bump content_updated_at，触发 OPDS 制品重建
+    if (!ac.signal.aborted) {
+      this.#repository.bumpNovelContentUpdatedAt(sourceId, novelId);
+    }
   }
 }
 

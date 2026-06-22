@@ -94,6 +94,27 @@ export interface StoredScheduledCheckRunRow {
   errored: number;
 }
 
+export interface StoredOpdsNovelRow {
+  sourceId: string;
+  novelId: string;
+  title: string;
+  opdsVisible: boolean;
+  contentUpdatedAt: string | null;
+  epubCompiledAt: string | null;
+  hasTranslation: boolean;
+}
+
+export interface StoredOpdsCompilationRunRow {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: 'running' | 'completed';
+  totalScanned: number;
+  compiled: number;
+  skipped: number;
+  errored: number;
+}
+
 export interface StoredKnowledgeGraphProfileInput {
   sourceId: string;
   novelId: string;
@@ -3139,6 +3160,293 @@ export class SqliteNovelRepository {
       .run(new Date().toISOString());
   }
 
+  // ── OPDS: 可见性与时间戳 ──
+
+  getOpdsNovel(sourceId: string, novelId: string): StoredOpdsNovelRow | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT n.source_id, n.novel_id, n.title, n.opds_visible,
+                n.content_updated_at, n.epub_compiled_at,
+                EXISTS (
+                  SELECT 1 FROM chapter_translations ct
+                  WHERE ct.source_id = n.source_id
+                    AND ct.novel_id = n.novel_id
+                    AND ct.status = 'completed'
+                ) AS has_translation
+         FROM novels n
+         WHERE n.source_id = ? AND n.novel_id = ?`,
+      )
+      .get(sourceId, novelId) as {
+        source_id: string; novel_id: string; title: string;
+        opds_visible: number; content_updated_at: string | null;
+        epub_compiled_at: string | null; has_translation: number;
+      } | undefined;
+
+    if (!row) return undefined;
+
+    return {
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      title: row.title,
+      opdsVisible: row.opds_visible === 1,
+      contentUpdatedAt: row.content_updated_at,
+      epubCompiledAt: row.epub_compiled_at,
+      hasTranslation: row.has_translation === 1,
+    };
+  }
+
+  listOpdsNovels(): StoredOpdsNovelRow[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT n.source_id, n.novel_id, n.title, n.opds_visible,
+                n.content_updated_at, n.epub_compiled_at,
+                EXISTS (
+                  SELECT 1 FROM chapter_translations ct
+                  WHERE ct.source_id = n.source_id
+                    AND ct.novel_id = n.novel_id
+                    AND ct.status = 'completed'
+                ) AS has_translation
+         FROM novels n
+         ORDER BY n.title COLLATE NOCASE ASC`,
+      )
+      .all() as Array<{
+        source_id: string; novel_id: string; title: string;
+        opds_visible: number; content_updated_at: string | null;
+        epub_compiled_at: string | null; has_translation: number;
+      }>;
+
+    return rows.map((row) => ({
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      title: row.title,
+      opdsVisible: row.opds_visible === 1,
+      contentUpdatedAt: row.content_updated_at,
+      epubCompiledAt: row.epub_compiled_at,
+      hasTranslation: row.has_translation === 1,
+    }));
+  }
+
+  /** 查询所有 opds_visible=1 的小说（供扫描器使用） */
+  listVisibleOpdsNovels(): Array<{
+    sourceId: string;
+    novelId: string;
+    contentUpdatedAt: string | null;
+    epubCompiledAt: string | null;
+  }> {
+    const rows = this.#database
+      .prepare(
+        `SELECT source_id, novel_id, content_updated_at, epub_compiled_at
+         FROM novels
+         WHERE opds_visible = 1
+         ORDER BY source_id, novel_id`,
+      )
+      .all() as Array<{
+        source_id: string; novel_id: string;
+        content_updated_at: string | null; epub_compiled_at: string | null;
+      }>;
+
+    return rows.map((row) => ({
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      contentUpdatedAt: row.content_updated_at,
+      epubCompiledAt: row.epub_compiled_at,
+    }));
+  }
+
+  /** 查询所有 opds_visible=1 的小说（含完整元数据，供 feed 构造） */
+  listVisibleOpdsNovelsWithMetadata(): Array<{
+    sourceId: string;
+    novelId: string;
+    title: string;
+    author: string;
+    description: string;
+    tags: string[];
+    contentUpdatedAt: string | null;
+    epubCompiledAt: string | null;
+    hasTranslation: boolean;
+  }> {
+    const rows = this.#database
+      .prepare(
+        `SELECT n.source_id, n.novel_id, n.title, n.author, n.description,
+                n.tags_json, n.content_updated_at, n.epub_compiled_at,
+                EXISTS (
+                  SELECT 1 FROM chapter_translations ct
+                  WHERE ct.source_id = n.source_id
+                    AND ct.novel_id = n.novel_id
+                    AND ct.status = 'completed'
+                ) AS has_translation
+         FROM novels n
+         WHERE n.opds_visible = 1
+         ORDER BY n.title COLLATE NOCASE ASC`,
+      )
+      .all() as Array<{
+        source_id: string; novel_id: string; title: string; author: string;
+        description: string; tags_json: string;
+        content_updated_at: string | null; epub_compiled_at: string | null;
+        has_translation: number;
+      }>;
+
+    return rows.map((row) => ({
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      title: row.title,
+      author: row.author,
+      description: row.description,
+      tags: JSON.parse(row.tags_json) as string[],
+      contentUpdatedAt: row.content_updated_at,
+      epubCompiledAt: row.epub_compiled_at,
+      hasTranslation: row.has_translation === 1,
+    }));
+  }
+
+  updateOpdsVisible(sourceId: string, novelId: string, visible: boolean): void {
+    this.#database
+      .prepare(
+        `UPDATE novels SET opds_visible = ? WHERE source_id = ? AND novel_id = ?`,
+      )
+      .run(visible ? 1 : 0, sourceId, novelId);
+  }
+
+  bulkUpdateOpdsVisible(entries: Array<{ sourceId: string; novelId: string; visible: boolean }>): void {
+    const stmt = this.#database.prepare(
+      `UPDATE novels SET opds_visible = ? WHERE source_id = ? AND novel_id = ?`,
+    );
+    const tx = this.#database.transaction(() => {
+      for (const entry of entries) {
+        stmt.run(entry.visible ? 1 : 0, entry.sourceId, entry.novelId);
+      }
+    });
+    tx();
+  }
+
+  /** 章节入库或翻译完成后调用，bump 内容更新时间 */
+  bumpNovelContentUpdatedAt(sourceId: string, novelId: string): void {
+    const now = new Date().toISOString();
+    this.#database
+      .prepare(
+        `UPDATE novels SET content_updated_at = ? WHERE source_id = ? AND novel_id = ?`,
+      )
+      .run(now, sourceId, novelId);
+  }
+
+  /** EPUB 制品生成成功后调用 */
+  updateNovelEpubCompiledAt(sourceId: string, novelId: string, compiledAt: string): void {
+    this.#database
+      .prepare(
+        `UPDATE novels SET epub_compiled_at = ? WHERE source_id = ? AND novel_id = ?`,
+      )
+      .run(compiledAt, sourceId, novelId);
+  }
+
+  /** 查询某书是否有已完成的章节翻译（供扫描器决定生成哪些版本） */
+  novelHasCompletedTranslation(sourceId: string, novelId: string): boolean {
+    const row = this.#database
+      .prepare(
+        `SELECT 1 FROM chapter_translations
+         WHERE source_id = ? AND novel_id = ? AND status = 'completed'
+         LIMIT 1`,
+      )
+      .get(sourceId, novelId) as { 1: number } | undefined;
+    return Boolean(row);
+  }
+
+  // ── OPDS: 制品生成审计 ──
+
+  createOpdsCompilationRun(id: string, startedAt: string): void {
+    this.#database
+      .prepare(
+        `INSERT INTO opds_compilation_runs (id, started_at, status)
+         VALUES (?, ?, 'running')`,
+      )
+      .run(id, startedAt);
+  }
+
+  completeOpdsCompilationRun(
+    id: string,
+    completedAt: string,
+    totalScanned: number,
+    compiled: number,
+    skipped: number,
+    errored: number,
+  ): void {
+    this.#database
+      .prepare(
+        `UPDATE opds_compilation_runs
+         SET completed_at = ?, status = 'completed',
+             total_scanned = ?, compiled = ?, skipped = ?, errored = ?
+         WHERE id = ?`,
+      )
+      .run(completedAt, totalScanned, compiled, skipped, errored, id);
+  }
+
+  listOpdsCompilationRuns(limit: number, offset: number): StoredOpdsCompilationRunRow[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT id, started_at, completed_at, status,
+               total_scanned, compiled, skipped, errored
+         FROM opds_compilation_runs
+         ORDER BY started_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(limit, offset) as Array<{
+        id: string; started_at: string; completed_at: string | null;
+        status: string; total_scanned: number; compiled: number;
+        skipped: number; errored: number;
+      }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      status: row.status as 'running' | 'completed',
+      totalScanned: row.total_scanned,
+      compiled: row.compiled,
+      skipped: row.skipped,
+      errored: row.errored,
+    }));
+  }
+
+  getLatestCompletedOpdsCompilationRun(): StoredOpdsCompilationRunRow | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT id, started_at, completed_at, status,
+               total_scanned, compiled, skipped, errored
+         FROM opds_compilation_runs
+         WHERE status = 'completed'
+         ORDER BY completed_at DESC
+         LIMIT 1`,
+      )
+      .get() as {
+        id: string; started_at: string; completed_at: string | null;
+        status: string; total_scanned: number; compiled: number;
+        skipped: number; errored: number;
+      } | undefined;
+
+    if (!row) return undefined;
+
+    return {
+      id: row.id,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      status: row.status as 'running' | 'completed',
+      totalScanned: row.total_scanned,
+      compiled: row.compiled,
+      skipped: row.skipped,
+      errored: row.errored,
+    };
+  }
+
+  /** 服务启动恢复：将遗留 running 记录标记为 completed */
+  recoverIncompleteOpdsCompilationRuns(): void {
+    this.#database
+      .prepare(
+        `UPDATE opds_compilation_runs
+         SET status = 'completed', completed_at = ?
+         WHERE status = 'running'`,
+      )
+      .run(new Date().toISOString());
+  }
+
   private migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS novels (
@@ -3564,6 +3872,42 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_translation_builds', 'current_chapter_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novel_translation_builds', 'total_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novel_translation_builds', 'total_paragraph_estimate', 'INTEGER NOT NULL DEFAULT 0');
+
+    // ── OPDS: novels 表新增列 ──
+    this.ensureColumnExists('novels', 'opds_visible', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('novels', 'content_updated_at', 'TEXT');
+    this.ensureColumnExists('novels', 'epub_compiled_at', 'TEXT');
+
+    // 首次迁移时回填 content_updated_at = MAX(chapters.updated_at)
+    this.#database.exec(`
+      UPDATE novels
+      SET content_updated_at = (
+        SELECT MAX(c.updated_at)
+        FROM chapters c
+        WHERE c.source_id = novels.source_id
+          AND c.novel_id = novels.novel_id
+      )
+      WHERE content_updated_at IS NULL
+        AND EXISTS (
+          SELECT 1 FROM chapters c
+          WHERE c.source_id = novels.source_id
+            AND c.novel_id = novels.novel_id
+        )
+    `);
+
+    // ── OPDS: 制品生成审计表 ──
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS opds_compilation_runs (
+        id                 TEXT NOT NULL PRIMARY KEY,
+        started_at         TEXT NOT NULL,
+        completed_at       TEXT,
+        status             TEXT NOT NULL DEFAULT 'running',
+        total_scanned      INTEGER NOT NULL DEFAULT 0,
+        compiled           INTEGER NOT NULL DEFAULT 0,
+        skipped            INTEGER NOT NULL DEFAULT 0,
+        errored            INTEGER NOT NULL DEFAULT 0
+      )
+    `);
   }
 
   private ensureColumnExists(tableName: string, columnName: string, columnDefinition: string): void {

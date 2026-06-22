@@ -28,7 +28,7 @@ import type {
   LibraryReadingProgress,
 } from '../core/offline-library';
 import type { ReaderTypographyResolved } from '../core/system-preferences';
-import type { StoredScheduledNovelRow, StoredTranslationTermRow } from '../core/novel-repository';
+import type { StoredOpdsNovelRow, StoredScheduledNovelRow, StoredTranslationTermRow } from '../core/novel-repository';
 
 export interface LibraryNovelSummaryPayload {
   novels: LibraryNovelSummary[];
@@ -953,6 +953,74 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
         : [];
 
       service.bulkUpsertScheduledNovels(entries);
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
+      });
+    }
+  });
+
+  // ── OPDS 可见性 ──
+
+  // 单书 OPDS 状态
+  router.get('/novels/:sourceId/:novelId/opds', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const row = service.getOpdsNovel(sourceId, novelId);
+      if (!row) {
+        response.status(404).json({
+          message: `Library novel ${sourceId}/${novelId} was not found.`,
+        });
+        return;
+      }
+      response.json(row);
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
+      });
+    }
+  });
+
+  router.put('/novels/:sourceId/:novelId/opds', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const body = request.body as { visible?: unknown };
+      const visible = typeof body.visible === 'boolean' ? body.visible : false;
+      service.updateOpdsNovelVisible(sourceId, novelId, visible);
+      const row = service.getOpdsNovel(sourceId, novelId);
+      response.json(row);
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
+      });
+    }
+  });
+
+  // 批量管理 OPDS 可见性
+  router.get('/opds/novels', (_request, response) => {
+    try {
+      const novels = service.listOpdsNovels();
+      response.json({ novels });
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
+      });
+    }
+  });
+
+  router.put('/opds/novels', (request, response) => {
+    try {
+      const body = request.body as { novels?: unknown };
+      const entries = Array.isArray(body.novels)
+        ? body.novels.filter((entry): entry is { sourceId: string; novelId: string; visible: boolean } =>
+            typeof entry === 'object' && entry !== null &&
+            typeof (entry as Record<string, unknown>).sourceId === 'string' &&
+            typeof (entry as Record<string, unknown>).novelId === 'string' &&
+            typeof (entry as Record<string, unknown>).visible === 'boolean',
+          )
+        : [];
+      service.bulkUpdateOpdsNovels(entries);
       response.json({ ok: true });
     } catch (error) {
       response.status(400).json({
