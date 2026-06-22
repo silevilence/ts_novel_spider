@@ -267,3 +267,65 @@
 - **移动端布局**：采集页底部操作浮窗（`control-console.tsx`）的移动端版本必须单独渲染，使用紧凑布局（`p="xs"`、`compact-xs` 按钮、`wrap="nowrap"`），不得复用桌面端大卡片。移动端浮窗只需保留「解析目录」和「下发采集」两个按钮，「全局设置」按钮仅在桌面端出现。浮窗位置使用常量公式：`MOBILE_FOOTER_HEIGHT + MOBILE_AFFIX_GAP`，与 AppShell 的 `footer={{ height: isMobile ? 56 : 0 }}` 对齐。
 - **键盘检测**：`control-console.tsx` 中的移动端键盘检测必须使用基准高度差值模型（记录 `visualViewport.height` 初始值，差值超过 140px 则判定键盘打开），并配合 `focusin`/`focusout` 事件兜底（输入框获焦点即判定键盘打开）。不得使用比例判断（如 `viewport.height < window.innerHeight * 0.78`），因为安卓浏览器中两个值可能同时变化导致检测失效。检测阈值应提取为模块级常量。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
+
+## 10. Git 提交规范 (Git Commit Convention)
+
+Git 提交消息必须遵循以下统一格式，确保历史清晰、分类明确。
+
+### 10.1 格式
+
+```
+<emoji> <type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+- **emoji**：视觉分类标识，必须使用
+- **type**：`feat` / `fix` / `refactor` / `docs` / `test` / `chore` / `style` / `perf`
+- **scope**：可选，如 `(opds)`、`(spider)`、`(api)`、`(web)`
+- **subject**：中文标题，概括变更内容，首字无需空格
+- **body**：英文或中英文混排，每行为一个 `- ` 开头的条目，描述具体变更
+- **footer**：可选的 `Refs:` 或 `BREAKING CHANGE:`
+
+### 10.2 Emoji 对照表
+
+| Type | Emoji | 含义 |
+|---|---|---|
+| `feat` | ✨ | 新功能 |
+| `fix` | 🐛 | Bug 修复 |
+| `refactor` | ♻️ | 代码重构 |
+| `docs` | 📚 | 文档变更 |
+| `test` | 🧪 | 测试相关 |
+| `chore` | 🔧 | 工程化/依赖/配置 |
+| `style` | 🎨 | 代码格式/样式 |
+| `perf` | ⚡ | 性能优化 |
+| `wip` | 🚧 | 进行中（仅临时使用，合并前必须 squash） |
+
+### 10.3 示例
+
+```
+✨ feat(opds): 实现 OPDS 基础层——可见性控制与 EPUB 制品生命周期
+
+- DB: add opds_visible, content_updated_at, epub_compiled_at columns
+- Repository: add OPDS CRUD methods
+- OpdsCompilationService: new cron-based scheduler
+
+Refs: ROADMAP OPDS 书源服务构建与分发
+```
+
+```
+🐛 fix(api): 修复定时更新策略变更后调度器未正确重载的并发问题
+```
+
+```
+📚 docs: 添加 OPDS 书源服务任务到路线图
+```
+
+### 10.4 约定
+
+- 多条变更在同一提交中时，`subject` 概括主要变更，`body` 逐条列举
+- 每行 body 以 `- ` 开头，长度不超过 72 字符（英文）或适当截断
+- **禁止**仅重复文件列表而无语义描述的提交
+- **禁止**在提交消息中包含内部指令或占位符（如 "TODO"、"TBD"）
