@@ -27,8 +27,11 @@ import type { LibraryModel } from '../services/library-model';
 import {
   buildLibraryExportDownloadUrl,
   fetchNovelScheduling,
+  fetchNovelOpdsStatus,
   updateNovelScheduling,
+  updateNovelOpdsVisible,
   type LibraryExportFormat,
+  type NovelOpdsStatus,
   type SchedulingNovelDetail,
   type TranslationExportMode,
 } from '../services/api';
@@ -91,6 +94,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
   const [isPageNavOpen, setIsPageNavOpen] = useState(false);
   const [exportTranslationMode, setExportTranslationMode] = useState<TranslationExportMode>('original');
   const [schedulingDetail, setSchedulingDetail] = useState<SchedulingNovelDetail | null>(null);
+  const [opdsStatus, setOpdsStatus] = useState<NovelOpdsStatus | null>(null);
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   const detail = model.detail?.novel;
@@ -145,11 +149,14 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [descriptionDialog, isExportDialogOpen, isRedownloadPickerOpen, isPageNavOpen]);
 
-  // 加载定时更新状态
+  // 加载定时更新状态与 OPDS 可见性
   useEffect(() => {
     if (!detail) return;
     fetchNovelScheduling(detail.sourceId, detail.metadata.novelId)
       .then(setSchedulingDetail)
+      .catch(() => {});
+    fetchNovelOpdsStatus(detail.sourceId, detail.metadata.novelId)
+      .then(setOpdsStatus)
       .catch(() => {});
   }, [detail?.sourceId, detail?.metadata.novelId]);
 
@@ -230,6 +237,41 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
               {schedulingStatusMessage(schedulingDetail)}
             </Text>
           )}
+        </Paper>
+
+        {/* ====== OPDS 公开分发 ====== */}
+        <Paper
+          p="sm"
+          radius="md"
+          style={{
+            border: '1px solid rgba(127,208,255,0.30)',
+            background: 'rgba(127,208,255,0.04)',
+            minWidth: 180,
+          }}
+        >
+          <Group justify="space-between" align="flex-start" wrap="nowrap">
+            <Stack gap={2}>
+              <Text size="xs" fw={600} style={{ color: '#7fd0ff' }}>
+                📚 OPDS 分发
+              </Text>
+              <Text size="xs" c="dimmed">
+                {opdsStatus?.opdsVisible ? '已上架' : '开启后对阅读器可见'}
+              </Text>
+            </Stack>
+            <Switch
+              size="sm"
+              checked={opdsStatus?.opdsVisible ?? false}
+              onChange={(event) => {
+                const next = event.currentTarget.checked;
+                setOpdsStatus((prev) => prev ? { ...prev, opdsVisible: next } : null);
+                updateNovelOpdsVisible(detail.sourceId, detail.metadata.novelId, next)
+                  .then(setOpdsStatus)
+                  .catch(() => {
+                    setOpdsStatus((prev) => prev ? { ...prev, opdsVisible: !next } : null);
+                  });
+              }}
+            />
+          </Group>
         </Paper>
 
         {/* ====== 同步任务状态 ====== */}

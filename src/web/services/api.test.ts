@@ -13,11 +13,16 @@ import {
   discoverLlmProviderModels,
   fetchLibraryKnowledgeGraph,
   fetchLibraryNovels,
+  fetchNovelOpdsStatus,
+  fetchOpdsConfig,
+  fetchOpdsRuns,
   pauseLibraryKnowledgeGraph,
   resumeLibraryKnowledgeGraph,
   updateLibraryKnowledgeGraphProfile,
   updateLibraryReadingProgress,
   updateNeo4jPreferences,
+  updateNovelOpdsVisible,
+  updateOpdsConfig,
   validateLlmProviderModel,
 } from './api';
 
@@ -488,6 +493,117 @@ test('updateNeo4jPreferences sends the configuration payload to the server', asy
       database: 'library',
     });
     assert.equal(payload.config.database, 'library');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchOpdsConfig targets the OPDS preferences endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      assert.equal(String(input), '/api/control/preferences/opds');
+      return new Response(JSON.stringify({
+        enabled: false,
+        scanCronExpression: '0 */6 * * *',
+        updatedAt: null,
+        lastRun: null,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const config = await fetchOpdsConfig();
+    assert.equal(config.enabled, false);
+    assert.equal(config.scanCronExpression, '0 */6 * * *');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('updateOpdsConfig sends PUT request with correct body', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      assert.equal(String(input), '/api/control/preferences/opds');
+      assert.equal(init?.method, 'PUT');
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.enabled, true);
+      return new Response(JSON.stringify({
+        enabled: true,
+        scanCronExpression: '0 4 * * *',
+        updatedAt: '2026-06-22T00:00:00.000Z',
+        lastRun: null,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const config = await updateOpdsConfig({ enabled: true });
+    assert.equal(config.enabled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchOpdsRuns passes limit and offset query params', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      assert.ok(url.includes('limit=10'));
+      assert.ok(url.includes('offset=20'));
+      assert.ok(url.includes('/api/control/opds/runs'));
+      return new Response(JSON.stringify({ runs: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const payload = await fetchOpdsRuns(10, 20);
+    assert.deepEqual(payload.runs, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchNovelOpdsStatus targets the novel OPDS status endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      assert.equal(String(input), '/api/library/novels/syosetu/n1/opds');
+      return new Response(JSON.stringify({
+        sourceId: 'syosetu',
+        novelId: 'n1',
+        title: '测试',
+        opdsVisible: false,
+        contentUpdatedAt: null,
+        epubCompiledAt: null,
+        hasTranslation: false,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const status = await fetchNovelOpdsStatus('syosetu', 'n1');
+    assert.equal(status.opdsVisible, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('updateNovelOpdsVisible sends PUT with visible body', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      assert.equal(String(input), '/api/library/novels/syosetu/n1/opds');
+      assert.equal(init?.method, 'PUT');
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.visible, true);
+      return new Response(JSON.stringify({
+        sourceId: 'syosetu',
+        novelId: 'n1',
+        title: '测试',
+        opdsVisible: true,
+        contentUpdatedAt: null,
+        epubCompiledAt: null,
+        hasTranslation: false,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const status = await updateNovelOpdsVisible('syosetu', 'n1', true);
+    assert.equal(status.opdsVisible, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

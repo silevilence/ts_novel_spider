@@ -5,6 +5,7 @@ import { AppShell } from './components/app-shell';
 import { ControlConsole } from './components/control-console';
 import { LibraryWorkspace } from './components/library-workspace';
 import { MonitorDashboard } from './components/monitor-dashboard';
+import { OpdsDashboard } from './components/opds-dashboard';
 import { SystemPreferences } from './components/system-preferences';
 import {
   APP_ROUTES,
@@ -91,6 +92,9 @@ export function App() {
           <LibraryWorkspace model={libraryModel} onOpenControl={() => navigate('/')} onNotify={pushNotice} />
         ) : null}
         {activeRoute.id === 'monitor' ? <MonitorDashboard model={model} /> : null}
+        {activeRoute.id === 'opds' ? (
+          <OpdsDashboard onNotify={pushNotice} />
+        ) : null}
         {activeRoute.id === 'settings' ? (
           <SystemPreferences
             model={model}

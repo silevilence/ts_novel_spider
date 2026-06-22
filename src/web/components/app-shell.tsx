@@ -17,6 +17,7 @@ import {
 } from '@mantine/core';
 import {
   IconSpider,
+  IconBook,
   IconBooks,
   IconActivity,
   IconSettings,
@@ -47,6 +48,7 @@ const ROUTE_ICONS: Record<string, React.FC<{ size?: number }>> = {
   control: IconSpider,
   library: IconBooks,
   monitor: IconActivity,
+  opds: IconBook,
   settings: IconSettings,
 };
 

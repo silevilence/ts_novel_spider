@@ -1027,6 +1027,122 @@ export async function updateSchedulingNovels(entries: Array<{ sourceId: string; 
   }
 }
 
+// ── OPDS 书源服务 ──
+
+export interface OpdsCompilationRun {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: 'running' | 'completed';
+  totalScanned: number;
+  compiled: number;
+  skipped: number;
+  errored: number;
+}
+
+export interface OpdsConfig {
+  enabled: boolean;
+  scanCronExpression: string;
+  updatedAt: string | null;
+  lastRun: OpdsCompilationRun | null;
+}
+
+export interface OpdsNovelEntry {
+  sourceId: string;
+  novelId: string;
+  title: string;
+  opdsVisible: boolean;
+  contentUpdatedAt: string | null;
+  epubCompiledAt: string | null;
+  hasTranslation: boolean;
+}
+
+export interface OpdsNovelsPayload {
+  novels: OpdsNovelEntry[];
+}
+
+export interface OpdsRunsPayload {
+  runs: OpdsCompilationRun[];
+}
+
+export interface NovelOpdsStatus {
+  sourceId: string;
+  novelId: string;
+  title: string;
+  opdsVisible: boolean;
+  contentUpdatedAt: string | null;
+  epubCompiledAt: string | null;
+  hasTranslation: boolean;
+}
+
+export async function fetchOpdsConfig(): Promise<OpdsConfig> {
+  return requestJson<OpdsConfig>('/api/control/preferences/opds');
+}
+
+export async function updateOpdsConfig(
+  input: Partial<Pick<OpdsConfig, 'enabled' | 'scanCronExpression'>>,
+): Promise<OpdsConfig> {
+  const response = await fetch('/api/control/preferences/opds', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw await buildRequestError(response, 'OPDS 配置更新失败');
+  }
+  return (await response.json()) as OpdsConfig;
+}
+
+export async function fetchOpdsNovels(): Promise<OpdsNovelsPayload> {
+  return requestJson<OpdsNovelsPayload>('/api/library/opds/novels');
+}
+
+export async function updateOpdsNovels(
+  entries: Array<{ sourceId: string; novelId: string; visible: boolean }>,
+): Promise<{ ok: boolean }> {
+  const response = await fetch('/api/library/opds/novels', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ novels: entries }),
+  });
+  if (!response.ok) {
+    throw await buildRequestError(response, 'OPDS 书单更新失败');
+  }
+  return (await response.json()) as { ok: boolean };
+}
+
+export async function fetchOpdsRuns(limit = 20, offset = 0): Promise<OpdsRunsPayload> {
+  return requestJson<OpdsRunsPayload>(`/api/control/opds/runs?limit=${limit}&offset=${offset}`);
+}
+
+export async function fetchNovelOpdsStatus(
+  sourceId: string,
+  novelId: string,
+): Promise<NovelOpdsStatus> {
+  return requestJson<NovelOpdsStatus>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/opds`,
+  );
+}
+
+export async function updateNovelOpdsVisible(
+  sourceId: string,
+  novelId: string,
+  visible: boolean,
+): Promise<NovelOpdsStatus> {
+  const response = await fetch(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/opds`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visible }),
+    },
+  );
+  if (!response.ok) {
+    throw await buildRequestError(response, 'OPDS 可见性更新失败');
+  }
+  return (await response.json()) as NovelOpdsStatus;
+}
+
 async function requestJson<TPayload>(url: string, init?: RequestInit): Promise<TPayload> {
   const response = await fetch(url, init);
 

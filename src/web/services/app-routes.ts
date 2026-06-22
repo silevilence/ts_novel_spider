@@ -1,4 +1,4 @@
-export type AppRouteId = 'control' | 'library' | 'monitor' | 'settings';
+export type AppRouteId = 'control' | 'library' | 'monitor' | 'opds' | 'settings';
 
 export interface AppLocation {
   route: AppRouteDefinition;
@@ -38,6 +38,13 @@ export const APP_ROUTES: AppRouteDefinition[] = [
     label: '任务大盘',
     title: '任务大盘',
     description: '查看当前采集进度、最近任务记录，以及失败章节的重试情况。',
+  },
+  {
+    id: 'opds',
+    path: '/opds-dashboard',
+    label: 'OPDS 书源',
+    title: 'OPDS 书源',
+    description: '管理 OPDS 书源服务，将书库作品分发给阅读器应用。',
   },
   {
     id: 'settings',
