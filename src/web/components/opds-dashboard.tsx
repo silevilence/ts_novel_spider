@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import {
   Badge,
   Button,
@@ -36,6 +36,41 @@ function formatTimeAgo(isoTimestamp: string): string {
   const diffDay = Math.floor(diffHour / 24);
   return `${diffDay} 天`;
 }
+
+// ── Memoized Modal Item（避免 Modal 中全量重渲染） ──
+
+interface MemoizedSwitchItemProps {
+  label: string;
+  subtitle: string;
+  checked: boolean;
+  onToggle: (checked: boolean) => void;
+}
+
+const MemoizedSwitchItem = memo(function MemoizedSwitchItemFn({ label, subtitle, checked, onToggle }: MemoizedSwitchItemProps) {
+  return (
+    <Paper
+      p="sm"
+      radius="sm"
+      style={{ border: '1px solid rgba(168,133,96,0.15)' }}
+    >
+      <Group justify="space-between" align="center" wrap="nowrap">
+        <Stack gap={2}>
+          <Text size="sm" fw={500}>{label}</Text>
+          <Text size="xs" c="dimmed">{subtitle}</Text>
+        </Stack>
+        <Switch
+          size="sm"
+          checked={checked}
+          onChange={(event) => {
+            const next = event.currentTarget.checked;
+            event.stopPropagation();
+            onToggle(next);
+          }}
+        />
+      </Group>
+    </Paper>
+  );
+});
 
 export function OpdsDashboard({ onNotify }: OpdsDashboardProps) {
   const model = useOpdsDashboardModel();
@@ -258,6 +293,7 @@ export function OpdsDashboard({ onNotify }: OpdsDashboardProps) {
         onClose={() => setModalOpen(false)}
         title="管理 OPDS 上架书单"
         size="lg"
+        closeOnClickOutside={false}
       >
         <Stack gap="xs">
           <ScrollArea.Autosize mah={420} type="scroll">
@@ -265,30 +301,19 @@ export function OpdsDashboard({ onNotify }: OpdsDashboardProps) {
               {model.novels.map((novel) => {
                 const key = `${novel.sourceId}:${novel.novelId}`;
                 return (
-                  <Paper
+                  <MemoizedSwitchItem
                     key={key}
-                    p="sm"
-                    radius="sm"
-                    style={{ border: '1px solid rgba(168,133,96,0.15)' }}
-                  >
-                    <Group justify="space-between" align="center" wrap="nowrap">
-                      <Stack gap={2}>
-                        <Text size="sm" fw={500}>{novel.title}</Text>
-                        <Text size="xs" c="dimmed">{novel.sourceId}/{novel.novelId}</Text>
-                      </Stack>
-                      <Switch
-                        size="sm"
-                        checked={modalSelections.get(key) ?? false}
-                        onChange={(event) => {
-                          setModalSelections((prev) => {
-                            const next = new Map(prev);
-                            next.set(key, event.currentTarget.checked);
-                            return next;
-                          });
-                        }}
-                      />
-                    </Group>
-                  </Paper>
+                    label={novel.title}
+                    subtitle={`${novel.sourceId}/${novel.novelId}`}
+                    checked={modalSelections.get(key) ?? false}
+                    onToggle={(checked) => {
+                      setModalSelections((prev) => {
+                        const next = new Map(prev);
+                        next.set(key, checked);
+                        return next;
+                      });
+                    }}
+                  />
                 );
               })}
             </Stack>
