@@ -40,6 +40,20 @@ describe('OpdsFeedService - OPDS 1.2 (Atom XML)', () => {
     assert.ok(xml.includes('xmlns="http://www.w3.org/2005/Atom"'));
   });
 
+  it('root feed advertises OPDS catalog metadata', () => {
+    const xml = service.buildAtomRootFeed([], 'https://library.example');
+    assert.ok(xml.includes('xmlns:opds="http://opds-spec.org/2010/catalog"'));
+    assert.ok(xml.includes('xmlns:dcterms="http://purl.org/dc/terms/"'));
+    assert.ok(xml.includes('<subtitle>本地书库 OPDS 目录</subtitle>'));
+    assert.ok(xml.includes('<author>'));
+    assert.ok(xml.includes('<name>TS Novel Spider</name>'));
+    assert.ok(xml.includes('<uri>https://library.example/</uri>'));
+    assert.ok(xml.includes('<icon>https://library.example/favicon.svg</icon>'));
+    assert.ok(xml.includes('rel="alternate" type="text/html" title="Web Page" href="/library"'));
+    assert.ok(xml.includes('rel="self" href="/opds/v1.opds" type="application/atom+xml;profile=opds-catalog" title="This Page"'));
+    assert.ok(xml.includes('rel="start" href="/opds/v1.opds" type="application/atom+xml;profile=opds-catalog" title="Start Page"'));
+  });
+
   it('root feed contains all visible novels as entries', () => {
     const xml = service.buildAtomRootFeed([
       makeNovel({ novelId: 'n1', title: '小说一' }),
@@ -67,9 +81,19 @@ describe('OpdsFeedService - OPDS 1.2 (Atom XML)', () => {
   });
 
   it('root feed entry links to single-novel feed', () => {
-    const xml = service.buildAtomRootFeed([makeNovel({ sourceId: 'syosetu', novelId: 'n1' })]);
-    assert.ok(xml.includes('href="/opds/v1/syosetu/n1"'));
-    assert.ok(xml.includes('type="application/atom+xml;profile=opds-catalog;kind=acquisition"'));
+    const xml = service.buildAtomRootFeed([makeNovel({ sourceId: 'syosetu', novelId: 'n1' })], 'https://library.example');
+    assert.ok(xml.includes('href="/opds/v1/syosetu/n1.opds"'));
+    assert.ok(xml.includes('rel="subsection"'));
+    assert.ok(xml.includes('type="application/atom+xml;profile=opds-catalog"'));
+    assert.ok(xml.includes('<content type="text">简介内容</content>'));
+    assert.ok(!xml.includes('<summary>简介内容</summary>'));
+  });
+
+  it('root feed uses .opds canonical links', () => {
+    const xml = service.buildAtomRootFeed([], 'https://library.example');
+    assert.ok(xml.includes('<id>https://library.example/opds/v1.opds</id>'));
+    assert.ok(xml.includes('rel="self" href="/opds/v1.opds"'));
+    assert.ok(xml.includes('rel="start" href="/opds/v1.opds"'));
   });
 
   it('single-novel feed contains acquisition links for available versions', () => {
@@ -83,9 +107,13 @@ describe('OpdsFeedService - OPDS 1.2 (Atom XML)', () => {
   });
 
   it('single-novel feed has up link to root', () => {
-    const xml = service.buildAtomNovelFeed(makeNovel(), makeAvailability());
+    const xml = service.buildAtomNovelFeed(makeNovel(), makeAvailability(), 'https://library.example');
     assert.ok(xml.includes('rel="up"'));
-    assert.ok(xml.includes('href="/opds/v1"'));
+    assert.ok(xml.includes('rel="start" href="/opds/v1.opds" type="application/atom+xml;profile=opds-catalog"'));
+    assert.ok(xml.includes('rel="up" href="/opds/v1.opds" type="application/atom+xml;profile=opds-catalog"'));
+    assert.ok(xml.includes('<id>https://library.example/opds/v1/syosetu/n1.opds</id>'));
+    assert.ok(xml.includes('href="/opds/v1.opds"'));
+    assert.ok(xml.includes('href="/opds/v1/syosetu/n1.opds"'));
   });
 
   it('XML special characters are escaped', () => {
@@ -127,10 +155,25 @@ describe('OpdsFeedService - OPDS 2.0 (JSON-LD)', () => {
     assert.equal(parsed.publications[0].metadata.identifier, 'urn:opds:novel:syosetu:n1');
   });
 
-  it('root feed publication links to single-novel publication', () => {
+  it('root feed publication exposes self link to single-novel publication', () => {
     const json = service.buildOpds2RootFeed([makeNovel({ sourceId: 'syosetu', novelId: 'n1' })]);
     const parsed = JSON.parse(json);
-    assert.ok(parsed.publications[0].links.some((l: { href: string }) => l.href === '/opds/v2/syosetu/n1'));
+    assert.ok(parsed.publications[0].links.some((l: { rel: string; href: string }) => l.rel === 'self' && l.href === '/opds/v2/syosetu/n1'));
+    assert.ok(!parsed.publications[0].links.some((l: { rel: string; type: string }) => l.rel === 'http://opds-spec.org/acquisition' && l.type === 'application/opds+json'));
+  });
+
+  it('root feed publication exposes available epub acquisition links', () => {
+    const json = service.buildOpds2RootFeed(
+      [makeNovel({ sourceId: 'syosetu', novelId: 'n1' })],
+      new Map([
+        ['syosetu:n1', makeAvailability({ original: true, translated: false, bilingual: true })],
+      ]),
+    );
+    const parsed = JSON.parse(json);
+    const acquisitionLinks = parsed.publications[0].links.filter((l: { rel: string }) => l.rel === 'http://opds-spec.org/acquisition');
+    assert.ok(acquisitionLinks.some((l: { href: string }) => l.href === '/opds/artifacts/syosetu/n1/original.epub'));
+    assert.ok(acquisitionLinks.some((l: { href: string }) => l.href === '/opds/artifacts/syosetu/n1/bilingual.epub'));
+    assert.ok(!acquisitionLinks.some((l: { href: string }) => l.href === '/opds/artifacts/syosetu/n1/translated.epub'));
   });
 
   it('root feed omits tags when empty', () => {
