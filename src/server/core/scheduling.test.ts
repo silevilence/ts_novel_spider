@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { InMemoryLogAdapter } from '../adapters/log/in-memory-log-adapter';
+import { type SpiderRegistryEntry } from './control-center';
+import { SpiderLogDispatcher } from './logging';
 import { SqliteNovelRepository } from './novel-repository';
-import { calculateNextTriggerTime } from './scheduling';
+import { SchedulingService, calculateNextTriggerTime } from './scheduling';
 
 describe('calculateNextTriggerTime', () => {
   it('interval mode: returns now + intervalHours', () => {
@@ -150,15 +153,17 @@ describe('SqliteNovelRepository - scheduled novels CRUD', () => {
 
   it('upsertScheduledNovel creates and updates a record', () => {
     const repo = createTestRepo();
-    repo.upsertScheduledNovel('syosetu', 'n123', true);
+    repo.upsertScheduledNovel('syosetu', 'n123', true, true);
     const row = repo.getScheduledNovel('syosetu', 'n123');
     assert.ok(row);
     assert.equal(row.enabled, true);
+    assert.equal(row.autoTranslate, true);
     assert.ok(row.updatedAt);
 
-    repo.upsertScheduledNovel('syosetu', 'n123', false);
+    repo.upsertScheduledNovel('syosetu', 'n123', false, false);
     const updated = repo.getScheduledNovel('syosetu', 'n123');
     assert.equal(updated?.enabled, false);
+    assert.equal(updated?.autoTranslate, false);
   });
 
   it('getEnabledScheduledNovels filters correctly', () => {
@@ -201,12 +206,14 @@ describe('SqliteNovelRepository - scheduled novels CRUD', () => {
   it('bulkUpsertScheduledNovels batch updates', () => {
     const repo = createTestRepo();
     repo.bulkUpsertScheduledNovels([
-      { sourceId: 'syosetu', novelId: 'n1', enabled: true },
-      { sourceId: 'syosetu', novelId: 'n2', enabled: false },
+      { sourceId: 'syosetu', novelId: 'n1', enabled: true, autoTranslate: true },
+      { sourceId: 'syosetu', novelId: 'n2', enabled: false, autoTranslate: false },
     ]);
 
     assert.equal(repo.getScheduledNovel('syosetu', 'n1')?.enabled, true);
+    assert.equal(repo.getScheduledNovel('syosetu', 'n1')?.autoTranslate, true);
     assert.equal(repo.getScheduledNovel('syosetu', 'n2')?.enabled, false);
+    assert.equal(repo.getScheduledNovel('syosetu', 'n2')?.autoTranslate, false);
   });
 
   it('deleteScheduledNovel removes record', () => {
@@ -216,6 +223,232 @@ describe('SqliteNovelRepository - scheduled novels CRUD', () => {
 
     const row = repo.getScheduledNovel('syosetu', 'n123');
     assert.equal(row, undefined);
+  });
+});
+
+describe('SchedulingService - auto translation', () => {
+  function createAutoTranslateRepo(): SqliteNovelRepository {
+    const repo = new SqliteNovelRepository(':memory:');
+    repo.saveMetadata('syosetu', {
+      novelId: 'n123',
+      title: '定时更新测试',
+      author: '测试作者',
+      description: '',
+      tags: [],
+      chapterCount: 2,
+      infoPageUrl: 'https://example.com/syosetu/n123',
+    });
+    repo.saveChapterIndex('syosetu', 'n123', [
+      { id: 'chapter-1', index: 1, title: '第一章', volumeTitle: null, url: 'https://example.com/syosetu/n123/1' },
+    ]);
+    repo.saveChapterContent('syosetu', 'n123', {
+      chapterId: 'chapter-1',
+      index: 1,
+      title: '第一章',
+      volumeTitle: null,
+      url: 'https://example.com/syosetu/n123/1',
+      content: '已下载章节',
+    });
+    return repo;
+  }
+
+  async function flushAsyncWork(): Promise<void> {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  function createSpiderRegistryEntry(): SpiderRegistryEntry {
+    const metadata = {
+      novelId: 'n123',
+      title: '定时更新测试',
+      author: '测试作者',
+      description: '',
+      tags: [],
+      chapterCount: 2,
+      infoPageUrl: 'https://example.com/syosetu/n123',
+    };
+    const chapters = [
+      { id: 'chapter-1', index: 1, title: '第一章', volumeTitle: undefined, url: 'https://example.com/syosetu/n123/1' },
+      { id: 'chapter-2', index: 2, title: '第二章', volumeTitle: undefined, url: 'https://example.com/syosetu/n123/2' },
+    ];
+
+    return {
+      descriptor: {
+        sourceId: 'syosetu',
+        label: 'Syosetu',
+        description: 'test spider',
+        defaultNovelId: 'n123',
+      },
+      spider: {
+        sourceId: 'syosetu',
+        buildInfoPageUrl: (novelId: string) => `https://example.com/syosetu/${novelId}`,
+        fetchMetadata: async () => metadata,
+        fetchChapterIndex: async () => chapters,
+        fetchChapter: async (_context, chapter) => ({
+          chapterId: chapter.id,
+          index: chapter.index,
+          title: chapter.title,
+          volumeTitle: chapter.volumeTitle,
+          url: chapter.url,
+          content: `${chapter.title} 内容`,
+        }),
+        fetchChapters: async (_context, selectedChapters, options) => {
+          const results = selectedChapters.map((chapter) => ({
+            chapter,
+            content: {
+              chapterId: chapter.id,
+              index: chapter.index,
+              title: chapter.title,
+              volumeTitle: chapter.volumeTitle,
+              url: chapter.url,
+              content: `${chapter.title} 内容`,
+            },
+            attempts: 1,
+          }));
+
+          for (const result of results) {
+            await options?.onResult?.(result);
+          }
+
+          return results;
+        },
+      },
+    };
+  }
+
+  it('starts translation automatically after scheduled incremental download', async () => {
+    const repo = createAutoTranslateRepo();
+    repo.upsertScheduledNovel('syosetu', 'n123', true, true);
+
+    const logAdapter = new InMemoryLogAdapter();
+    const logger = new SpiderLogDispatcher([logAdapter]);
+    const translationCalls: Array<{ sourceId: string; novelId: string }> = [];
+
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const callbacks: Array<() => void> = [];
+
+    globalThis.setInterval = (((callback: Parameters<typeof setInterval>[0]) => {
+      callbacks.push(callback as () => void);
+      return { hasRef: () => false } as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    globalThis.clearInterval = (((_timer: ReturnType<typeof setInterval>) => undefined) as typeof clearInterval);
+
+    try {
+      const service = new SchedulingService({
+        repository: repo,
+        preferences: {
+          getScheduling: () => ({
+            enabled: true,
+            mode: 'interval',
+            intervalHours: 0,
+            cronExpression: '',
+            weeklyDays: [],
+            weeklyTime: '08:00',
+            updatedAt: null,
+          }),
+        },
+        spiderRegistry: [createSpiderRegistryEntry()],
+        controlCenter: {
+          getActiveTaskNovelKeys: () => [],
+        },
+        logger,
+        translation: {
+          getAutoTranslationReadiness: () => ({ ready: true }),
+          startTranslation: (sourceId: string, novelId: string) => {
+            translationCalls.push({ sourceId, novelId });
+            return {
+              status: 'running',
+              stage: 'translating',
+              progressPercent: 0,
+              message: '准备翻译',
+              errorMessage: null,
+              startedAt: new Date().toISOString(),
+              completedAt: null,
+              translatedChapters: 0,
+              failedChapters: 0,
+              currentChapterParagraphs: 0,
+              currentChapterTranslatedParagraphs: 0,
+              totalTranslatedParagraphs: 0,
+              glossaryVersion: 1,
+              profileVersion: 1,
+              updatedAt: new Date().toISOString(),
+            };
+          },
+        },
+      });
+
+      service.start();
+      callbacks[0]?.();
+      await flushAsyncWork();
+      service.stop();
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
+
+    assert.deepEqual(translationCalls, [{ sourceId: 'syosetu', novelId: 'n123' }]);
+    assert.equal(repo.getSnapshot('syosetu', 'n123')?.chapters.length, 2);
+    assert.ok(logAdapter.events.some((event) => event.message.includes('自动触发翻译')));
+  });
+
+  it('logs a warning and skips auto translation when readiness check fails', async () => {
+    const repo = createAutoTranslateRepo();
+    repo.upsertScheduledNovel('syosetu', 'n123', true, true);
+
+    const logAdapter = new InMemoryLogAdapter();
+    const logger = new SpiderLogDispatcher([logAdapter]);
+    const translationCalls: Array<{ sourceId: string; novelId: string }> = [];
+
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const callbacks: Array<() => void> = [];
+
+    globalThis.setInterval = (((callback: Parameters<typeof setInterval>[0]) => {
+      callbacks.push(callback as () => void);
+      return { hasRef: () => false } as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    globalThis.clearInterval = (((_timer: ReturnType<typeof setInterval>) => undefined) as typeof clearInterval);
+
+    try {
+      const service = new SchedulingService({
+        repository: repo,
+        preferences: {
+          getScheduling: () => ({
+            enabled: true,
+            mode: 'interval',
+            intervalHours: 0,
+            cronExpression: '',
+            weeklyDays: [],
+            weeklyTime: '08:00',
+            updatedAt: null,
+          }),
+        },
+        spiderRegistry: [createSpiderRegistryEntry()],
+        controlCenter: {
+          getActiveTaskNovelKeys: () => [],
+        },
+        logger,
+        translation: {
+          getAutoTranslationReadiness: () => ({ ready: false, reason: '模型网关未配置默认对话模型。' }),
+          startTranslation: (sourceId: string, novelId: string) => {
+            translationCalls.push({ sourceId, novelId });
+            throw new Error('should not be called');
+          },
+        },
+      });
+
+      service.start();
+      callbacks[0]?.();
+      await flushAsyncWork();
+      service.stop();
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
+
+    assert.equal(translationCalls.length, 0);
+    assert.ok(logAdapter.events.some((event) => event.level === 'warn' && event.message.includes('模型网关未配置默认对话模型')));
   });
 });
 

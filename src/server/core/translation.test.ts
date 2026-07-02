@@ -16,6 +16,7 @@ import {
   isLibraryExportTranslationMode,
 } from '../core/export-engine';
 import { createTranslationPipelineGraph } from '../core/translation-pipeline';
+import { TranslationService } from '../core/translation-service';
 import { TranslationHistoryManager } from '../core/translation/nodes/history-manager';
 import { stripTranslationNumberPrefix } from '../core/translation/nodes/translate-node';
 
@@ -406,6 +407,51 @@ test('translation pipeline graph compiles with all nodes', () => {
   });
   assert.ok(graph);
   assert.equal(typeof graph.invoke, 'function');
+});
+
+test('auto translation readiness blocks paused translation builds', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-translation-readiness-'));
+  const db = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  const prefs = new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') });
+  const service = new TranslationService(db, prefs);
+
+  try {
+    db.saveMetadata('syosetu', {
+      novelId: 'n1000pause',
+      title: '暂停测试',
+      author: '测试',
+      description: '',
+      tags: [],
+      chapterCount: 1,
+      infoPageUrl: 'https://example.com/n1000pause',
+    });
+
+    db.saveTranslationBuild({
+      sourceId: 'syosetu',
+      novelId: 'n1000pause',
+      status: 'paused',
+      stage: 'failed',
+      progressPercent: 40,
+      message: '用户手动暂停',
+      errorMessage: null,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      completedAt: '2026-01-01T00:10:00.000Z',
+      modelStatsJson: '[]',
+      translatedChapters: 2,
+      reviewedChapters: 0,
+      failedChapters: 0,
+      glossaryVersion: 1,
+      profileVersion: 1,
+    });
+
+    assert.deepEqual(service.getAutoTranslationReadiness('syosetu', 'n1000pause'), {
+      ready: false,
+      reason: '翻译任务已暂停，请手动恢复或重启后再试。',
+    });
+  } finally {
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 // ── 翻译状态类型 ──

@@ -888,6 +888,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
       const row = service.getScheduledNovel(sourceId, novelId);
       response.json(row ?? {
         sourceId, novelId, enabled: false,
+        autoTranslate: false,
         lastCheckedAt: null, lastCheckResult: null, lastCheckMessage: null, updatedAt: '',
       });
     } catch (error) {
@@ -900,10 +901,11 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   router.put('/novels/:sourceId/:novelId/scheduling', (request, response) => {
     try {
       const { sourceId, novelId } = request.params;
-      const body = request.body as { enabled?: unknown };
+      const body = request.body as { enabled?: unknown; autoTranslate?: unknown };
       const enabled = typeof body.enabled === 'boolean' ? body.enabled : false;
+      const autoTranslate = typeof body.autoTranslate === 'boolean' ? body.autoTranslate : undefined;
 
-      service.upsertScheduledNovel(sourceId, novelId, enabled);
+      service.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate);
       const row = service.getScheduledNovel(sourceId, novelId);
       response.json(row);
     } catch (error) {
@@ -929,6 +931,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
           novelId: novel.novelId,
           title: novel.title,
           enabled: scheduled?.enabled ?? false,
+          autoTranslate: scheduled?.autoTranslate ?? false,
         };
       });
 
@@ -944,11 +947,15 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     try {
       const body = request.body as { novels?: unknown };
       const entries = Array.isArray(body.novels)
-        ? body.novels.filter((entry): entry is { sourceId: string; novelId: string; enabled: boolean } =>
+        ? body.novels.filter((entry): entry is { sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean } =>
             typeof entry === 'object' && entry !== null &&
             typeof (entry as Record<string, unknown>).sourceId === 'string' &&
             typeof (entry as Record<string, unknown>).novelId === 'string' &&
-            typeof (entry as Record<string, unknown>).enabled === 'boolean',
+            typeof (entry as Record<string, unknown>).enabled === 'boolean' &&
+            (
+              !('autoTranslate' in (entry as Record<string, unknown>))
+              || typeof (entry as Record<string, unknown>).autoTranslate === 'boolean'
+            ),
           )
         : [];
 

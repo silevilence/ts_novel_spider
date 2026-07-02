@@ -952,12 +952,14 @@ export interface SchedulingNovelEntry {
   novelId: string;
   title: string;
   enabled: boolean;
+  autoTranslate: boolean;
 }
 
 export interface SchedulingNovelDetail {
   sourceId: string;
   novelId: string;
   enabled: boolean;
+  autoTranslate: boolean;
   lastCheckedAt: string | null;
   lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
   lastCheckMessage: string | null;
@@ -996,11 +998,15 @@ export async function fetchNovelScheduling(sourceId: string, novelId: string): P
   return response.json();
 }
 
-export async function updateNovelScheduling(sourceId: string, novelId: string, enabled: boolean): Promise<SchedulingNovelDetail> {
+export async function updateNovelScheduling(
+  sourceId: string,
+  novelId: string,
+  input: { enabled: boolean; autoTranslate?: boolean },
+): Promise<SchedulingNovelDetail> {
   const response = await fetch(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/scheduling`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(input),
   });
   if (!response.ok) {
     throw new Error(`更新书籍调度状态失败 (${response.status})`);
@@ -1016,7 +1022,9 @@ export async function fetchSchedulingNovels(): Promise<SchedulingNovelsPayload> 
   return response.json();
 }
 
-export async function updateSchedulingNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): Promise<void> {
+export async function updateSchedulingNovels(
+  entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>,
+): Promise<void> {
   const response = await fetch('/api/library/scheduling/novels', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

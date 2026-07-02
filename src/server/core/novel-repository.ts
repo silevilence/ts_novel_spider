@@ -77,6 +77,7 @@ export interface StoredScheduledNovelRow {
   sourceId: string;
   novelId: string;
   enabled: boolean;
+  autoTranslate: boolean;
   lastCheckedAt: string | null;
   lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
   lastCheckMessage: string | null;
@@ -2962,12 +2963,12 @@ export class SqliteNovelRepository {
   getScheduledNovels(): StoredScheduledNovelRow[] {
     const rows = this.#database
       .prepare(
-        `SELECT source_id, novel_id, enabled, last_checked_at, last_check_result, last_check_message, updated_at
+        `SELECT source_id, novel_id, enabled, auto_translate, last_checked_at, last_check_result, last_check_message, updated_at
          FROM scheduled_novels
          ORDER BY source_id, novel_id`,
       )
       .all() as Array<{
-      source_id: string; novel_id: string; enabled: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number;
       last_checked_at: string | null; last_check_result: string | null;
       last_check_message: string | null; updated_at: string;
     }>;
@@ -2976,6 +2977,7 @@ export class SqliteNovelRepository {
       sourceId: row.source_id,
       novelId: row.novel_id,
       enabled: row.enabled === 1,
+      autoTranslate: row.auto_translate === 1,
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
       lastCheckMessage: row.last_check_message,
@@ -2986,13 +2988,13 @@ export class SqliteNovelRepository {
   getEnabledScheduledNovels(): StoredScheduledNovelRow[] {
     const rows = this.#database
       .prepare(
-        `SELECT source_id, novel_id, enabled, last_checked_at, last_check_result, last_check_message, updated_at
+        `SELECT source_id, novel_id, enabled, auto_translate, last_checked_at, last_check_result, last_check_message, updated_at
          FROM scheduled_novels
          WHERE enabled = 1
          ORDER BY source_id, novel_id`,
       )
       .all() as Array<{
-      source_id: string; novel_id: string; enabled: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number;
       last_checked_at: string | null; last_check_result: string | null;
       last_check_message: string | null; updated_at: string;
     }>;
@@ -3001,6 +3003,7 @@ export class SqliteNovelRepository {
       sourceId: row.source_id,
       novelId: row.novel_id,
       enabled: row.enabled === 1,
+      autoTranslate: row.auto_translate === 1,
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
       lastCheckMessage: row.last_check_message,
@@ -3011,12 +3014,12 @@ export class SqliteNovelRepository {
   getScheduledNovel(sourceId: string, novelId: string): StoredScheduledNovelRow | undefined {
     const row = this.#database
       .prepare(
-        `SELECT source_id, novel_id, enabled, last_checked_at, last_check_result, last_check_message, updated_at
+        `SELECT source_id, novel_id, enabled, auto_translate, last_checked_at, last_check_result, last_check_message, updated_at
          FROM scheduled_novels
          WHERE source_id = ? AND novel_id = ?`,
       )
       .get(sourceId, novelId) as {
-      source_id: string; novel_id: string; enabled: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number;
       last_checked_at: string | null; last_check_result: string | null;
       last_check_message: string | null; updated_at: string;
     } | undefined;
@@ -3027,6 +3030,7 @@ export class SqliteNovelRepository {
       sourceId: row.source_id,
       novelId: row.novel_id,
       enabled: row.enabled === 1,
+      autoTranslate: row.auto_translate === 1,
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
       lastCheckMessage: row.last_check_message,
@@ -3034,17 +3038,20 @@ export class SqliteNovelRepository {
     };
   }
 
-  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean): void {
+  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean, autoTranslate?: boolean): void {
     const now = new Date().toISOString();
+    const existing = this.getScheduledNovel(sourceId, novelId);
+    const resolvedAutoTranslate = autoTranslate ?? existing?.autoTranslate ?? false;
     this.#database
       .prepare(
-        `INSERT INTO scheduled_novels (source_id, novel_id, enabled, updated_at)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, updated_at)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(source_id, novel_id) DO UPDATE SET
            enabled = excluded.enabled,
+           auto_translate = excluded.auto_translate,
            updated_at = excluded.updated_at`,
       )
-      .run(sourceId, novelId, enabled ? 1 : 0, now);
+      .run(sourceId, novelId, enabled ? 1 : 0, resolvedAutoTranslate ? 1 : 0, now);
   }
 
   updateScheduledNovelCheckResult(
@@ -3063,19 +3070,22 @@ export class SqliteNovelRepository {
       .run(now, result, message, now, sourceId, novelId);
   }
 
-  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): void {
+  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>): void {
     const now = new Date().toISOString();
     const upsert = this.#database.prepare(
-      `INSERT INTO scheduled_novels (source_id, novel_id, enabled, updated_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, updated_at)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(source_id, novel_id) DO UPDATE SET
          enabled = excluded.enabled,
+         auto_translate = excluded.auto_translate,
          updated_at = excluded.updated_at`,
     );
 
     const transaction = this.#database.transaction(() => {
       for (const entry of entries) {
-        upsert.run(entry.sourceId, entry.novelId, entry.enabled ? 1 : 0, now);
+        const existing = this.getScheduledNovel(entry.sourceId, entry.novelId);
+        const resolvedAutoTranslate = entry.autoTranslate ?? existing?.autoTranslate ?? false;
+        upsert.run(entry.sourceId, entry.novelId, entry.enabled ? 1 : 0, resolvedAutoTranslate ? 1 : 0, now);
       }
     });
 
@@ -3670,6 +3680,7 @@ export class SqliteNovelRepository {
         source_id         TEXT NOT NULL,
         novel_id          TEXT NOT NULL,
         enabled           INTEGER NOT NULL DEFAULT 0,
+        auto_translate    INTEGER NOT NULL DEFAULT 0,
         last_checked_at   TEXT,
         last_check_result TEXT,
         last_check_message TEXT,
@@ -3696,6 +3707,7 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumnExists('novel_graph_build_checkpoints', 'status', "TEXT NOT NULL DEFAULT 'success'");
+    this.ensureColumnExists('scheduled_novels', 'auto_translate', 'INTEGER NOT NULL DEFAULT 0');
 
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS reader_typography (

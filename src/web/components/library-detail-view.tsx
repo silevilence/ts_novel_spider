@@ -207,36 +207,76 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
             minWidth: 180,
           }}
         >
-          <Group justify="space-between" align="flex-start" wrap="nowrap">
-            <Stack gap={2}>
-              <Text size="xs" fw={600} style={{ color: '#ffd166' }}>
-                🕐 定时更新
+          <Stack gap="xs">
+            <Group justify="space-between" align="flex-start" wrap="nowrap">
+              <Stack gap={2}>
+                <Text size="xs" fw={600} style={{ color: '#ffd166' }}>
+                  🕐 定时更新
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {schedulingDetail?.enabled ? '自动追更中' : '开启后自动追更'}
+                </Text>
+              </Stack>
+              <Switch
+                size="sm"
+                checked={schedulingDetail?.enabled ?? false}
+                onChange={(event) => {
+                  const next = event.currentTarget.checked;
+                  const previous = schedulingDetail;
+                  setSchedulingDetail((current) => current ? { ...current, enabled: next } : current);
+                  updateNovelScheduling(detail.sourceId, detail.metadata.novelId, {
+                    enabled: next,
+                    autoTranslate: previous?.autoTranslate ?? false,
+                  })
+                    .then(setSchedulingDetail)
+                    .catch(() => {
+                      setSchedulingDetail(previous ?? null);
+                      onNotify({ tone: 'error', title: '保存失败', message: '定时更新状态没有改成功，请稍后再试。' });
+                    });
+                }}
+              />
+            </Group>
+
+            <Group justify="space-between" align="flex-start" wrap="nowrap">
+              <Stack gap={2}>
+                <Text size="xs" fw={600} style={{ color: '#ffd166' }}>
+                  新增章节后自动翻译
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {schedulingDetail?.enabled
+                    ? (schedulingDetail.autoTranslate
+                      ? '发现新章节后，会继续翻译还没完成的内容。'
+                      : '如果你不想再手动点翻译，可以在这里一起开启。')
+                    : '先开启定时更新，才能自动翻译新增章节。'}
+                </Text>
+              </Stack>
+              <Switch
+                size="sm"
+                checked={schedulingDetail?.autoTranslate ?? false}
+                disabled={!(schedulingDetail?.enabled ?? false)}
+                onChange={(event) => {
+                  const next = event.currentTarget.checked;
+                  const previous = schedulingDetail;
+                  setSchedulingDetail((current) => current ? { ...current, autoTranslate: next } : current);
+                  updateNovelScheduling(detail.sourceId, detail.metadata.novelId, {
+                    enabled: previous?.enabled ?? false,
+                    autoTranslate: next,
+                  })
+                    .then(setSchedulingDetail)
+                    .catch(() => {
+                      setSchedulingDetail(previous ?? null);
+                      onNotify({ tone: 'error', title: '保存失败', message: '自动翻译开关没有改成功，请稍后再试。' });
+                    });
+                }}
+              />
+            </Group>
+
+            {schedulingDetail && schedulingDetail.enabled && (
+              <Text size="xs" c={schedulingStatusColor(schedulingDetail)}>
+                {schedulingStatusMessage(schedulingDetail)}
               </Text>
-              <Text size="xs" c="dimmed">
-                {schedulingDetail?.enabled ? '自动追更中' : '开启后自动追更'}
-              </Text>
-            </Stack>
-            <Switch
-              size="sm"
-              checked={schedulingDetail?.enabled ?? false}
-              onChange={(event) => {
-                const next = event.currentTarget.checked;
-                // Optimistic update
-                setSchedulingDetail((prev) => prev ? { ...prev, enabled: next } : null);
-                updateNovelScheduling(detail.sourceId, detail.metadata.novelId, next)
-                  .then(setSchedulingDetail)
-                  .catch(() => {
-                    // Revert on error
-                    setSchedulingDetail((prev) => prev ? { ...prev, enabled: !next } : null);
-                  });
-              }}
-            />
-          </Group>
-          {schedulingDetail && schedulingDetail.enabled && (
-            <Text size="xs" mt={4} c={schedulingStatusColor(schedulingDetail)}>
-              {schedulingStatusMessage(schedulingDetail)}
-            </Text>
-          )}
+            )}
+          </Stack>
         </Paper>
 
         {/* ====== OPDS 公开分发 ====== */}

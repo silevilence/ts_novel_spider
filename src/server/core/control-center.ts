@@ -263,6 +263,7 @@ export class ControlCenterService {
       spiderRegistry: [...this.#registry.values()],
       controlCenter: this,
       logger: this.#taskLogDispatcher,
+      translation: this.#translation,
     });
     this.#scheduling.start();
 
@@ -564,15 +565,15 @@ export class ControlCenterService {
     return this.#repository.getScheduledNovel(sourceId, novelId);
   }
 
-  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean): void {
-    this.#repository.upsertScheduledNovel(sourceId, novelId, enabled);
+  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean, autoTranslate?: boolean): void {
+    this.#repository.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate);
   }
 
   getAllScheduledNovels(): StoredScheduledNovelRow[] {
     return this.#repository.getScheduledNovels();
   }
 
-  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): void {
+  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>): void {
     this.#repository.bulkUpsertScheduledNovels(entries);
   }
 

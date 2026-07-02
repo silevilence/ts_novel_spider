@@ -92,8 +92,23 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
     setSchedulingConfig(updated);
   };
 
-  const handleSchedulingNovelsChange = async (entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>): Promise<void> => {
+  const handleSchedulingNovelsChange = async (
+    entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>,
+  ): Promise<void> => {
     await updateSchedulingNovels(entries);
+    const entryMap = new Map(entries.map((entry) => [`${entry.sourceId}:${entry.novelId}`, entry]));
+    setSchedulingNovels((prev) => prev.map((novel) => {
+      const next = entryMap.get(`${novel.sourceId}:${novel.novelId}`);
+      if (!next) {
+        return novel;
+      }
+
+      return {
+        ...novel,
+        enabled: next.enabled,
+        autoTranslate: next.autoTranslate ?? novel.autoTranslate,
+      };
+    }));
   };
 
   const panels = useMemo<AccordionPanelDef[]>(
@@ -307,19 +322,49 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
 
 // ── Memoized Checkbox Item（避免 Modal 中全量重渲染） ──
 
+interface SchedulingNovelDraft {
+  enabled: boolean;
+  autoTranslate: boolean;
+}
+
 interface MemoizedCheckboxItemProps {
   label: string;
   checked: boolean;
+  autoTranslate: boolean;
   onToggle: (checked: boolean) => void;
+  onAutoTranslateToggle: (checked: boolean) => void;
 }
 
-const MemoizedCheckboxItem = memo(function MemoizedCheckboxItemFn({ label, checked, onToggle }: MemoizedCheckboxItemProps) {
+const MemoizedCheckboxItem = memo(function MemoizedCheckboxItemFn({
+  label,
+  checked,
+  autoTranslate,
+  onToggle,
+  onAutoTranslateToggle,
+}: MemoizedCheckboxItemProps) {
   return (
-    <Checkbox
-      label={label}
-      checked={checked}
-      onChange={(event) => onToggle(event.currentTarget.checked)}
-    />
+    <Paper p="sm" radius="md" withBorder style={{ background: 'rgba(31,21,16,0.48)' }}>
+      <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
+        <Checkbox
+          label={label}
+          checked={checked}
+          onChange={(event) => onToggle(event.currentTarget.checked)}
+          styles={{ label: { lineHeight: 1.4 } }}
+        />
+        <Switch
+          size="sm"
+          label="自动翻译"
+          checked={autoTranslate}
+          disabled={!checked}
+          onChange={(event) => onAutoTranslateToggle(event.currentTarget.checked)}
+        />
+      </Group>
+      <Text size="xs" mt={6} c="dimmed">
+        {checked
+          ? '发现新章节后，会继续翻译还没完成的内容。'
+          : '先开启这本书的定时更新，才能自动翻译新增章节。'}
+      </Text>
+    </Paper>
   );
 });
 
@@ -329,13 +374,13 @@ interface SchedulingPanelProps {
   config: SchedulingConfig | null;
   onConfigChange: (input: Partial<SchedulingConfig>) => Promise<void>;
   novels: SchedulingNovelEntry[];
-  onNovelsChange: (entries: Array<{ sourceId: string; novelId: string; enabled: boolean }>) => Promise<void>;
+  onNovelsChange: (entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>) => Promise<void>;
   onNotify: (notice: NoticeInput) => void;
 }
 
 function SchedulingPanel({ config, onConfigChange, novels, onNovelsChange, onNotify }: SchedulingPanelProps) {
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalSelections, setModalSelections] = useState<Map<string, boolean>>(new Map());
+  const [modalSelections, setModalSelections] = useState<Map<string, SchedulingNovelDraft>>(new Map());
 
   if (!config) {
     return <Text size="sm" c="dimmed">加载中...</Text>;
@@ -451,7 +496,10 @@ function SchedulingPanel({ config, onConfigChange, novels, onNovelsChange, onNot
             variant="default"
             size="compact-sm"
             onClick={() => {
-              const map = new Map(novels.map((n) => [`${n.sourceId}:${n.novelId}`, n.enabled]));
+              const map = new Map(novels.map((n) => [
+                `${n.sourceId}:${n.novelId}`,
+                { enabled: n.enabled, autoTranslate: n.autoTranslate },
+              ]));
               setModalSelections(map);
               setModalOpen(true);
             }}
@@ -484,15 +532,29 @@ function SchedulingPanel({ config, onConfigChange, novels, onNovelsChange, onNot
             <Stack gap="xs">
               {novels.map((novel) => {
                 const key = `${novel.sourceId}:${novel.novelId}`;
+                const selection = modalSelections.get(key) ?? {
+                  enabled: novel.enabled,
+                  autoTranslate: novel.autoTranslate,
+                };
                 return (
                   <MemoizedCheckboxItem
                     key={key}
                     label={`${novel.title} — ${novel.sourceId}`}
-                    checked={modalSelections.get(key) ?? false}
+                    checked={selection.enabled}
+                    autoTranslate={selection.autoTranslate}
                     onToggle={(checked) => {
                       setModalSelections((prev) => {
                         const next = new Map(prev);
-                        next.set(key, checked);
+                        const current = next.get(key) ?? selection;
+                        next.set(key, { ...current, enabled: checked });
+                        return next;
+                      });
+                    }}
+                    onAutoTranslateToggle={(checked) => {
+                      setModalSelections((prev) => {
+                        const next = new Map(prev);
+                        const current = next.get(key) ?? selection;
+                        next.set(key, { ...current, autoTranslate: checked });
                         return next;
                       });
                     }}
@@ -508,9 +570,14 @@ function SchedulingPanel({ config, onConfigChange, novels, onNovelsChange, onNot
             color="brand"
             onClick={async () => {
               const entries = [...modalSelections.entries()]
-                .map(([key, enabled]) => {
+                .map(([key, draft]) => {
                   const [sourceId, novelId] = key.split(':');
-                  return { sourceId: sourceId ?? '', novelId: novelId ?? '', enabled };
+                  return {
+                    sourceId: sourceId ?? '',
+                    novelId: novelId ?? '',
+                    enabled: draft.enabled,
+                    autoTranslate: draft.autoTranslate,
+                  };
                 })
                 .filter((e) => e.sourceId !== '' && e.novelId !== '');
               try {

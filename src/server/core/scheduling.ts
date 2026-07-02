@@ -13,6 +13,12 @@ import { SpiderLogDispatcher } from './logging';
 import { SpiderRunner } from './spider-runner';
 import type { ChapterIndexEntry } from './spider';
 import type { ControlCenterService, SpiderRegistryEntry } from './control-center';
+import type { AutoTranslationReadiness, TranslationBuild } from './translation-service';
+
+export interface SchedulingTranslationCoordinator {
+  getAutoTranslationReadiness(sourceId: string, novelId: string): AutoTranslationReadiness;
+  startTranslation(sourceId: string, novelId: string, modelOverride?: string, fromScratch?: boolean): TranslationBuild;
+}
 
 export interface SchedulingServiceDependencies {
   repository: SqliteNovelRepository;
@@ -20,6 +26,7 @@ export interface SchedulingServiceDependencies {
   spiderRegistry: SpiderRegistryEntry[];
   controlCenter: ControlCenterService;
   logger: SpiderLogDispatcher;
+  translation: SchedulingTranslationCoordinator;
 }
 
 const TICK_INTERVAL_MS = 60_000; // 每分钟 tick 一次
@@ -30,6 +37,7 @@ export class SchedulingService {
   readonly #spiderRegistry: Map<string, SpiderRegistryEntry>;
   readonly #controlCenter: ControlCenterService;
   readonly #logger: SpiderLogDispatcher;
+  readonly #translation: SchedulingTranslationCoordinator;
 
   #timer: ReturnType<typeof setInterval> | null = null;
   #nextTickAt: number | null = null;
@@ -43,6 +51,7 @@ export class SchedulingService {
     );
     this.#controlCenter = deps.controlCenter;
     this.#logger = deps.logger;
+    this.#translation = deps.translation;
   }
 
   /** 服务启动时调用：恢复状态并启动定时器 */
@@ -270,6 +279,45 @@ export class SchedulingService {
       chapterIds: newChapterIds,
       forceRefetch: false,
     });
+
+    if (!novel.autoTranslate) {
+      return;
+    }
+
+    const readiness = this.#translation.getAutoTranslationReadiness(novel.sourceId, novel.novelId);
+    if (!readiness.ready) {
+      await this.#logger.dispatch({
+        type: 'scheduling_novel_skipped',
+        level: 'warn',
+        message: `跳过自动翻译 ${novel.sourceId}/${novel.novelId}：${readiness.reason ?? '条件未满足。'}`,
+        context: { sourceId: novel.sourceId, novelId: novel.novelId, runId },
+        payload: { phase: 'auto_translate', reason: readiness.reason ?? null },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    try {
+      this.#translation.startTranslation(novel.sourceId, novel.novelId);
+      await this.#logger.dispatch({
+        type: 'scheduling_novel_checked',
+        level: 'info',
+        message: `已自动触发翻译 ${novel.sourceId}/${novel.novelId}`,
+        context: { sourceId: novel.sourceId, novelId: novel.novelId, runId },
+        payload: { phase: 'auto_translate', chapterCount: newChapters.length },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.#logger.dispatch({
+        type: 'scheduling_novel_error',
+        level: 'warn',
+        message: `自动翻译启动失败 ${novel.sourceId}/${novel.novelId}：${message}`,
+        context: { sourceId: novel.sourceId, novelId: novel.novelId, runId },
+        payload: { phase: 'auto_translate', error: message },
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 }
 

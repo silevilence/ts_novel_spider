@@ -87,6 +87,11 @@ export interface TranslationBuild {
   updatedAt: string | null;
 }
 
+export interface AutoTranslationReadiness {
+  ready: boolean;
+  reason?: string;
+}
+
 export interface TranslationChapterDetail {
   chapterId: string;
   sourceLang: string;
@@ -234,6 +239,57 @@ export class TranslationService {
       profileVersion: build.profileVersion,
       updatedAt: build.updatedAt,
     };
+  }
+
+  getAutoTranslationReadiness(sourceId: string, novelId: string): AutoTranslationReadiness {
+    const existingBuild = this.#repository.getTranslationBuild(sourceId, novelId);
+    if (existingBuild?.status === 'paused') {
+      return {
+        ready: false,
+        reason: '翻译任务已暂停，请手动恢复或重启后再试。',
+      };
+    }
+
+    if (existingBuild && (existingBuild.status === 'running' || existingBuild.status === 'queued')) {
+      return {
+        ready: false,
+        reason: '已有翻译任务正在运行。',
+      };
+    }
+
+    const gateway = this.#preferences.getModelGateway();
+    if (!gateway.chat) {
+      return {
+        ready: false,
+        reason: '模型网关未配置默认对话模型。',
+      };
+    }
+
+    const llmState = this.#preferences.getLlmState();
+    const provider = llmState.providers.find(
+      (item) => item.id === gateway.chat!.providerId && item.enabled && item.isConfigured,
+    );
+    if (!provider) {
+      return {
+        ready: false,
+        reason: `模型网关默认对话模型不可用：提供商 ${gateway.chat.providerId} 未启用或未配置。`,
+      };
+    }
+
+    const model = provider.models.find(
+      (item) => item.modelId === gateway.chat!.modelId
+        && item.enabled
+        && item.isConfigured
+        && item.resolvedCapabilities.includes('chat'),
+    );
+    if (!model) {
+      return {
+        ready: false,
+        reason: `模型网关默认对话模型不可用：${gateway.chat.providerId}/${gateway.chat.modelId} 未启用、未配置或不支持对话。`,
+      };
+    }
+
+    return { ready: true };
   }
 
   /** 获取单章翻译详情（含段落绑定和 QA 记录） */
