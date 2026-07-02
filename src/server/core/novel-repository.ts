@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 
 import type { KnowledgeGraphBuildModelStat } from './library-intelligence-rag';
+import type { LlmModelGatewayRoute } from './system-preferences';
 
 import type {
   ChapterContent,
@@ -78,10 +79,25 @@ export interface StoredScheduledNovelRow {
   novelId: string;
   enabled: boolean;
   autoTranslate: boolean;
+  autoSummarize: boolean;
+  summarizeModel: LlmModelGatewayRoute | null;
   lastCheckedAt: string | null;
   lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
   lastCheckMessage: string | null;
+  hasSummary: boolean;
   updatedAt: string;
+}
+
+export interface StoredScheduledSummaryRow {
+  id: string;
+  runId: string;
+  sourceId: string;
+  novelId: string;
+  chapterIds: string[];
+  summary: string;
+  providerId: string;
+  modelId: string;
+  createdAt: string;
 }
 
 export interface StoredScheduledCheckRunRow {
@@ -2963,14 +2979,21 @@ export class SqliteNovelRepository {
   getScheduledNovels(): StoredScheduledNovelRow[] {
     const rows = this.#database
       .prepare(
-        `SELECT source_id, novel_id, enabled, auto_translate, last_checked_at, last_check_result, last_check_message, updated_at
-         FROM scheduled_novels
-         ORDER BY source_id, novel_id`,
+        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize,
+                sn.summarize_model_json, sn.last_checked_at, sn.last_check_result, sn.last_check_message,
+                sn.updated_at,
+                EXISTS (
+                  SELECT 1 FROM scheduled_summaries ss
+                  WHERE ss.source_id = sn.source_id AND ss.novel_id = sn.novel_id
+                ) AS has_summary
+         FROM scheduled_novels sn
+         ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
-      source_id: string; novel_id: string; enabled: number; auto_translate: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number;
+      summarize_model_json: string | null;
       last_checked_at: string | null; last_check_result: string | null;
-      last_check_message: string | null; updated_at: string;
+      last_check_message: string | null; updated_at: string; has_summary: number;
     }>;
 
     return rows.map((row) => ({
@@ -2978,9 +3001,12 @@ export class SqliteNovelRepository {
       novelId: row.novel_id,
       enabled: row.enabled === 1,
       autoTranslate: row.auto_translate === 1,
+      autoSummarize: row.auto_summarize === 1,
+      summarizeModel: parseStoredModelRoute(row.summarize_model_json),
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
       lastCheckMessage: row.last_check_message,
+      hasSummary: row.has_summary === 1,
       updatedAt: row.updated_at,
     }));
   }
@@ -2988,15 +3014,22 @@ export class SqliteNovelRepository {
   getEnabledScheduledNovels(): StoredScheduledNovelRow[] {
     const rows = this.#database
       .prepare(
-        `SELECT source_id, novel_id, enabled, auto_translate, last_checked_at, last_check_result, last_check_message, updated_at
-         FROM scheduled_novels
+        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize,
+                sn.summarize_model_json, sn.last_checked_at, sn.last_check_result, sn.last_check_message,
+                sn.updated_at,
+                EXISTS (
+                  SELECT 1 FROM scheduled_summaries ss
+                  WHERE ss.source_id = sn.source_id AND ss.novel_id = sn.novel_id
+                ) AS has_summary
+         FROM scheduled_novels sn
          WHERE enabled = 1
-         ORDER BY source_id, novel_id`,
+         ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
-      source_id: string; novel_id: string; enabled: number; auto_translate: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number;
+      summarize_model_json: string | null;
       last_checked_at: string | null; last_check_result: string | null;
-      last_check_message: string | null; updated_at: string;
+      last_check_message: string | null; updated_at: string; has_summary: number;
     }>;
 
     return rows.map((row) => ({
@@ -3004,9 +3037,12 @@ export class SqliteNovelRepository {
       novelId: row.novel_id,
       enabled: row.enabled === 1,
       autoTranslate: row.auto_translate === 1,
+      autoSummarize: row.auto_summarize === 1,
+      summarizeModel: parseStoredModelRoute(row.summarize_model_json),
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
       lastCheckMessage: row.last_check_message,
+      hasSummary: row.has_summary === 1,
       updatedAt: row.updated_at,
     }));
   }
@@ -3014,14 +3050,21 @@ export class SqliteNovelRepository {
   getScheduledNovel(sourceId: string, novelId: string): StoredScheduledNovelRow | undefined {
     const row = this.#database
       .prepare(
-        `SELECT source_id, novel_id, enabled, auto_translate, last_checked_at, last_check_result, last_check_message, updated_at
-         FROM scheduled_novels
-         WHERE source_id = ? AND novel_id = ?`,
+        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize,
+                sn.summarize_model_json, sn.last_checked_at, sn.last_check_result, sn.last_check_message,
+                sn.updated_at,
+                EXISTS (
+                  SELECT 1 FROM scheduled_summaries ss
+                  WHERE ss.source_id = sn.source_id AND ss.novel_id = sn.novel_id
+                ) AS has_summary
+         FROM scheduled_novels sn
+         WHERE sn.source_id = ? AND sn.novel_id = ?`,
       )
       .get(sourceId, novelId) as {
-      source_id: string; novel_id: string; enabled: number; auto_translate: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number;
+      summarize_model_json: string | null;
       last_checked_at: string | null; last_check_result: string | null;
-      last_check_message: string | null; updated_at: string;
+      last_check_message: string | null; updated_at: string; has_summary: number;
     } | undefined;
 
     if (!row) return undefined;
@@ -3031,27 +3074,49 @@ export class SqliteNovelRepository {
       novelId: row.novel_id,
       enabled: row.enabled === 1,
       autoTranslate: row.auto_translate === 1,
+      autoSummarize: row.auto_summarize === 1,
+      summarizeModel: parseStoredModelRoute(row.summarize_model_json),
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
       lastCheckMessage: row.last_check_message,
+      hasSummary: row.has_summary === 1,
       updatedAt: row.updated_at,
     };
   }
 
-  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean, autoTranslate?: boolean): void {
+  upsertScheduledNovel(
+    sourceId: string,
+    novelId: string,
+    enabled: boolean,
+    autoTranslate?: boolean,
+    autoSummarize?: boolean,
+    summarizeModel?: LlmModelGatewayRoute | null,
+  ): void {
     const now = new Date().toISOString();
     const existing = this.getScheduledNovel(sourceId, novelId);
     const resolvedAutoTranslate = autoTranslate ?? existing?.autoTranslate ?? false;
+    const resolvedAutoSummarize = autoSummarize ?? existing?.autoSummarize ?? false;
+    const resolvedSummarizeModel = summarizeModel === undefined ? (existing?.summarizeModel ?? null) : summarizeModel;
     this.#database
       .prepare(
-        `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, updated_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, auto_summarize, summarize_model_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(source_id, novel_id) DO UPDATE SET
            enabled = excluded.enabled,
            auto_translate = excluded.auto_translate,
+           auto_summarize = excluded.auto_summarize,
+           summarize_model_json = excluded.summarize_model_json,
            updated_at = excluded.updated_at`,
       )
-      .run(sourceId, novelId, enabled ? 1 : 0, resolvedAutoTranslate ? 1 : 0, now);
+      .run(
+        sourceId,
+        novelId,
+        enabled ? 1 : 0,
+        resolvedAutoTranslate ? 1 : 0,
+        resolvedAutoSummarize ? 1 : 0,
+        serializeStoredModelRoute(resolvedSummarizeModel),
+        now,
+      );
   }
 
   updateScheduledNovelCheckResult(
@@ -3070,14 +3135,23 @@ export class SqliteNovelRepository {
       .run(now, result, message, now, sourceId, novelId);
   }
 
-  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>): void {
+  bulkUpsertScheduledNovels(entries: Array<{
+    sourceId: string;
+    novelId: string;
+    enabled: boolean;
+    autoTranslate?: boolean;
+    autoSummarize?: boolean;
+    summarizeModel?: LlmModelGatewayRoute | null;
+  }>): void {
     const now = new Date().toISOString();
     const upsert = this.#database.prepare(
-      `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, auto_summarize, summarize_model_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_id, novel_id) DO UPDATE SET
          enabled = excluded.enabled,
          auto_translate = excluded.auto_translate,
+         auto_summarize = excluded.auto_summarize,
+         summarize_model_json = excluded.summarize_model_json,
          updated_at = excluded.updated_at`,
     );
 
@@ -3085,7 +3159,19 @@ export class SqliteNovelRepository {
       for (const entry of entries) {
         const existing = this.getScheduledNovel(entry.sourceId, entry.novelId);
         const resolvedAutoTranslate = entry.autoTranslate ?? existing?.autoTranslate ?? false;
-        upsert.run(entry.sourceId, entry.novelId, entry.enabled ? 1 : 0, resolvedAutoTranslate ? 1 : 0, now);
+        const resolvedAutoSummarize = entry.autoSummarize ?? existing?.autoSummarize ?? false;
+        const resolvedSummarizeModel = entry.summarizeModel === undefined
+          ? (existing?.summarizeModel ?? null)
+          : entry.summarizeModel;
+        upsert.run(
+          entry.sourceId,
+          entry.novelId,
+          entry.enabled ? 1 : 0,
+          resolvedAutoTranslate ? 1 : 0,
+          resolvedAutoSummarize ? 1 : 0,
+          serializeStoredModelRoute(resolvedSummarizeModel),
+          now,
+        );
       }
     });
 
@@ -3128,6 +3214,101 @@ export class SqliteNovelRepository {
          WHERE id = ?`,
       )
       .run(completedAt, totalChecked, newChaptersFound, skipped, errored, id);
+  }
+
+  listScheduledCheckRuns(limit: number, offset: number): StoredScheduledCheckRunRow[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT id, started_at, completed_at, status,
+                total_checked, new_chapters_found, skipped, errored
+         FROM scheduled_check_runs
+         ORDER BY started_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(limit, offset) as Array<{
+        id: string; started_at: string; completed_at: string | null;
+        status: string; total_checked: number; new_chapters_found: number;
+        skipped: number; errored: number;
+      }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      status: row.status as 'running' | 'completed',
+      totalChecked: row.total_checked,
+      newChaptersFound: row.new_chapters_found,
+      skipped: row.skipped,
+      errored: row.errored,
+    }));
+  }
+
+  createScheduledSummary(input: {
+    runId: string;
+    sourceId: string;
+    novelId: string;
+    chapterIds: string[];
+    summary: string;
+    providerId: string;
+    modelId: string;
+  }): void {
+    this.#database
+      .prepare(
+        `INSERT INTO scheduled_summaries (
+           summary_id, run_id, source_id, novel_id, chapter_ids_json,
+           summary, provider_id, model_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        crypto.randomUUID(),
+        input.runId,
+        input.sourceId,
+        input.novelId,
+        JSON.stringify(input.chapterIds),
+        input.summary,
+        input.providerId,
+        input.modelId,
+        new Date().toISOString(),
+      );
+  }
+
+  listScheduledSummariesByRunIds(runIds: string[]): StoredScheduledSummaryRow[] {
+    if (runIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = runIds.map(() => '?').join(', ');
+    const rows = this.#database
+      .prepare(
+        `SELECT summary_id, run_id, source_id, novel_id, chapter_ids_json,
+                summary, provider_id, model_id, created_at
+         FROM scheduled_summaries
+         WHERE run_id IN (${placeholders})
+         ORDER BY created_at DESC`,
+      )
+      .all(...runIds) as Array<{
+        summary_id: string;
+        run_id: string;
+        source_id: string;
+        novel_id: string;
+        chapter_ids_json: string;
+        summary: string;
+        provider_id: string;
+        model_id: string;
+        created_at: string;
+      }>;
+
+    return rows.map((row) => ({
+      id: row.summary_id,
+      runId: row.run_id,
+      sourceId: row.source_id,
+      novelId: row.novel_id,
+      chapterIds: parseChapterIdsJson(row.chapter_ids_json),
+      summary: row.summary,
+      providerId: row.provider_id,
+      modelId: row.model_id,
+      createdAt: row.created_at,
+    }));
   }
 
   getLatestCompletedCheckRun(): StoredScheduledCheckRunRow | undefined {
@@ -3681,6 +3862,8 @@ export class SqliteNovelRepository {
         novel_id          TEXT NOT NULL,
         enabled           INTEGER NOT NULL DEFAULT 0,
         auto_translate    INTEGER NOT NULL DEFAULT 0,
+        auto_summarize    INTEGER NOT NULL DEFAULT 0,
+        summarize_model_json TEXT,
         last_checked_at   TEXT,
         last_check_result TEXT,
         last_check_message TEXT,
@@ -3699,6 +3882,22 @@ export class SqliteNovelRepository {
         skipped            INTEGER NOT NULL DEFAULT 0,
         errored            INTEGER NOT NULL DEFAULT 0
       );
+
+      CREATE TABLE IF NOT EXISTS scheduled_summaries (
+        summary_id        TEXT NOT NULL PRIMARY KEY,
+        run_id            TEXT NOT NULL,
+        source_id         TEXT NOT NULL,
+        novel_id          TEXT NOT NULL,
+        chapter_ids_json  TEXT NOT NULL,
+        summary           TEXT NOT NULL,
+        provider_id       TEXT NOT NULL,
+        model_id          TEXT NOT NULL,
+        created_at        TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_summaries_run_lookup
+        ON scheduled_summaries(run_id, created_at DESC);
     `);
 
     this.ensureColumnExists('knowledge_graph_entities', 'embedding_json', 'TEXT');
@@ -3708,6 +3907,8 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumnExists('novel_graph_build_checkpoints', 'status', "TEXT NOT NULL DEFAULT 'success'");
     this.ensureColumnExists('scheduled_novels', 'auto_translate', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('scheduled_novels', 'auto_summarize', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumnExists('scheduled_novels', 'summarize_model_json', 'TEXT');
 
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS reader_typography (
@@ -4405,6 +4606,42 @@ function parseTranslationModelRoutesJson(value: string): TranslationModelRoute[]
           : 1,
       }];
     });
+  } catch {
+    return [];
+  }
+}
+
+function parseStoredModelRoute(raw: string | null): LlmModelGatewayRoute | null {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const providerId = typeof parsed.providerId === 'string' ? parsed.providerId.trim() : '';
+    const modelId = typeof parsed.modelId === 'string' ? parsed.modelId.trim() : '';
+    if (!providerId || !modelId) {
+      return null;
+    }
+
+    return { providerId, modelId };
+  } catch {
+    return null;
+  }
+}
+
+function serializeStoredModelRoute(route: LlmModelGatewayRoute | null): string | null {
+  if (!route) {
+    return null;
+  }
+
+  return JSON.stringify(route);
+}
+
+function parseChapterIdsJson(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : [];
   } catch {
     return [];
   }

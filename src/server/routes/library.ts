@@ -889,7 +889,10 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
       response.json(row ?? {
         sourceId, novelId, enabled: false,
         autoTranslate: false,
+        autoSummarize: false,
+        summarizeModel: null,
         lastCheckedAt: null, lastCheckResult: null, lastCheckMessage: null, updatedAt: '',
+        hasSummary: false,
       });
     } catch (error) {
       response.status(400).json({
@@ -901,11 +904,13 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   router.put('/novels/:sourceId/:novelId/scheduling', (request, response) => {
     try {
       const { sourceId, novelId } = request.params;
-      const body = request.body as { enabled?: unknown; autoTranslate?: unknown };
+      const body = request.body as { enabled?: unknown; autoTranslate?: unknown; autoSummarize?: unknown; summarizeModel?: unknown };
       const enabled = typeof body.enabled === 'boolean' ? body.enabled : false;
       const autoTranslate = typeof body.autoTranslate === 'boolean' ? body.autoTranslate : undefined;
+      const autoSummarize = typeof body.autoSummarize === 'boolean' ? body.autoSummarize : undefined;
+      const summarizeModel = parseOptionalModelRoute(body.summarizeModel);
 
-      service.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate);
+      service.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate, autoSummarize, summarizeModel);
       const row = service.getScheduledNovel(sourceId, novelId);
       response.json(row);
     } catch (error) {
@@ -932,6 +937,12 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
           title: novel.title,
           enabled: scheduled?.enabled ?? false,
           autoTranslate: scheduled?.autoTranslate ?? false,
+          autoSummarize: scheduled?.autoSummarize ?? false,
+          summarizeModel: scheduled?.summarizeModel ?? null,
+          lastCheckedAt: scheduled?.lastCheckedAt ?? null,
+          lastCheckResult: scheduled?.lastCheckResult ?? null,
+          lastCheckMessage: scheduled?.lastCheckMessage ?? null,
+          hasSummary: scheduled?.hasSummary ?? false,
         };
       });
 
@@ -947,16 +958,29 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     try {
       const body = request.body as { novels?: unknown };
       const entries = Array.isArray(body.novels)
-        ? body.novels.filter((entry): entry is { sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean } =>
-            typeof entry === 'object' && entry !== null &&
-            typeof (entry as Record<string, unknown>).sourceId === 'string' &&
-            typeof (entry as Record<string, unknown>).novelId === 'string' &&
-            typeof (entry as Record<string, unknown>).enabled === 'boolean' &&
-            (
-              !('autoTranslate' in (entry as Record<string, unknown>))
-              || typeof (entry as Record<string, unknown>).autoTranslate === 'boolean'
-            ),
-          )
+        ? body.novels.flatMap((entry) => {
+            if (typeof entry !== 'object' || entry === null) {
+              return [];
+            }
+
+            const raw = entry as Record<string, unknown>;
+            if (typeof raw.sourceId !== 'string' || typeof raw.novelId !== 'string' || typeof raw.enabled !== 'boolean') {
+              return [];
+            }
+
+            const summarizeModel = 'summarizeModel' in raw
+              ? parseOptionalModelRoute(raw.summarizeModel)
+              : undefined;
+
+            return [{
+              sourceId: raw.sourceId,
+              novelId: raw.novelId,
+              enabled: raw.enabled,
+              ...(typeof raw.autoTranslate === 'boolean' ? { autoTranslate: raw.autoTranslate } : {}),
+              ...(typeof raw.autoSummarize === 'boolean' ? { autoSummarize: raw.autoSummarize } : {}),
+              ...(summarizeModel !== undefined ? { summarizeModel } : {}),
+            }];
+          })
         : [];
 
       service.bulkUpsertScheduledNovels(entries);
@@ -1037,6 +1061,29 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   });
 
   return router;
+}
+
+function parseOptionalModelRoute(value: unknown): { providerId: string; modelId: string } | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const providerId = typeof raw.providerId === 'string' ? raw.providerId.trim() : '';
+  const modelId = typeof raw.modelId === 'string' ? raw.modelId.trim() : '';
+  if (!providerId || !modelId) {
+    return null;
+  }
+
+  return { providerId, modelId };
 }
 
 function readStringField(body: unknown, field: string): string {

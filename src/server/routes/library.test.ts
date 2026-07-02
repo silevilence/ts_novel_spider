@@ -231,6 +231,63 @@ test('library routes cache all pending media assets for a stored novel', async (
   }
 });
 
+test('library scheduling routes expose auto summary settings and summary flag', async () => {
+  const { app, cleanup } = createLibraryServer({
+    beforeControlCenter: (repository) => {
+      repository.upsertScheduledNovel(
+        'syosetu',
+        'n1000lib',
+        true,
+        true,
+        true,
+        { providerId: 'provider-chat', modelId: 'model-summary' },
+      );
+      repository.updateScheduledNovelCheckResult('syosetu', 'n1000lib', 'new_chapters', '发现 1 个新章节');
+      repository.createScheduledSummary({
+        runId: 'run-1',
+        sourceId: 'syosetu',
+        novelId: 'n1000lib',
+        chapterIds: ['chapter-2'],
+        summary: '第二章：联手调查黑塔。',
+        providerId: 'provider-chat',
+        modelId: 'model-summary',
+      });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    const baseUrl = await waitForServerListening(server);
+
+    const listResponse = await fetch(`${baseUrl}/api/library/scheduling/novels`);
+    assert.equal(listResponse.status, 200);
+    const listPayload = await listResponse.json() as {
+      novels: Array<{
+        novelId: string;
+        enabled: boolean;
+        autoTranslate: boolean;
+        autoSummarize: boolean;
+        summarizeModel: { providerId: string; modelId: string } | null;
+        lastCheckResult: string | null;
+        lastCheckMessage: string | null;
+        hasSummary: boolean;
+      }>;
+    };
+
+    const target = listPayload.novels.find((novel) => novel.novelId === 'n1000lib');
+    assert.ok(target);
+    assert.equal(target.autoTranslate, true);
+    assert.equal(target.autoSummarize, true);
+    assert.deepEqual(target.summarizeModel, { providerId: 'provider-chat', modelId: 'model-summary' });
+    assert.equal(target.lastCheckResult, 'new_chapters');
+    assert.equal(target.lastCheckMessage, '发现 1 个新章节');
+    assert.equal(target.hasSummary, true);
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});
+
 test('library routes export markdown, txt and epub packages for a stored novel', async () => {
   const { app, cleanup } = createLibraryServer();
   const server = app.listen(0, '127.0.0.1');

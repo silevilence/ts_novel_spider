@@ -270,6 +270,7 @@ function createTestServer() {
   return {
     app,
     controlCenter,
+    repository,
     cleanup: () => {
       controlCenter.close();
       networkProxy.close();
@@ -812,6 +813,82 @@ test('OPDS preferences and compilation runs API', async () => {
     assert.equal(runsResponse.status, 200);
     const runsPayload = (await runsResponse.json()) as { runs: unknown[] };
     assert.ok(Array.isArray(runsPayload.runs));
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+    cleanup();
+  }
+});
+
+test('scheduling preferences and run history API', async () => {
+  const { app, repository, cleanup } = createTestServer();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP server address.');
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const schedulingResponse = await fetch(`${baseUrl}/api/control/scheduling`);
+    assert.equal(schedulingResponse.status, 200);
+    const schedulingPayload = (await schedulingResponse.json()) as { enabled: boolean; lastCheckRun: unknown };
+    assert.equal(schedulingPayload.enabled, false);
+    assert.equal(schedulingPayload.lastCheckRun, null);
+
+    repository.createScheduledCheckRun('run-1', '2024-01-01T00:00:00Z');
+    repository.completeScheduledCheckRun('run-1', '2024-01-01T00:05:00Z', 1, 0, 0, 0);
+    repository.createScheduledCheckRun('run-2', '2024-01-02T00:00:00Z');
+    repository.completeScheduledCheckRun('run-2', '2024-01-02T00:05:00Z', 2, 1, 0, 0);
+    repository.saveMetadata('mock-html', {
+      novelId: 'demo',
+      title: '路由测试小说',
+      author: '测试作者',
+      description: '测试描述',
+      tags: ['测试'],
+      chapterCount: 2,
+      infoPageUrl: 'https://example.com/mock-html/demo',
+    });
+    repository.createScheduledSummary({
+      runId: 'run-2',
+      sourceId: 'mock-html',
+      novelId: 'demo',
+      chapterIds: ['chapter-2'],
+      summary: '第二章：测试摘要',
+      providerId: 'provider-chat',
+      modelId: 'model-summary',
+    });
+
+    const runsResponse = await fetch(`${baseUrl}/api/control/scheduling/runs?limit=1&offset=0`);
+    assert.equal(runsResponse.status, 200);
+    const runsPayload = (await runsResponse.json()) as {
+      runs: Array<{
+        id: string;
+        totalChecked: number;
+        newChaptersFound: number;
+        summaries: Array<{ novelId: string; chapterIds: string[]; summary: string }>;
+      }>;
+    };
+    assert.deepEqual(runsPayload.runs.map((run) => run.id), ['run-2']);
+    assert.equal(runsPayload.runs[0]?.totalChecked, 2);
+    assert.equal(runsPayload.runs[0]?.newChaptersFound, 1);
+    assert.equal(runsPayload.runs[0]?.summaries.length, 1);
+    assert.equal(runsPayload.runs[0]?.summaries[0]?.novelId, 'demo');
+    assert.deepEqual(runsPayload.runs[0]?.summaries[0]?.chapterIds, ['chapter-2']);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {

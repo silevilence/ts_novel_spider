@@ -316,6 +316,16 @@ function buildModelRouteFromInput(raw: Record<string, unknown>): TranslationDefa
   return result;
 }
 
+function buildStoredModelRouteFromInput(raw: Record<string, unknown>): LlmModelGatewayRoute | null {
+  const providerId = typeof raw.providerId === 'string' ? raw.providerId.trim() : '';
+  const modelId = typeof raw.modelId === 'string' ? raw.modelId.trim() : '';
+  if (!providerId || !modelId) {
+    return null;
+  }
+
+  return { providerId, modelId };
+}
+
 export function normalizeReaderTypographyInput(input: ReaderTypographyConfigInput): ReaderTypographyConfig {
   return {
     fontSize: typeof input.fontSize === 'number' ? clampFontSize(input.fontSize) : READER_TYPOGRAPHY_DEFAULTS.fontSize,
@@ -369,6 +379,7 @@ export interface SchedulingConfigInput {
   cronExpression?: string;
   weeklyDays?: number[];
   weeklyTime?: string;
+  summaryModel?: { providerId?: string; modelId?: string } | null;
 }
 
 export interface SchedulingConfig {
@@ -378,6 +389,7 @@ export interface SchedulingConfig {
   cronExpression: string;
   weeklyDays: number[];
   weeklyTime: string;
+  summaryModel: LlmModelGatewayRoute | null;
   updatedAt: string | null;
 }
 
@@ -388,10 +400,17 @@ export const SCHEDULING_DEFAULTS: SchedulingConfig = {
   cronExpression: '0 */6 * * *',
   weeklyDays: [1, 3, 5],
   weeklyTime: '08:00',
+  summaryModel: null,
   updatedAt: null,
 };
 
 export function normalizeSchedulingInput(input: SchedulingConfigInput): SchedulingConfig {
+  const summaryModel = input.summaryModel === null
+    ? null
+    : (isRecord(input.summaryModel)
+      ? buildStoredModelRouteFromInput(input.summaryModel)
+      : SCHEDULING_DEFAULTS.summaryModel);
+
   return {
     enabled: typeof input.enabled === 'boolean' ? input.enabled : SCHEDULING_DEFAULTS.enabled,
     mode: input.mode === 'interval' || input.mode === 'cron' || input.mode === 'weekly'
@@ -405,6 +424,7 @@ export function normalizeSchedulingInput(input: SchedulingConfigInput): Scheduli
       : SCHEDULING_DEFAULTS.weeklyDays,
     weeklyTime: typeof input.weeklyTime === 'string' && /^\d{2}:\d{2}$/.test(input.weeklyTime)
       ? input.weeklyTime : SCHEDULING_DEFAULTS.weeklyTime,
+    summaryModel,
     updatedAt: null,
   };
 }
@@ -705,7 +725,10 @@ export class SystemPreferencesService {
   }
 
   getScheduling(): SchedulingConfig {
-    return { ...this.#scheduling };
+    return {
+      ...this.#scheduling,
+      summaryModel: this.#scheduling.summaryModel ? { ...this.#scheduling.summaryModel } : null,
+    };
   }
 
   updateScheduling(input: SchedulingConfigInput): SchedulingConfig {
@@ -1525,6 +1548,14 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       if (typeof raw.cronExpression === 'string') { sched.cronExpression = raw.cronExpression; }
       if (Array.isArray(raw.weeklyDays)) { sched.weeklyDays = raw.weeklyDays; }
       if (typeof raw.weeklyTime === 'string') { sched.weeklyTime = raw.weeklyTime; }
+      if (raw.summaryModel === null) {
+        sched.summaryModel = null;
+      } else if (isRecord(raw.summaryModel)) {
+        const summaryModel = buildStoredModelRouteFromInput(raw.summaryModel);
+        if (summaryModel) {
+          sched.summaryModel = summaryModel;
+        }
+      }
       result.scheduling = sched;
     }
 
@@ -1621,6 +1652,7 @@ function persistPreferences(
       cronExpression: scheduling.cronExpression,
       weeklyDays: scheduling.weeklyDays,
       weeklyTime: scheduling.weeklyTime,
+      summaryModel: scheduling.summaryModel,
       updatedAt: scheduling.updatedAt,
     };
   }

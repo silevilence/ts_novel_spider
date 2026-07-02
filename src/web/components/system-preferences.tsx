@@ -26,7 +26,6 @@ import {
 import {
   IconAdjustments,
   IconBrain,
-  IconClock,
   IconDatabase,
   IconDeviceFloppy,
   IconLanguage,
@@ -42,11 +41,7 @@ import { NetworkProxyPanel } from './network-proxy-panel';
 import { ReaderTypographyPanel } from './reader-typography-panel';
 import {
   fetchLlmProvidersPreferences,
-  fetchSchedulingConfig,
-  fetchSchedulingNovels,
   fetchTranslationPreferences,
-  updateSchedulingConfig,
-  updateSchedulingNovels,
   updateTranslationPreferences,
   type ModelCapability,
   type SchedulingConfig,
@@ -76,40 +71,6 @@ const PANEL_ICON_SIZE = 20;
 
 export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
   const theme = useMantineTheme();
-
-  const [schedulingConfig, setSchedulingConfig] = useState<SchedulingConfig | null>(null);
-  const [schedulingNovels, setSchedulingNovels] = useState<SchedulingNovelEntry[]>([]);
-
-  useEffect(() => {
-    Promise.all([
-      fetchSchedulingConfig().then(setSchedulingConfig).catch(() => {}),
-      fetchSchedulingNovels().then((p) => setSchedulingNovels(p.novels)).catch(() => {}),
-    ]);
-  }, []);
-
-  const handleSchedulingConfigChange = async (input: Partial<SchedulingConfig>): Promise<void> => {
-    const updated = await updateSchedulingConfig(input);
-    setSchedulingConfig(updated);
-  };
-
-  const handleSchedulingNovelsChange = async (
-    entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>,
-  ): Promise<void> => {
-    await updateSchedulingNovels(entries);
-    const entryMap = new Map(entries.map((entry) => [`${entry.sourceId}:${entry.novelId}`, entry]));
-    setSchedulingNovels((prev) => prev.map((novel) => {
-      const next = entryMap.get(`${novel.sourceId}:${novel.novelId}`);
-      if (!next) {
-        return novel;
-      }
-
-      return {
-        ...novel,
-        enabled: next.enabled,
-        autoTranslate: next.autoTranslate ?? novel.autoTranslate,
-      };
-    }));
-  };
 
   const panels = useMemo<AccordionPanelDef[]>(
     () => [
@@ -198,26 +159,8 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
         description: '设定默认的源语言、目标语言与翻译模型偏好。',
         content: <TranslationDefaultsPanel onNotice={onNotify} />,
       },
-      {
-        id: 'scheduling',
-        icon: <IconClock size={PANEL_ICON_SIZE} />,
-        title: '定时更新',
-        description: '自动检查书库中作品的更新情况，发现新章节后自动下载——你只管看，不用惦记追更。',
-        badge: schedulingConfig?.enabled
-          ? <Badge size="sm" variant="light" color="green">已开启</Badge>
-          : <Badge size="sm" variant="light" color="gray">已关闭</Badge>,
-        content: (
-          <SchedulingPanel
-            config={schedulingConfig}
-            onConfigChange={handleSchedulingConfigChange}
-            novels={schedulingNovels}
-            onNovelsChange={handleSchedulingNovelsChange}
-            onNotify={onNotify}
-          />
-        ),
-      },
     ],
-    [model, onNotify, theme, schedulingConfig, schedulingNovels],
+    [model, onNotify, theme],
   );
 
   return (

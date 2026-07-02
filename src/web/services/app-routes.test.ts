@@ -17,6 +17,7 @@ test('normalizePathname keeps root and trims trailing slash', () => {
 
 test('resolveAppRoute matches known routes and falls back to control', () => {
   assert.equal(resolveAppRoute('/monitor').id, 'monitor');
+  assert.equal(resolveAppRoute('/scheduling').id, 'scheduling');
   assert.equal(resolveAppRoute('/settings/').id, 'settings');
   assert.equal(resolveAppRoute('/library').id, 'library');
   assert.equal(resolveAppRoute('/unknown').id, 'control');

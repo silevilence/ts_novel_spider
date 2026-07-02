@@ -22,36 +22,6 @@
 
 ## 🚧 开发中
 
-- [ ] **定时更新增加自动翻译联动**
-    - [ ] 数据层：扩展 `scheduled_novels` 表，新增 `auto_translate` 布尔列（默认 `0`），同步更新 `StoredScheduledNovelRow` 接口与 Repository CRUD 方法
-    - [ ] 调度层：`SchedulingService.#checkSingleNovel()` 增量下载完成后，若该书 `auto_translate = true`，自动调用 `TranslationService.startTranslation()` 触发翻译
-        - 前置校验：翻译配置已就绪（模型网关已配置）且当前无运行中的翻译任务；校验不通过时记录警告日志并跳过，不阻塞定时更新主流程
-        - 翻译范围：`startTranslation` 内置的断点续译机制会自动跳过已完成章节，仅翻译新增章节
-    - [ ] 前端交互：定时更新书单管理 Modal 中为每本书增加「自动翻译」开关（仅当该书已启用定时更新时可操作）；单书详情页定时更新面板同步展示该状态
-
-- [ ] **定时更新管理页面独立与功能增强**
-    - [ ] 路由与页面拆分
-        - 新增 `AppRouteId = 'scheduling'`，路径 `/scheduling`，导航标签「定时更新」，对齐 OPDS Dashboard 的独立页面模式
-        - 从「全局设置」页面移除定时更新配置面板，改为新页面承载
-    - [ ] 全局调度策略配置（迁移自 SystemPreferences）
-        - 三种调度模式选择器（固定间隔 / Cron 表达式 / 每周定时）及对应参数表单，复用现有 `CronEditor` 组件
-        - 全局启用/禁用开关
-        - 调用现有 `GET/PUT /api/control/scheduling` 接口，无需新增后端路由
-    - [ ] 定时更新书单管理（迁移自设置页 Modal）
-        - 在页面内以表格/列表形式展开启用定时更新的书籍，支持批量勾选与单本开关
-        - 每本书展示上次检查时间、检查结果（已是最新 / 发现 N 个新章节 / 出错）、检查消息
-        - 调用现有 `GET/PUT /api/library/scheduling/novels` 接口
-    - [ ] 运行记录看板
-        - 拉取 `scheduled_check_runs` 表数据，以时间倒序展示历史运行记录
-        - 每条记录展示：开始时间、完成时间、耗时、扫描书籍数、发现更新数、跳过数、错误数
-        - 新增后端路由 `GET /api/control/scheduling/runs`（支持 `?limit=&offset=` 分页），复用 Repository 已有的 `getLatestCompletedCheckRun()` 查询模式扩展为列表查询
-    - [ ] 小说级「更新总结」功能
-        - 数据层：扩展 `scheduled_novels` 表，新增 `auto_summarize` 布尔列（默认 `0`）和 `summarize_model_json` 文本列（存储 `{ providerId, modelId }`，可选），同步更新 `StoredScheduledNovelRow` 接口与 Repository CRUD
-        - 模型选择：页面顶部或书单区域提供全局总结模型下拉选择器，从已配置的对话类（chat）模型中选取；单本书可覆盖全局选择
-        - 调度层：`SchedulingService.#checkSingleNovel()` 增量下载完成后，若该书 `auto_summarize = true`，调用 LLM 对本次新抓取章节生成简要总结（章节标题 + 关键剧情摘要）
-        - 总结结果持久化：扩展 `scheduled_check_runs` 表或新增 `scheduled_summaries` 表，记录 `{ runId, sourceId, novelId, chapterIds, summary, modelId, createdAt }`
-        - 前端展示：运行记录详情中可展开查看各书的章节总结内容；书单列表中对有总结的书籍显示摘要图标标识
-
 ## ✅ 已完成
 
 - [x] **项目初始化与基础架构**
@@ -350,3 +320,33 @@
     - [x] **后台策略配置与可观测性看板**
         - [x] 在全局系统设置中，新增 OPDS 引擎专属配置项，支持自定义“后台差分扫描周期/间隔”（Cron Interval）
         - [x] 构建独立的可观测性监控面板，实时呈现 OPDS 服务运行状态（包含：当前上架书籍统计、分发版本分布图谱、差分扫描及制品生成审计日志等）
+
+- [x] **定时更新增加自动翻译联动**
+    - [x] 数据层：扩展 `scheduled_novels` 表，新增 `auto_translate` 布尔列（默认 `0`），同步更新 `StoredScheduledNovelRow` 接口与 Repository CRUD 方法
+    - [x] 调度层：`SchedulingService.#checkSingleNovel()` 增量下载完成后，若该书 `auto_translate = true`，自动调用 `TranslationService.startTranslation()` 触发翻译
+        - 前置校验：翻译配置已就绪（模型网关已配置）且当前无运行中的翻译任务；校验不通过时记录警告日志并跳过，不阻塞定时更新主流程
+        - 翻译范围：`startTranslation` 内置的断点续译机制会自动跳过已完成章节，仅翻译新增章节
+    - [x] 前端交互：定时更新书单管理 Modal 中为每本书增加「自动翻译」开关（仅当该书已启用定时更新时可操作）；单书详情页定时更新面板同步展示该状态
+
+- [x] **定时更新管理页面独立与功能增强**
+    - [x] 路由与页面拆分
+        - 新增 `AppRouteId = 'scheduling'`，路径 `/scheduling`，导航标签「定时更新」，对齐 OPDS Dashboard 的独立页面模式
+        - 从「全局设置」页面移除定时更新配置面板，改为新页面承载
+    - [x] 全局调度策略配置（迁移自 SystemPreferences）
+        - 三种调度模式选择器（固定间隔 / Cron 表达式 / 每周定时）及对应参数表单，复用现有 `CronEditor` 组件
+        - 全局启用/禁用开关
+        - 调用现有 `GET/PUT /api/control/scheduling` 接口，无需新增后端路由
+    - [x] 定时更新书单管理（迁移自设置页 Modal）
+        - 在页面内以表格/列表形式展开启用定时更新的书籍，支持批量勾选与单本开关
+        - 每本书展示上次检查时间、检查结果（已是最新 / 发现 N 个新章节 / 出错）、检查消息
+        - 调用现有 `GET/PUT /api/library/scheduling/novels` 接口
+    - [x] 运行记录看板
+        - 拉取 `scheduled_check_runs` 表数据，以时间倒序展示历史运行记录
+        - 每条记录展示：开始时间、完成时间、耗时、扫描书籍数、发现更新数、跳过数、错误数
+        - 新增后端路由 `GET /api/control/scheduling/runs`（支持 `?limit=&offset=` 分页），复用 Repository 已有的 `getLatestCompletedCheckRun()` 查询模式扩展为列表查询
+    - [x] 小说级「更新总结」功能
+        - 数据层：扩展 `scheduled_novels` 表，新增 `auto_summarize` 布尔列（默认 `0`）和 `summarize_model_json` 文本列（存储 `{ providerId, modelId }`，可选），同步更新 `StoredScheduledNovelRow` 接口与 Repository CRUD
+        - 模型选择：页面顶部或书单区域提供全局总结模型下拉选择器，从已配置的对话类（chat）模型中选取；单本书可覆盖全局选择
+        - 调度层：`SchedulingService.#checkSingleNovel()` 增量下载完成后，若该书 `auto_summarize = true`，调用 LLM 对本次新抓取章节生成简要总结（章节标题 + 关键剧情摘要）
+        - 总结结果持久化：扩展 `scheduled_check_runs` 表或新增 `scheduled_summaries` 表，记录 `{ runId, sourceId, novelId, chapterIds, summary, modelId, createdAt }`
+        - 前端展示：运行记录详情中可展开查看各书的章节总结内容；书单列表中对有总结的书籍显示摘要图标标识

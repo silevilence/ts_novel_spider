@@ -934,6 +934,7 @@ export interface SchedulingConfig {
   cronExpression: string;
   weeklyDays: number[];
   weeklyTime: string;
+  summaryModel: { providerId: string; modelId: string } | null;
   updatedAt: string | null;
   lastCheckRun?: {
     id: string;
@@ -953,6 +954,12 @@ export interface SchedulingNovelEntry {
   title: string;
   enabled: boolean;
   autoTranslate: boolean;
+  autoSummarize: boolean;
+  summarizeModel: { providerId: string; modelId: string } | null;
+  lastCheckedAt: string | null;
+  lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
+  lastCheckMessage: string | null;
+  hasSummary: boolean;
 }
 
 export interface SchedulingNovelDetail {
@@ -960,14 +967,45 @@ export interface SchedulingNovelDetail {
   novelId: string;
   enabled: boolean;
   autoTranslate: boolean;
+  autoSummarize: boolean;
+  summarizeModel: { providerId: string; modelId: string } | null;
   lastCheckedAt: string | null;
   lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
   lastCheckMessage: string | null;
+  hasSummary: boolean;
   updatedAt: string;
 }
 
 export interface SchedulingNovelsPayload {
   novels: SchedulingNovelEntry[];
+}
+
+export interface SchedulingRunSummary {
+  id: string;
+  runId: string;
+  sourceId: string;
+  novelId: string;
+  chapterIds: string[];
+  summary: string;
+  providerId: string;
+  modelId: string;
+  createdAt: string;
+}
+
+export interface SchedulingRun {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: 'running' | 'completed';
+  totalChecked: number;
+  newChaptersFound: number;
+  skipped: number;
+  errored: number;
+  summaries: SchedulingRunSummary[];
+}
+
+export interface SchedulingRunsPayload {
+  runs: SchedulingRun[];
 }
 
 export async function fetchSchedulingConfig(): Promise<SchedulingConfig> {
@@ -1001,7 +1039,12 @@ export async function fetchNovelScheduling(sourceId: string, novelId: string): P
 export async function updateNovelScheduling(
   sourceId: string,
   novelId: string,
-  input: { enabled: boolean; autoTranslate?: boolean },
+  input: {
+    enabled: boolean;
+    autoTranslate?: boolean;
+    autoSummarize?: boolean;
+    summarizeModel?: { providerId: string; modelId: string } | null;
+  },
 ): Promise<SchedulingNovelDetail> {
   const response = await fetch(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/scheduling`, {
     method: 'PUT',
@@ -1023,7 +1066,14 @@ export async function fetchSchedulingNovels(): Promise<SchedulingNovelsPayload> 
 }
 
 export async function updateSchedulingNovels(
-  entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>,
+  entries: Array<{
+    sourceId: string;
+    novelId: string;
+    enabled: boolean;
+    autoTranslate?: boolean;
+    autoSummarize?: boolean;
+    summarizeModel?: { providerId: string; modelId: string } | null;
+  }>,
 ): Promise<void> {
   const response = await fetch('/api/library/scheduling/novels', {
     method: 'PUT',
@@ -1033,6 +1083,10 @@ export async function updateSchedulingNovels(
   if (!response.ok) {
     throw new Error(`更新调度书单失败 (${response.status})`);
   }
+}
+
+export async function fetchSchedulingRuns(limit: number, offset: number): Promise<SchedulingRunsPayload> {
+  return requestJson<SchedulingRunsPayload>(`/api/control/scheduling/runs?limit=${limit}&offset=${offset}`);
 }
 
 // ── OPDS 书源服务 ──

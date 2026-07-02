@@ -224,6 +224,24 @@ describe('SqliteNovelRepository - scheduled novels CRUD', () => {
     const row = repo.getScheduledNovel('syosetu', 'n123');
     assert.equal(row, undefined);
   });
+
+  it('upsertScheduledNovel stores auto summarize config', () => {
+    const repo = createTestRepo();
+    repo.upsertScheduledNovel(
+      'syosetu',
+      'n123',
+      true,
+      false,
+      true,
+      { providerId: 'provider-chat', modelId: 'model-summary' },
+    );
+
+    const row = repo.getScheduledNovel('syosetu', 'n123');
+    assert.ok(row);
+    assert.equal(row.autoSummarize, true);
+    assert.deepEqual(row.summarizeModel, { providerId: 'provider-chat', modelId: 'model-summary' });
+    assert.equal(row.hasSummary, false);
+  });
 });
 
 describe('SchedulingService - auto translation', () => {
@@ -376,6 +394,12 @@ describe('SchedulingService - auto translation', () => {
             };
           },
         },
+        summary: {
+          getAutoSummaryReadiness: () => ({ ready: false, reason: 'disabled for test' }),
+          summarizeNewChapters: async () => {
+            throw new Error('should not be called');
+          },
+        },
       });
 
       service.start();
@@ -436,6 +460,12 @@ describe('SchedulingService - auto translation', () => {
             throw new Error('should not be called');
           },
         },
+        summary: {
+          getAutoSummaryReadiness: () => ({ ready: false, reason: 'disabled for test' }),
+          summarizeNewChapters: async () => {
+            throw new Error('should not be called');
+          },
+        },
       });
 
       service.start();
@@ -452,9 +482,262 @@ describe('SchedulingService - auto translation', () => {
   });
 });
 
+describe('SchedulingService - auto summary', () => {
+  function createAutoSummaryRepo(): SqliteNovelRepository {
+    const repo = new SqliteNovelRepository(':memory:');
+    repo.saveMetadata('syosetu', {
+      novelId: 'n123',
+      title: '定时更新测试',
+      author: '测试作者',
+      description: '',
+      tags: [],
+      chapterCount: 2,
+      infoPageUrl: 'https://example.com/syosetu/n123',
+    });
+    repo.saveChapterIndex('syosetu', 'n123', [
+      { id: 'chapter-1', index: 1, title: '第一章', volumeTitle: null, url: 'https://example.com/syosetu/n123/1' },
+    ]);
+    repo.saveChapterContent('syosetu', 'n123', {
+      chapterId: 'chapter-1',
+      index: 1,
+      title: '第一章',
+      volumeTitle: null,
+      url: 'https://example.com/syosetu/n123/1',
+      content: '已下载章节',
+    });
+    return repo;
+  }
+
+  function createSpiderRegistryEntry(): SpiderRegistryEntry {
+    const metadata = {
+      novelId: 'n123',
+      title: '定时更新测试',
+      author: '测试作者',
+      description: '',
+      tags: [],
+      chapterCount: 2,
+      infoPageUrl: 'https://example.com/syosetu/n123',
+    };
+    const chapters = [
+      { id: 'chapter-1', index: 1, title: '第一章', volumeTitle: undefined, url: 'https://example.com/syosetu/n123/1' },
+      { id: 'chapter-2', index: 2, title: '第二章', volumeTitle: undefined, url: 'https://example.com/syosetu/n123/2' },
+    ];
+
+    return {
+      descriptor: {
+        sourceId: 'syosetu',
+        label: 'Syosetu',
+        description: 'test spider',
+        defaultNovelId: 'n123',
+      },
+      spider: {
+        sourceId: 'syosetu',
+        buildInfoPageUrl: (novelId: string) => `https://example.com/syosetu/${novelId}`,
+        fetchMetadata: async () => metadata,
+        fetchChapterIndex: async () => chapters,
+        fetchChapter: async (_context, chapter) => ({
+          chapterId: chapter.id,
+          index: chapter.index,
+          title: chapter.title,
+          volumeTitle: chapter.volumeTitle,
+          url: chapter.url,
+          content: `${chapter.title} 内容`,
+        }),
+        fetchChapters: async (_context, selectedChapters, options) => {
+          const results = selectedChapters.map((chapter) => ({
+            chapter,
+            content: {
+              chapterId: chapter.id,
+              index: chapter.index,
+              title: chapter.title,
+              volumeTitle: chapter.volumeTitle,
+              url: chapter.url,
+              content: `${chapter.title} 内容`,
+            },
+            attempts: 1,
+          }));
+
+          for (const result of results) {
+            await options?.onResult?.(result);
+          }
+
+          return results;
+        },
+      },
+    };
+  }
+
+  async function flushAsyncWork(): Promise<void> {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  it('creates scheduled summary after downloading new chapters', async () => {
+    const repo = createAutoSummaryRepo();
+    repo.upsertScheduledNovel(
+      'syosetu',
+      'n123',
+      true,
+      false,
+      true,
+      { providerId: 'provider-chat', modelId: 'model-summary' },
+    );
+
+    const logAdapter = new InMemoryLogAdapter();
+    const logger = new SpiderLogDispatcher([logAdapter]);
+    const summaryCalls: Array<{ sourceId: string; novelId: string; chapterIds: string[] }> = [];
+
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const callbacks: Array<() => void> = [];
+
+    globalThis.setInterval = (((callback: Parameters<typeof setInterval>[0]) => {
+      callbacks.push(callback as () => void);
+      return { hasRef: () => false } as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    globalThis.clearInterval = (((_timer: ReturnType<typeof setInterval>) => undefined) as typeof clearInterval);
+
+    try {
+      const service = new SchedulingService({
+        repository: repo,
+        preferences: {
+          getScheduling: () => ({
+            enabled: true,
+            mode: 'interval',
+            intervalHours: 0,
+            cronExpression: '',
+            weeklyDays: [],
+            weeklyTime: '08:00',
+            summaryModel: { providerId: 'provider-chat', modelId: 'model-summary' },
+            updatedAt: null,
+          }),
+        },
+        spiderRegistry: [createSpiderRegistryEntry()],
+        controlCenter: {
+          getActiveTaskNovelKeys: () => [],
+        },
+        logger,
+        translation: {
+          getAutoTranslationReadiness: () => ({ ready: false, reason: 'translation disabled in test' }),
+          startTranslation: () => {
+            throw new Error('should not be called');
+          },
+        },
+        summary: {
+          getAutoSummaryReadiness: () => ({ ready: true }),
+          summarizeNewChapters: async ({ sourceId, novelId, chapters }) => {
+            summaryCalls.push({ sourceId, novelId, chapterIds: chapters.map((chapter) => chapter.id) });
+            return {
+              providerId: 'provider-chat',
+              modelId: 'model-summary',
+              summary: '第二章：主角决定联手调查黑塔，并与守卫发生冲突。',
+            };
+          },
+        },
+      });
+
+      service.start();
+      callbacks[0]?.();
+      await flushAsyncWork();
+      service.stop();
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
+
+    assert.deepEqual(summaryCalls, [{ sourceId: 'syosetu', novelId: 'n123', chapterIds: ['chapter-2'] }]);
+    const latestRun = repo.listScheduledCheckRuns(1, 0)[0];
+    assert.ok(latestRun);
+    const summaries = repo.listScheduledSummariesByRunIds([latestRun.id]);
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0]?.summary, '第二章：主角决定联手调查黑塔，并与守卫发生冲突。');
+    assert.deepEqual(summaries[0]?.chapterIds, ['chapter-2']);
+    assert.ok(logAdapter.events.some((event) => event.message.includes('已生成更新总结')));
+  });
+
+  it('logs a warning and skips auto summary when readiness check fails', async () => {
+    const repo = createAutoSummaryRepo();
+    repo.upsertScheduledNovel('syosetu', 'n123', true, false, true);
+
+    const logAdapter = new InMemoryLogAdapter();
+    const logger = new SpiderLogDispatcher([logAdapter]);
+
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const callbacks: Array<() => void> = [];
+
+    globalThis.setInterval = (((callback: Parameters<typeof setInterval>[0]) => {
+      callbacks.push(callback as () => void);
+      return { hasRef: () => false } as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    globalThis.clearInterval = (((_timer: ReturnType<typeof setInterval>) => undefined) as typeof clearInterval);
+
+    try {
+      const service = new SchedulingService({
+        repository: repo,
+        preferences: {
+          getScheduling: () => ({
+            enabled: true,
+            mode: 'interval',
+            intervalHours: 0,
+            cronExpression: '',
+            weeklyDays: [],
+            weeklyTime: '08:00',
+            summaryModel: null,
+            updatedAt: null,
+          }),
+        },
+        spiderRegistry: [createSpiderRegistryEntry()],
+        controlCenter: {
+          getActiveTaskNovelKeys: () => [],
+        },
+        logger,
+        translation: {
+          getAutoTranslationReadiness: () => ({ ready: false, reason: 'translation disabled in test' }),
+          startTranslation: () => {
+            throw new Error('should not be called');
+          },
+        },
+        summary: {
+          getAutoSummaryReadiness: () => ({ ready: false, reason: '没有可用的更新总结模型。' }),
+          summarizeNewChapters: async () => {
+            throw new Error('should not be called');
+          },
+        },
+      });
+
+      service.start();
+      callbacks[0]?.();
+      await flushAsyncWork();
+      service.stop();
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
+
+    const latestRun = repo.listScheduledCheckRuns(1, 0)[0];
+    assert.ok(latestRun);
+    const summaries = repo.listScheduledSummariesByRunIds([latestRun.id]);
+    assert.equal(summaries.length, 0);
+    assert.ok(logAdapter.events.some((event) => event.level === 'warn' && event.message.includes('没有可用的更新总结模型')));
+  });
+});
+
 describe('SqliteNovelRepository - scheduled check runs', () => {
   function createTestRepo(): SqliteNovelRepository {
-    return new SqliteNovelRepository(':memory:');
+    const repo = new SqliteNovelRepository(':memory:');
+    for (const novelId of ['n1', 'n2']) {
+      repo.saveMetadata('syosetu', {
+        novelId,
+        title: 'Test Novel',
+        author: 'Test Author',
+        description: '',
+        tags: [],
+        chapterCount: 0,
+        infoPageUrl: `https://example.com/syosetu/${novelId}`,
+      });
+    }
+    return repo;
   }
 
   it('create + complete check run lifecycle', () => {
@@ -485,5 +768,52 @@ describe('SqliteNovelRepository - scheduled check runs', () => {
     const latest = repo.getLatestCompletedCheckRun();
     assert.ok(latest);
     assert.equal(latest.status, 'completed');
+  });
+
+  it('listScheduledCheckRuns returns completed runs by newest completion first with pagination', () => {
+    const repo = createTestRepo();
+    repo.createScheduledCheckRun('run-1', '2024-01-01T00:00:00Z');
+    repo.completeScheduledCheckRun('run-1', '2024-01-01T00:05:00Z', 1, 0, 0, 0);
+    repo.createScheduledCheckRun('run-2', '2024-01-02T00:00:00Z');
+    repo.completeScheduledCheckRun('run-2', '2024-01-02T00:05:00Z', 2, 1, 0, 0);
+    repo.createScheduledCheckRun('run-3', '2024-01-03T00:00:00Z');
+    repo.completeScheduledCheckRun('run-3', '2024-01-03T00:05:00Z', 3, 2, 0, 0);
+
+    const firstPage = repo.listScheduledCheckRuns(2, 0);
+    const secondPage = repo.listScheduledCheckRuns(2, 2);
+
+    assert.deepEqual(firstPage.map((run) => run.id), ['run-3', 'run-2']);
+    assert.deepEqual(secondPage.map((run) => run.id), ['run-1']);
+    assert.equal(firstPage[0]?.newChaptersFound, 2);
+  });
+
+  it('listScheduledSummariesByRunIds returns summaries for selected runs', () => {
+    const repo = createTestRepo();
+    repo.upsertScheduledNovel('syosetu', 'n2', true);
+    repo.createScheduledSummary({
+      runId: 'run-1',
+      sourceId: 'syosetu',
+      novelId: 'n1',
+      chapterIds: ['chapter-1'],
+      summary: 'run 1 summary',
+      providerId: 'provider-a',
+      modelId: 'model-a',
+    });
+    repo.createScheduledSummary({
+      runId: 'run-2',
+      sourceId: 'syosetu',
+      novelId: 'n2',
+      chapterIds: ['chapter-2', 'chapter-3'],
+      summary: 'run 2 summary',
+      providerId: 'provider-b',
+      modelId: 'model-b',
+    });
+
+    const summaries = repo.listScheduledSummariesByRunIds(['run-2']);
+
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0]?.runId, 'run-2');
+    assert.deepEqual(summaries[0]?.chapterIds, ['chapter-2', 'chapter-3']);
+    assert.equal(repo.getScheduledNovel('syosetu', 'n2')?.hasSummary, true);
   });
 });

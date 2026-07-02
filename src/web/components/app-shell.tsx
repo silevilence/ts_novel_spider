@@ -48,6 +48,7 @@ const ROUTE_ICONS: Record<string, React.FC<{ size?: number }>> = {
   control: IconSpider,
   library: IconBooks,
   monitor: IconActivity,
+  scheduling: IconClock,
   opds: IconBook,
   settings: IconSettings,
 };

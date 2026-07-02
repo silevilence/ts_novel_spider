@@ -29,6 +29,7 @@ import {
   type SchedulingConfigInput,
   type TranslationPreferencesInput,
   type TranslationPreferencesState,
+  type LlmModelGatewayRoute,
   resolveEffectiveReaderTypography,
 } from './system-preferences';
 import {
@@ -61,7 +62,7 @@ import {
   type TranslationBuild,
   type TranslationChapterDetail,
 } from './translation-service';
-import type { StoredScheduledNovelRow, StoredScheduledCheckRunRow, StoredTranslationTermRow, StoredOpdsNovelRow, StoredOpdsCompilationRunRow } from './novel-repository';
+import type { StoredScheduledNovelRow, StoredScheduledCheckRunRow, StoredScheduledSummaryRow, StoredTranslationTermRow, StoredOpdsNovelRow, StoredOpdsCompilationRunRow } from './novel-repository';
 import type { OpdsNovelFeedEntry } from './opds-feed';
 import {
   LocalExportEngine,
@@ -72,6 +73,7 @@ import {
 } from './export-engine';
 import { SqliteNovelRepository, type StoredNovelLibraryRow } from './novel-repository';
 import { SchedulingService, type SchedulingServiceDependencies } from './scheduling';
+import { SchedulingSummaryService } from './scheduling-summary';
 import { OpdsCompilationService, type OpdsCompilationServiceDependencies } from './opds-compilation';
 import { SpiderRunner } from './spider-runner';
 import {
@@ -257,6 +259,7 @@ export class ControlCenterService {
     this.restoreTaskHistory();
 
     this.#taskLogDispatcher = new SpiderLogDispatcher();
+    const schedulingSummary = new SchedulingSummaryService(this.#repository, this.#systemPreferences);
     this.#scheduling = new SchedulingService({
       repository: this.#repository,
       preferences: this.#systemPreferences,
@@ -264,6 +267,7 @@ export class ControlCenterService {
       controlCenter: this,
       logger: this.#taskLogDispatcher,
       translation: this.#translation,
+      summary: schedulingSummary,
     });
     this.#scheduling.start();
 
@@ -565,21 +569,52 @@ export class ControlCenterService {
     return this.#repository.getScheduledNovel(sourceId, novelId);
   }
 
-  upsertScheduledNovel(sourceId: string, novelId: string, enabled: boolean, autoTranslate?: boolean): void {
-    this.#repository.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate);
+  upsertScheduledNovel(
+    sourceId: string,
+    novelId: string,
+    enabled: boolean,
+    autoTranslate?: boolean,
+    autoSummarize?: boolean,
+    summarizeModel?: LlmModelGatewayRoute | null,
+  ): void {
+    this.#repository.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate, autoSummarize, summarizeModel);
   }
 
   getAllScheduledNovels(): StoredScheduledNovelRow[] {
     return this.#repository.getScheduledNovels();
   }
 
-  bulkUpsertScheduledNovels(entries: Array<{ sourceId: string; novelId: string; enabled: boolean; autoTranslate?: boolean }>): void {
+  bulkUpsertScheduledNovels(entries: Array<{
+    sourceId: string;
+    novelId: string;
+    enabled: boolean;
+    autoTranslate?: boolean;
+    autoSummarize?: boolean;
+    summarizeModel?: LlmModelGatewayRoute | null;
+  }>): void {
     this.#repository.bulkUpsertScheduledNovels(entries);
   }
 
   /** 获取上次完成的调度检查轮次 */
   getLatestCompletedCheckRun(): StoredScheduledCheckRunRow | undefined {
     return this.#repository.getLatestCompletedCheckRun();
+  }
+
+  listScheduledCheckRuns(limit: number, offset: number): Array<StoredScheduledCheckRunRow & { summaries: StoredScheduledSummaryRow[] }> {
+    const runs = this.#repository.listScheduledCheckRuns(limit, offset);
+    const summaries = this.#repository.listScheduledSummariesByRunIds(runs.map((run) => run.id));
+    const summaryMap = new Map<string, StoredScheduledSummaryRow[]>();
+
+    for (const summary of summaries) {
+      const bucket = summaryMap.get(summary.runId) ?? [];
+      bucket.push(summary);
+      summaryMap.set(summary.runId, bucket);
+    }
+
+    return runs.map((run) => ({
+      ...run,
+      summaries: summaryMap.get(run.id) ?? [],
+    }));
   }
 
   // ── OPDS 引擎 ──

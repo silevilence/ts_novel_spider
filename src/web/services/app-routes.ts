@@ -1,4 +1,4 @@
-export type AppRouteId = 'control' | 'library' | 'monitor' | 'opds' | 'settings';
+export type AppRouteId = 'control' | 'library' | 'monitor' | 'scheduling' | 'opds' | 'settings';
 
 export interface AppLocation {
   route: AppRouteDefinition;
@@ -38,6 +38,13 @@ export const APP_ROUTES: AppRouteDefinition[] = [
     label: '任务大盘',
     title: '任务大盘',
     description: '查看当前采集进度、最近任务记录，以及失败章节的重试情况。',
+  },
+  {
+    id: 'scheduling',
+    path: '/scheduling',
+    label: '定时更新',
+    title: '定时更新管理',
+    description: '自动检查书库里的作品更新，统一管理追更、自动翻译和更新总结。',
   },
   {
     id: 'opds',

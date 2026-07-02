@@ -438,18 +438,33 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
   // ── 定时更新 ──
 
   router.get('/scheduling', (_request, response) => {
-  const config = service.getSchedulingState();
-  const lastCheckRun = service.getLatestCompletedCheckRun();
-  response.json({ ...config, lastCheckRun: lastCheckRun ?? null });
-});
+    const config = service.getSchedulingState();
+    const lastCheckRun = service.getLatestCompletedCheckRun();
+    response.json({ ...config, lastCheckRun: lastCheckRun ?? null });
+  });
 
-router.put('/scheduling', (request, response) => {
+  router.put('/scheduling', (request, response) => {
     try {
       const body = (request.body ?? {}) as SchedulingConfigInput;
       response.json(service.updateSchedulingState(body));
     } catch (error) {
       response.status(400).json({
         message: error instanceof Error ? error.message : 'Invalid scheduling request.',
+      });
+    }
+  });
+
+  router.get('/scheduling/runs', (request, response) => {
+    try {
+      const limitRaw = typeof request.query.limit === 'string' ? parseInt(request.query.limit, 10) : 20;
+      const offsetRaw = typeof request.query.offset === 'string' ? parseInt(request.query.offset, 10) : 0;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 100) : 20;
+      const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+      const runs = service.listScheduledCheckRuns(limit, offset);
+      response.json({ runs });
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : 'Invalid request.',
       });
     }
   });
