@@ -252,6 +252,21 @@ export interface StoredKnowledgeGraphChunkRow {
   updatedAt: string;
 }
 
+/** A reusable high-level GraphRAG entry with links back to the source graph and prose. */
+export interface StoredKnowledgeGraphSummaryRow {
+  id: string;
+  summaryType: 'subgraph' | 'chapter_cluster' | 'community';
+  stableKey: string;
+  title: string;
+  summary: string;
+  chapterIds: string[];
+  entityIds: string[];
+  relationIds: string[];
+  embedding: number[] | null;
+  sourceFingerprint: string;
+  updatedAt: string;
+}
+
 // ── 翻译流水线 ──
 
 export type TranslationLanguageCode = string;
@@ -568,6 +583,22 @@ interface KnowledgeGraphChunkRow {
   entity_names_json: string;
   keyword_hints_json: string;
   embedding_json: string | null;
+  updated_at: string;
+}
+
+interface KnowledgeGraphSummaryRow {
+  summary_id: string;
+  source_id: string;
+  novel_id: string;
+  summary_type: 'subgraph' | 'chapter_cluster' | 'community';
+  stable_key: string;
+  title: string;
+  summary: string;
+  chapter_ids_json: string;
+  entity_ids_json: string;
+  relation_ids_json: string;
+  embedding_json: string | null;
+  source_fingerprint: string;
   updated_at: string;
 }
 
@@ -1754,12 +1785,30 @@ export class SqliteNovelRepository {
       .map((row) => mapKnowledgeGraphChunkRow(row as KnowledgeGraphChunkRow));
   }
 
+  listKnowledgeGraphSummaries(sourceId: string, novelId: string): StoredKnowledgeGraphSummaryRow[] {
+    return this.#database
+      .prepare(
+        `
+          SELECT
+            summary_id, source_id, novel_id, summary_type, stable_key, title, summary,
+            chapter_ids_json, entity_ids_json, relation_ids_json, embedding_json,
+            source_fingerprint, updated_at
+          FROM knowledge_graph_summaries
+          WHERE source_id = ? AND novel_id = ?
+          ORDER BY summary_type ASC, stable_key ASC
+        `,
+      )
+      .all(sourceId, novelId)
+      .map((row) => mapKnowledgeGraphSummaryRow(row as KnowledgeGraphSummaryRow));
+  }
+
   replaceKnowledgeGraph(
     sourceId: string,
     novelId: string,
     entities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>>,
     relations: Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>>,
     chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>,
+    summaries: Array<Omit<StoredKnowledgeGraphSummaryRow, 'updatedAt'>> = [],
   ): void {
     this.assertNovelExists(sourceId, novelId);
 
@@ -1824,11 +1873,22 @@ export class SqliteNovelRepository {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     );
+    const insertSummary = this.#database.prepare(
+      `
+        INSERT OR IGNORE INTO knowledge_graph_summaries (
+          summary_id, source_id, novel_id, summary_type, stable_key, title, summary,
+          chapter_ids_json, entity_ids_json, relation_ids_json, embedding_json,
+          source_fingerprint, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    );
 
     const transaction = this.#database.transaction(() => {
       this.#database.prepare('DELETE FROM knowledge_graph_chunks WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
       this.#database.prepare('DELETE FROM knowledge_graph_relations WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
       this.#database.prepare('DELETE FROM knowledge_graph_entities WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM knowledge_graph_summaries WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
 
       for (const entity of entities) {
         insertEntity.run(
@@ -1883,6 +1943,24 @@ export class SqliteNovelRepository {
           timestamp,
         );
       }
+
+      for (const summary of summaries) {
+        insertSummary.run(
+          summary.id,
+          sourceId,
+          novelId,
+          summary.summaryType,
+          summary.stableKey,
+          summary.title,
+          summary.summary,
+          JSON.stringify(summary.chapterIds),
+          JSON.stringify(summary.entityIds),
+          JSON.stringify(summary.relationIds),
+          summary.embedding ? JSON.stringify(summary.embedding) : null,
+          summary.sourceFingerprint,
+          timestamp,
+        );
+      }
     });
 
     transaction();
@@ -1896,6 +1974,7 @@ export class SqliteNovelRepository {
       this.#database.prepare('DELETE FROM knowledge_graph_chunks WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
       this.#database.prepare('DELETE FROM knowledge_graph_relations WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
       this.#database.prepare('DELETE FROM knowledge_graph_entities WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+      this.#database.prepare('DELETE FROM knowledge_graph_summaries WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
       this.#database.prepare('DELETE FROM novel_graph_build_logs WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
     });
 
@@ -3854,6 +3933,27 @@ export class SqliteNovelRepository {
       CREATE INDEX IF NOT EXISTS idx_knowledge_graph_chunks_lookup
         ON knowledge_graph_chunks(source_id, novel_id, chapter_index ASC, chunk_index ASC);
 
+      CREATE TABLE IF NOT EXISTS knowledge_graph_summaries (
+        summary_id TEXT NOT NULL PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        summary_type TEXT NOT NULL,
+        stable_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        chapter_ids_json TEXT NOT NULL,
+        entity_ids_json TEXT NOT NULL,
+        relation_ids_json TEXT NOT NULL,
+        embedding_json TEXT,
+        source_fingerprint TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(source_id, novel_id, summary_type, stable_key),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_knowledge_graph_summaries_lookup
+        ON knowledge_graph_summaries(source_id, novel_id, summary_type, stable_key);
+
       CREATE INDEX IF NOT EXISTS idx_novel_graph_build_logs_lookup
         ON novel_graph_build_logs(source_id, novel_id, created_at ASC);
 
@@ -3902,6 +4002,7 @@ export class SqliteNovelRepository {
 
     this.ensureColumnExists('knowledge_graph_entities', 'embedding_json', 'TEXT');
     this.ensureColumnExists('knowledge_graph_chunks', 'embedding_json', 'TEXT');
+    this.ensureColumnExists('knowledge_graph_summaries', 'embedding_json', 'TEXT');
     this.ensureColumnExists('novel_graph_profiles', 'extraction_models_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
@@ -4442,6 +4543,22 @@ function mapKnowledgeGraphChunkRow(row: KnowledgeGraphChunkRow): StoredKnowledge
     entityNames: JSON.parse(row.entity_names_json) as string[],
     keywordHints: JSON.parse(row.keyword_hints_json) as string[],
     embedding: row.embedding_json ? JSON.parse(row.embedding_json) as number[] : null,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapKnowledgeGraphSummaryRow(row: KnowledgeGraphSummaryRow): StoredKnowledgeGraphSummaryRow {
+  return {
+    id: row.summary_id,
+    summaryType: row.summary_type,
+    stableKey: row.stable_key,
+    title: row.title,
+    summary: row.summary,
+    chapterIds: JSON.parse(row.chapter_ids_json) as string[],
+    entityIds: JSON.parse(row.entity_ids_json) as string[],
+    relationIds: JSON.parse(row.relation_ids_json) as string[],
+    embedding: row.embedding_json ? JSON.parse(row.embedding_json) as number[] : null,
+    sourceFingerprint: row.source_fingerprint,
     updatedAt: row.updated_at,
   };
 }

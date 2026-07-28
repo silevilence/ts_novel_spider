@@ -33,6 +33,7 @@ import type {
   StoredKnowledgeGraphProfileInput,
   StoredKnowledgeGraphProfileRow,
   StoredKnowledgeGraphRelationRow,
+  StoredKnowledgeGraphSummaryRow,
 } from './novel-repository';
 import type {
   LlmModelConfig,
@@ -143,6 +144,17 @@ export interface LibraryKnowledgeGraphRelation {
   evidence: string[];
 }
 
+export interface LibraryKnowledgeGraphSummary {
+  id: string;
+  summaryType: StoredKnowledgeGraphSummaryRow['summaryType'];
+  title: string;
+  summary: string;
+  chapterIds: string[];
+  entityIds: string[];
+  relationIds: string[];
+  updatedAt: string;
+}
+
 export interface LibraryKnowledgeGraphState {
   profile: LibraryKnowledgeGraphProfile;
   build: LibraryKnowledgeGraphBuild;
@@ -150,10 +162,11 @@ export interface LibraryKnowledgeGraphState {
   namespace: string;
   entities: LibraryKnowledgeGraphEntity[];
   relations: LibraryKnowledgeGraphRelation[];
+  summaries: LibraryKnowledgeGraphSummary[];
 }
 
 export interface LibraryAssistantSource {
-  type: 'metadata' | 'graph' | 'chapter';
+  type: 'metadata' | 'summary' | 'graph' | 'chapter';
   label: string;
   excerpt: string;
   chapterId: string | null;
@@ -694,6 +707,7 @@ export class LibraryIntelligenceService {
       entities: this.#repository.listKnowledgeGraphEntities(input.sourceId, input.novelId),
       relations: this.#repository.listKnowledgeGraphRelations(input.sourceId, input.novelId),
       chunks: this.#repository.listKnowledgeGraphChunks(input.sourceId, input.novelId),
+      summaries: this.#repository.listKnowledgeGraphSummaries(input.sourceId, input.novelId),
       embeddingModel,
       rerankModel,
       ...(input.chapterId ? { chapterId: input.chapterId } : {}),
@@ -760,6 +774,7 @@ export class LibraryIntelligenceService {
       namespace: createGraphNamespace(snapshot.sourceId, snapshot.metadata.novelId),
       entities: this.#repository.listKnowledgeGraphEntities(snapshot.sourceId, snapshot.metadata.novelId).map(serializeEntity),
       relations: this.#repository.listKnowledgeGraphRelations(snapshot.sourceId, snapshot.metadata.novelId).map(serializeRelation),
+      summaries: this.#repository.listKnowledgeGraphSummaries(snapshot.sourceId, snapshot.metadata.novelId).map(serializeSummary),
     };
   }
 
@@ -1131,14 +1146,14 @@ export class LibraryIntelligenceService {
         `开始写入本地图谱：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系，${extracted.chunks.length} 个片段索引。`,
       );
 
-      this.#repository.replaceKnowledgeGraph(sourceId, novelId, extracted.entities, extracted.relations, extracted.chunks);
+      this.#repository.replaceKnowledgeGraph(sourceId, novelId, extracted.entities, extracted.relations, extracted.chunks, extracted.summaries);
       this.#repository.replaceKnowledgeGraphBuildCheckpoints(sourceId, novelId, extracted.checkpoints);
       this.writeBuildLog(
         sourceId,
         novelId,
         'relating',
         'info',
-        `本地图谱已写入：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系，${extracted.chunks.length} 个片段索引；已刷新 ${extracted.checkpoints.length} 个结构缓存。`,
+        `本地图谱已写入：${extracted.entities.length} 个实体，${extracted.relations.length} 条关系，${extracted.chunks.length} 个片段索引，${extracted.summaries.length} 个 GraphRAG 摘要资产；已刷新 ${extracted.checkpoints.length} 个结构缓存。`,
       );
 
       // ── Neo4j sync（best-effort：失败不影响本地图谱构建结果）──────────────
@@ -2051,6 +2066,19 @@ function serializeRelation(relation: StoredKnowledgeGraphRelationRow): LibraryKn
     weight: relation.weight,
     chapterIds: relation.chapterIds,
     evidence: relation.evidence,
+  };
+}
+
+function serializeSummary(summary: StoredKnowledgeGraphSummaryRow): LibraryKnowledgeGraphSummary {
+  return {
+    id: summary.id,
+    summaryType: summary.summaryType,
+    title: summary.title,
+    summary: summary.summary,
+    chapterIds: summary.chapterIds,
+    entityIds: summary.entityIds,
+    relationIds: summary.relationIds,
+    updatedAt: summary.updatedAt,
   };
 }
 

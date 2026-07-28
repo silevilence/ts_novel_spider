@@ -45,6 +45,7 @@ async function fetchGraph(baseUrl: string): Promise<{
     buildLogs: Array<{ level: string; message: string }>;
     entities: Array<{ name: string; aliases: string[] }>;
     relations: Array<{ summary: string; evidence: string[] }>;
+    summaries: Array<{ summaryType: string; chapterIds: string[]; entityIds: string[]; relationIds: string[] }>;
   };
 }> {
   const response = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`);
@@ -79,6 +80,7 @@ async function fetchGraph(baseUrl: string): Promise<{
       buildLogs: Array<{ level: string; message: string }>;
       entities: Array<{ name: string; aliases: string[] }>;
       relations: Array<{ summary: string; evidence: string[] }>;
+      summaries: Array<{ summaryType: string; chapterIds: string[]; entityIds: string[]; relationIds: string[] }>;
     };
   };
 }
@@ -924,6 +926,9 @@ test('library graph routes use AI extraction fallback, hybrid retrieval, JSON re
     assert.equal(payload.knowledgeGraph.entities.some((entity) => entity.name === '主人公（莱昂）'), false);
     assert.equal(payload.knowledgeGraph.entities.some((entity) => entity.name === '高塔（黑塔）'), false);
     assert.ok(payload.knowledgeGraph.relations.some((relation) => relation.evidence.some((evidence) => evidence.includes('联手调查黑塔'))));
+    assert.ok(payload.knowledgeGraph.summaries.some((summary) => summary.summaryType === 'chapter_cluster' && summary.chapterIds.length > 0));
+    assert.ok(payload.knowledgeGraph.summaries.some((summary) => summary.summaryType === 'subgraph' && summary.entityIds.length > 0));
+    assert.ok(payload.knowledgeGraph.summaries.some((summary) => summary.summaryType === 'community' && summary.relationIds.length > 0));
     assert.ok(fakeNeo4j.clearCalls.includes(namespace));
     assert.ok(fakeNeo4j.hasEntity(namespace, '艾琳'));
 
@@ -946,6 +951,10 @@ test('library graph routes use AI extraction fallback, hybrid retrieval, JSON re
         message: string;
         sources: Array<{ type: string; chapterId: string | null }>;
         trace: {
+          mode: 'local' | 'global';
+          summaryHits: Array<{ summaryType: string; selected: boolean }>;
+          entityLinks: Array<{ name: string; hops: number }>;
+          paths: Array<{ labels: string[]; relationIds: string[] }>;
           graphHits: Array<{ source: string; label: string }>;
           chunkHits: Array<{ rerankScore: number | null; selected: boolean; chapterId: string | null }>;
         };
@@ -960,6 +969,20 @@ test('library graph routes use AI extraction fallback, hybrid retrieval, JSON re
     assert.ok(assistantPayload.reply.trace.graphHits.some((hit) => hit.source === 'neo4j'));
     assert.ok(assistantPayload.reply.trace.chunkHits.some((hit) => hit.selected));
     assert.ok(assistantPayload.reply.trace.chunkHits.some((hit) => hit.rerankScore !== null));
+    assert.equal(assistantPayload.reply.trace.mode, 'local');
+    assert.ok(assistantPayload.reply.trace.summaryHits.some((hit) => hit.selected));
+    assert.ok(assistantPayload.reply.trace.entityLinks.some((hit) => hit.name === '艾琳'));
+
+    const globalAssistantResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/assistant/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '请从全书视角总结艾琳和莱昂的关系主线与发展。' }),
+    });
+    const globalAssistantPayload = await globalAssistantResponse.json() as { reply: { trace: { mode: string; summaryHits: Array<{ summaryType: string; selected: boolean }>; paths: Array<{ labels: string[] }> } } };
+    assert.equal(globalAssistantResponse.status, 200);
+    assert.equal(globalAssistantPayload.reply.trace.mode, 'global');
+    assert.ok(globalAssistantPayload.reply.trace.summaryHits.some((hit) => hit.summaryType === 'community' && hit.selected));
+    assert.ok(globalAssistantPayload.reply.trace.paths.some((path) => path.labels.includes('艾琳')));
 
     const clearResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/graph`, { method: 'DELETE' });
     const clearPayload = await clearResponse.json() as {

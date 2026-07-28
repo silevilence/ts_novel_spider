@@ -34,6 +34,19 @@ interface AssistantMessageItem {
   trace?: {
     usedEmbedding: boolean;
     usedRerank: boolean;
+    mode: 'local' | 'global';
+    intent: 'local' | 'global';
+    summaryHits: Array<{
+      summaryId: string;
+      summaryType: 'subgraph' | 'chapter_cluster' | 'community';
+      title: string;
+      excerpt: string;
+      score: number;
+      chapterIds: string[];
+      selected: boolean;
+    }>;
+    entityLinks: Array<{ entityId: string; name: string; score: number; hops: number }>;
+    paths: Array<{ entityIds: string[]; labels: string[]; relationIds: string[]; score: number; chapterIds: string[] }>;
     graphHits: Array<{
       source: 'local' | 'neo4j';
       label: string;
@@ -945,7 +958,41 @@ export function LibraryIntelligencePanel({
                       <Badge size="xs" variant="light" color={message.trace.usedRerank ? 'green' : 'gray'}>
                         {message.trace.usedRerank ? '已重排' : '未重排'}
                       </Badge>
+                      <Badge size="xs" variant="light" color={message.trace.mode === 'global' ? 'violet' : 'blue'}>
+                        {message.trace.mode === 'global' ? '全书 GraphRAG' : '局部 GraphRAG'}
+                      </Badge>
                     </Group>
+
+                    {message.trace.summaryHits.length > 0 ? (
+                      <Paper p="xs" radius="md" style={{ background: 'rgba(48,36,30,0.4)' }}>
+                        <Text size="xs" fw={600} mb={4}>摘要入口与下钻证据</Text>
+                        <Stack gap={4}>
+                          {message.trace.summaryHits.slice(0, 3).map((hit) => (
+                            <Paper key={hit.summaryId} p={6} radius="sm" style={{ background: hit.selected ? 'rgba(145,104,255,0.10)' : 'rgba(58,46,40,0.3)' }}>
+                              <Group justify="space-between" mb={2}>
+                                <Badge size="xs" variant="light" color={hit.selected ? 'violet' : 'gray'}>{hit.summaryType}</Badge>
+                                <Text size="xs" c="dimmed">得分 {hit.score.toFixed(2)}</Text>
+                              </Group>
+                              <Text size="xs" fw={600}>{hit.title}</Text>
+                              <Text size="xs" c="dimmed">{hit.excerpt}</Text>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      </Paper>
+                    ) : null}
+
+                    {message.trace.paths.length > 0 ? (
+                      <Paper p="xs" radius="md" style={{ background: 'rgba(48,36,30,0.4)' }}>
+                        <Text size="xs" fw={600} mb={4}>实体对齐与多跳路径</Text>
+                        <Stack gap={3}>
+                          {message.trace.paths.slice(0, 3).map((path, index) => (
+                            <Text key={`${message.id}-path-${index}`} size="xs" c="dimmed">
+                              {path.labels.join(' → ')} · {path.relationIds.length} 跳 · {path.score.toFixed(2)}
+                            </Text>
+                          ))}
+                        </Stack>
+                      </Paper>
+                    ) : null}
 
                     {message.trace.graphHits.length > 0 ? (
                       <Paper p="xs" radius="md" style={{ background: 'rgba(48,36,30,0.4)' }}>

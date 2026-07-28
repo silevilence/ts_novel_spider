@@ -11,6 +11,7 @@ import type {
   StoredKnowledgeGraphChunkRow,
   StoredKnowledgeGraphEntityRow,
   StoredKnowledgeGraphRelationRow,
+  StoredKnowledgeGraphSummaryRow,
 } from './novel-repository';
 import type { LlmModelConfig, LlmProviderConfig } from './system-preferences';
 import type { StoredChapterRecord, StoredNovelSnapshot } from './spider';
@@ -32,6 +33,7 @@ export interface KnowledgeGraphBuildArtifacts {
   entities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>>;
   relations: Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>>;
   chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>;
+  summaries: Array<Omit<StoredKnowledgeGraphSummaryRow, 'updatedAt'>>;
   checkpoints: Array<{
     chunkId: string;
     chapterId: string;
@@ -115,7 +117,7 @@ export class KnowledgeGraphBuildPausedError extends Error {
 }
 
 export interface AssistantSourceDocument {
-  type: 'metadata' | 'graph' | 'chapter';
+  type: 'metadata' | 'summary' | 'graph' | 'chapter';
   label: string;
   excerpt: string;
   chapterId: string | null;
@@ -146,8 +148,38 @@ export interface AssistantChunkTraceHit {
 export interface AssistantRetrievalTrace {
   usedEmbedding: boolean;
   usedRerank: boolean;
+  mode: 'local' | 'global';
+  intent: 'local' | 'global';
+  summaryHits: AssistantSummaryTraceHit[];
+  entityLinks: AssistantEntityLinkTraceHit[];
+  paths: AssistantGraphPathTraceHit[];
   graphHits: AssistantGraphTraceHit[];
   chunkHits: AssistantChunkTraceHit[];
+}
+
+export interface AssistantSummaryTraceHit {
+  summaryId: string;
+  summaryType: StoredKnowledgeGraphSummaryRow['summaryType'];
+  title: string;
+  excerpt: string;
+  score: number;
+  chapterIds: string[];
+  selected: boolean;
+}
+
+export interface AssistantEntityLinkTraceHit {
+  entityId: string;
+  name: string;
+  score: number;
+  hops: number;
+}
+
+export interface AssistantGraphPathTraceHit {
+  entityIds: string[];
+  labels: string[];
+  relationIds: string[];
+  score: number;
+  chapterIds: string[];
 }
 
 export interface AssistantSourceCollectionResult {
@@ -629,11 +661,16 @@ export async function buildKnowledgeGraphArtifacts(options: {
     if (options.embeddingModel && finalizedChunks.length > 0) {
       await assignChunkEmbeddings(finalizedChunks, options.embeddingModel, options.onStageProgress);
     }
+    const summaries = buildGraphRagSummaries(fallback.entities, fallback.relations, finalizedChunks);
+    if (options.embeddingModel) {
+      await assignSummaryEmbeddings(summaries, options.embeddingModel);
+    }
 
     return {
       entities: fallback.entities,
       relations: fallback.relations,
       chunks: finalizedChunks,
+      summaries,
       checkpoints: chunkPlans.flatMap((chunk) => {
         const resolved = extractionByChunkId.get(chunk.id);
         return resolved
@@ -668,11 +705,17 @@ export async function buildKnowledgeGraphArtifacts(options: {
     await assignChunkEmbeddings(finalizedChunks, options.embeddingModel, options.onStageProgress);
     usedEmbeddingIndex = finalizedEntities.some((entity) => entity.embedding) || finalizedChunks.some((chunk) => chunk.embedding);
   }
+  const summaries = buildGraphRagSummaries(finalizedEntities, finalizedRelations, finalizedChunks);
+  if (options.embeddingModel) {
+    await assignSummaryEmbeddings(summaries, options.embeddingModel);
+    usedEmbeddingIndex = usedEmbeddingIndex || summaries.some((summary) => summary.embedding);
+  }
 
   return {
     entities: finalizedEntities,
     relations: finalizedRelations,
     chunks: finalizedChunks,
+    summaries,
     checkpoints: chunkPlans.flatMap((chunk) => {
       const resolved = extractionByChunkId.get(chunk.id);
       return resolved
@@ -725,6 +768,7 @@ export async function collectAssistantSources(options: {
   entities: StoredKnowledgeGraphEntityRow[];
   relations: StoredKnowledgeGraphRelationRow[];
   chunks: StoredKnowledgeGraphChunkRow[];
+  summaries: StoredKnowledgeGraphSummaryRow[];
   embeddingModel: ResolvedCapabilityRoute | null;
   rerankModel: ResolvedCapabilityRoute | null;
 }): Promise<AssistantSourceCollectionResult> {
@@ -735,9 +779,10 @@ export async function collectAssistantSources(options: {
     chapterId: null,
   }];
   const queryTokens = extractQueryTokens(options.query);
+  const intent = classifyRetrievalIntent(options.query, options.chapterId);
 
   let queryEmbedding: number[] | null = null;
-  if (options.embeddingModel && (options.entities.some((entity) => entity.embedding) || options.chunks.some((chunk) => chunk.embedding))) {
+  if (options.embeddingModel && (options.entities.some((entity) => entity.embedding) || options.chunks.some((chunk) => chunk.embedding) || options.summaries.some((summary) => summary.embedding))) {
     try {
       queryEmbedding = await embedSingleValue(options.query, options.embeddingModel);
     } catch {
@@ -748,17 +793,34 @@ export async function collectAssistantSources(options: {
   const trace: AssistantRetrievalTrace = {
     usedEmbedding: queryEmbedding !== null,
     usedRerank: false,
+    mode: intent,
+    intent,
+    summaryHits: [],
+    entityLinks: [],
+    paths: [],
     graphHits: [],
     chunkHits: [],
   };
 
-  const localGraph = buildGraphSource(options.entities, options.relations, queryTokens, queryEmbedding);
+  const graphTraversal = traverseKnowledgeGraph(options.entities, options.relations, queryTokens, queryEmbedding, intent);
+  trace.entityLinks.push(...graphTraversal.entityLinks);
+  trace.paths.push(...graphTraversal.paths);
+  const rankedSummaries = rankGraphRagSummaries(options.summaries, queryTokens, queryEmbedding, intent, options.chapterId, graphTraversal.entityIds);
+  for (const candidate of rankedSummaries) {
+    const selected = sources.length < 3;
+    trace.summaryHits.push(createSummaryTrace(candidate, selected));
+    if (selected) {
+      sources.push({ type: 'summary', label: candidate.summary.title, excerpt: candidate.summary.summary.slice(0, 500), chapterId: candidate.summary.chapterIds[0] ?? null });
+    }
+  }
+
+  const localGraph = buildGraphSource(options.entities, options.relations, queryTokens, queryEmbedding, graphTraversal.relationIds);
   if (localGraph.source) {
     sources.push(localGraph.source);
   }
   trace.graphHits.push(...localGraph.hits);
 
-  const currentChunk = options.chapterId
+  const currentChunk = intent === 'local' && options.chapterId
     ? findBestChunkForChapter(options.chunks, options.chapterId, queryTokens)
     : null;
   if (currentChunk) {
@@ -782,6 +844,7 @@ export async function collectAssistantSources(options: {
     chunks: options.chunks,
     excludedChunkIds: new Set(currentChunk ? [currentChunk.id] : []),
     rerankModel: options.rerankModel,
+    preferredChapterIds: intent === 'local' ? graphTraversal.chapterIds : [],
   });
   trace.usedRerank = rankedChunks.some((candidate) => candidate.rerankScore !== null);
 
@@ -2552,6 +2615,129 @@ async function assignChunkEmbeddings(
   });
 }
 
+async function assignSummaryEmbeddings(
+  summaries: Array<Omit<StoredKnowledgeGraphSummaryRow, 'updatedAt'>>,
+  route: ResolvedCapabilityRoute,
+): Promise<void> {
+  if (summaries.length === 0) {
+    return;
+  }
+
+  const embeddings = await embedValues(
+    summaries.map((summary) => `${summary.title}\n${summary.summary}`),
+    route,
+  );
+  embeddings.forEach((embedding, index) => {
+    const summary = summaries[index];
+    if (summary) {
+      summary.embedding = embedding;
+    }
+  });
+}
+
+/**
+ * Materializes deterministic, source-linked GraphRAG summaries.  Their stable
+ * keys make repeated incremental builds replace the same assets instead of
+ * accumulating opaque LLM notes.
+ */
+function buildGraphRagSummaries(
+  entities: Array<Omit<StoredKnowledgeGraphEntityRow, 'updatedAt'>>,
+  relations: Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>>,
+  chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>,
+): Array<Omit<StoredKnowledgeGraphSummaryRow, 'updatedAt'>> {
+  const results: Array<Omit<StoredKnowledgeGraphSummaryRow, 'updatedAt'>> = [];
+  const entityByName = new Map(entities.map((entity) => [normalizeEntityKey(entity.name), entity]));
+  const relationByEntityId = new Map<string, Array<Omit<StoredKnowledgeGraphRelationRow, 'updatedAt'>>>();
+  for (const relation of relations) {
+    relationByEntityId.set(relation.fromEntityId, [...(relationByEntityId.get(relation.fromEntityId) ?? []), relation]);
+    relationByEntityId.set(relation.toEntityId, [...(relationByEntityId.get(relation.toEntityId) ?? []), relation]);
+  }
+
+  const orderedChunks = [...chunks].sort((left, right) => left.chapterIndex - right.chapterIndex || left.chunkIndex - right.chunkIndex);
+  for (let start = 0; start < orderedChunks.length; start += 6) {
+    const cluster = orderedChunks.slice(start, start + 6);
+    const chapterIds = uniqueStrings(cluster.map((chunk) => chunk.chapterId));
+    const entityIds = uniqueStrings(cluster.flatMap((chunk) => chunk.entityNames
+      .map((name) => entityByName.get(normalizeEntityKey(name))?.id)
+      .filter((id): id is string => Boolean(id))));
+    const relationIds = relations.filter((relation) => relation.chapterIds.some((chapterId) => chapterIds.includes(chapterId))).map((relation) => relation.id);
+    const stableKey = `chapters-${cluster[0]?.chapterIndex ?? start}-${cluster.at(-1)?.chapterIndex ?? start}`;
+    const summary = cluster.map((chunk) => `${chunk.chapterTitle}：${chunk.summary || chunk.eventSummary}`).filter(Boolean).join('；').slice(0, 1200);
+    results.push(createGraphRagSummary('chapter_cluster', stableKey, `章节簇 ${cluster[0]?.chapterTitle ?? ''} 至 ${cluster.at(-1)?.chapterTitle ?? ''}`, summary, chapterIds, entityIds, relationIds));
+  }
+
+  for (const entity of [...entities].sort((left, right) => right.prominence - left.prominence).slice(0, 24)) {
+    const neighborhood = relationByEntityId.get(entity.id) ?? [];
+    if (neighborhood.length === 0) {
+      continue;
+    }
+    const entityIds = uniqueStrings([entity.id, ...neighborhood.flatMap((relation) => [relation.fromEntityId, relation.toEntityId])]);
+    const chapterIds = uniqueStrings(neighborhood.flatMap((relation) => relation.chapterIds));
+    const summary = [
+      `${entity.name}：${entity.summary}`,
+      ...neighborhood.slice(0, 5).map((relation) => relation.summary),
+    ].join('；').slice(0, 1000);
+    results.push(createGraphRagSummary('subgraph', entity.id, `${entity.name} 的关系子图`, summary, chapterIds, entityIds, neighborhood.map((relation) => relation.id)));
+  }
+
+  const visited = new Set<string>();
+  for (const seed of entities) {
+    if (visited.has(seed.id)) continue;
+    const pending = [seed.id];
+    const component = new Set<string>();
+    while (pending.length > 0 && component.size < 18) {
+      const entityId = pending.shift();
+      if (!entityId || visited.has(entityId)) continue;
+      visited.add(entityId);
+      component.add(entityId);
+      for (const relation of relationByEntityId.get(entityId) ?? []) {
+        const otherId = relation.fromEntityId === entityId ? relation.toEntityId : relation.fromEntityId;
+        if (!visited.has(otherId)) pending.push(otherId);
+      }
+    }
+    if (component.size < 2) continue;
+    const entityIds = [...component].sort();
+    const componentRelations = relations.filter((relation) => component.has(relation.fromEntityId) && component.has(relation.toEntityId));
+    const chapterIds = uniqueStrings(componentRelations.flatMap((relation) => relation.chapterIds));
+    const names = entityIds.map((id) => entities.find((entity) => entity.id === id)?.name ?? id);
+    const summary = [
+      `核心实体：${names.join('、')}`,
+      ...componentRelations.slice(0, 8).map((relation) => relation.summary),
+    ].join('；').slice(0, 1400);
+    results.push(createGraphRagSummary('community', `community-${entityIds.join('-')}`, `关系社区：${names.slice(0, 4).join('、')}`, summary, chapterIds, entityIds, componentRelations.map((relation) => relation.id)));
+  }
+
+  return results;
+}
+
+function createGraphRagSummary(
+  summaryType: StoredKnowledgeGraphSummaryRow['summaryType'],
+  stableKey: string,
+  title: string,
+  summary: string,
+  chapterIds: string[],
+  entityIds: string[],
+  relationIds: string[],
+): Omit<StoredKnowledgeGraphSummaryRow, 'updatedAt'> {
+  const sourceFingerprint = createChunkSourceFingerprint([summaryType, stableKey, summary, chapterIds.join(','), entityIds.join(',')].join('|'));
+  return {
+    id: createStableId('graph-summary', `${summaryType}:${stableKey}`),
+    summaryType,
+    stableKey,
+    title: title.slice(0, 160),
+    summary: summary || '暂无可用摘要。',
+    chapterIds,
+    entityIds,
+    relationIds,
+    embedding: null,
+    sourceFingerprint,
+  };
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))];
+}
+
 function buildFallbackGraph(
   snapshot: StoredNovelSnapshot,
   chunks: Array<Omit<StoredKnowledgeGraphChunkRow, 'updatedAt'>>,
@@ -2606,11 +2792,125 @@ function buildFallbackGraph(
   return { entities, relations };
 }
 
+function classifyRetrievalIntent(query: string, chapterId?: string): 'local' | 'global' {
+  if (chapterId) return 'local';
+  return /全书|整体|主线|主题|势力|演变|发展|结局|至今|概括|总结|所有|全局/u.test(query) ? 'global' : 'local';
+}
+
+function rankGraphRagSummaries(
+  summaries: StoredKnowledgeGraphSummaryRow[],
+  queryTokens: string[],
+  queryEmbedding: number[] | null,
+  intent: 'local' | 'global',
+  chapterId: string | undefined,
+  linkedEntityIds: string[],
+): Array<{ summary: StoredKnowledgeGraphSummaryRow; score: number }> {
+  const preferredTypes = intent === 'global'
+    ? new Set<StoredKnowledgeGraphSummaryRow['summaryType']>(['community', 'chapter_cluster'])
+    : new Set<StoredKnowledgeGraphSummaryRow['summaryType']>(['subgraph', 'chapter_cluster']);
+  return summaries
+    .map((summary) => {
+      const keywordScore = scoreTextAgainstQuery(queryTokens, `${summary.title} ${summary.summary}`);
+      const semanticScore = queryEmbedding && summary.embedding ? cosineSimilarity(queryEmbedding, summary.embedding) * 12 : 0;
+      const typeScore = intent === 'global'
+        ? summary.summaryType === 'community' ? 5 : summary.summaryType === 'chapter_cluster' ? 2 : 0
+        : preferredTypes.has(summary.summaryType) ? 2 : 0;
+      const entityScore = summary.entityIds.filter((entityId) => linkedEntityIds.includes(entityId)).length * 2;
+      const chapterScore = chapterId && summary.chapterIds.includes(chapterId) ? 4 : 0;
+      return { summary, score: keywordScore + semanticScore + typeScore + entityScore + chapterScore };
+    })
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.summary.stableKey.localeCompare(right.summary.stableKey))
+    .slice(0, 4);
+}
+
+function createSummaryTrace(
+  candidate: { summary: StoredKnowledgeGraphSummaryRow; score: number },
+  selected: boolean,
+): AssistantSummaryTraceHit {
+  return {
+    summaryId: candidate.summary.id,
+    summaryType: candidate.summary.summaryType,
+    title: candidate.summary.title,
+    excerpt: candidate.summary.summary.slice(0, 280),
+    score: Number(candidate.score.toFixed(3)),
+    chapterIds: candidate.summary.chapterIds,
+    selected,
+  };
+}
+
+function traverseKnowledgeGraph(
+  entities: StoredKnowledgeGraphEntityRow[],
+  relations: StoredKnowledgeGraphRelationRow[],
+  queryTokens: string[],
+  queryEmbedding: number[] | null,
+  intent: 'local' | 'global',
+): { entityIds: string[]; relationIds: string[]; chapterIds: string[]; entityLinks: AssistantEntityLinkTraceHit[]; paths: AssistantGraphPathTraceHit[] } {
+  const rankedRoots = entities
+    .map((entity) => ({
+      entity,
+      score: scoreTextAgainstQuery(queryTokens, `${entity.name} ${entity.aliases.join(' ')} ${entity.summary}`)
+        + (queryEmbedding && entity.embedding ? cosineSimilarity(queryEmbedding, entity.embedding) * 12 : 0),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 3);
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+  const adjacency = new Map<string, StoredKnowledgeGraphRelationRow[]>();
+  for (const relation of relations) {
+    adjacency.set(relation.fromEntityId, [...(adjacency.get(relation.fromEntityId) ?? []), relation]);
+    adjacency.set(relation.toEntityId, [...(adjacency.get(relation.toEntityId) ?? []), relation]);
+  }
+  const maxHops = intent === 'global' ? 2 : 1;
+  const selectedEntities = new Set<string>();
+  const selectedRelations = new Set<string>();
+  const paths: AssistantGraphPathTraceHit[] = [];
+  for (const root of rankedRoots) {
+    selectedEntities.add(root.entity.id);
+    const queue: Array<{ entityId: string; hops: number; path: string[]; relationIds: string[]; score: number }> = [{ entityId: root.entity.id, hops: 0, path: [root.entity.id], relationIds: [], score: root.score }];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current || current.hops >= maxHops) continue;
+      for (const relation of adjacency.get(current.entityId) ?? []) {
+        const nextId = relation.fromEntityId === current.entityId ? relation.toEntityId : relation.fromEntityId;
+        if (current.path.includes(nextId)) continue;
+        selectedEntities.add(nextId);
+        selectedRelations.add(relation.id);
+        const nextPath = [...current.path, nextId];
+        const nextRelationIds = [...current.relationIds, relation.id];
+        const score = current.score + relation.weight * 0.4 + scoreTextAgainstQuery(queryTokens, relation.summary);
+        if (nextRelationIds.length > 0) {
+          paths.push({
+            entityIds: nextPath,
+            labels: nextPath.map((entityId) => entityById.get(entityId)?.name ?? entityId),
+            relationIds: nextRelationIds,
+            score: Number(score.toFixed(3)),
+            chapterIds: uniqueStrings(nextRelationIds.flatMap((relationId) => relations.find((relation) => relation.id === relationId)?.chapterIds ?? [])),
+          });
+        }
+        queue.push({ entityId: nextId, hops: current.hops + 1, path: nextPath, relationIds: nextRelationIds, score });
+      }
+    }
+  }
+  const entityLinks = [...selectedEntities].map((entityId) => {
+    const root = rankedRoots.find((entry) => entry.entity.id === entityId);
+    return { entityId, name: entityById.get(entityId)?.name ?? entityId, score: Number((root?.score ?? 0).toFixed(3)), hops: root ? 0 : 1 };
+  });
+  return {
+    entityIds: [...selectedEntities],
+    relationIds: [...selectedRelations],
+    chapterIds: uniqueStrings([...selectedRelations].flatMap((relationId) => relations.find((relation) => relation.id === relationId)?.chapterIds ?? [])),
+    entityLinks,
+    paths: paths.sort((left, right) => right.score - left.score).slice(0, 6),
+  };
+}
+
 function buildGraphSource(
   entities: StoredKnowledgeGraphEntityRow[],
   relations: StoredKnowledgeGraphRelationRow[],
   queryTokens: string[],
   queryEmbedding: number[] | null,
+  preferredRelationIds: string[] = [],
 ): { source: AssistantSourceDocument | null; hits: AssistantGraphTraceHit[] } {
   if (entities.length === 0) {
     return { source: null, hits: [] };
@@ -2632,7 +2932,7 @@ function buildGraphSource(
       const relatedEntityScore = (entityScores.get(relation.fromEntityId) ?? 0) + (entityScores.get(relation.toEntityId) ?? 0);
       return {
         relation,
-        score: keywordScore + relatedEntityScore + relation.weight * 0.1,
+        score: keywordScore + relatedEntityScore + relation.weight * 0.1 + (preferredRelationIds.includes(relation.id) ? 4 : 0),
       };
     })
     .filter((entry) => entry.score > 0)
@@ -2726,6 +3026,7 @@ async function rankChunks(options: {
   chunks: StoredKnowledgeGraphChunkRow[];
   excludedChunkIds: Set<string>;
   rerankModel: ResolvedCapabilityRoute | null;
+  preferredChapterIds?: string[];
 }): Promise<RankedChunkCandidate[]> {
   const ranked = options.chunks
     .filter((chunk) => !options.excludedChunkIds.has(chunk.id))
@@ -2737,7 +3038,7 @@ async function rankChunks(options: {
         keywordScore,
         semanticScore,
         rerankScore: null,
-        finalScore: keywordScore + semanticScore,
+        finalScore: keywordScore + semanticScore + (options.preferredChapterIds?.includes(chunk.chapterId) ? 3 : 0),
       } satisfies RankedChunkCandidate;
     })
     .filter((entry) => entry.finalScore > 0)
