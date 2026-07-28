@@ -387,3 +387,17 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 - 每行 body 以 `- ` 开头，长度不超过 72 字符（英文）或适当截断
 - **禁止**仅重复文件列表而无语义描述的提交
 - **禁止**在提交消息中包含内部指令或占位符（如 "TODO"、"TBD"）
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as local markdown files under `.scratch/<feature>/` (no PR triage surface). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical roles use their default strings: `needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
