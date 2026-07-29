@@ -4,7 +4,7 @@
   "private": true,
   "description": "TypeScript novel spider with Express backend and React control panel.",
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
+    "dev": "concurrently -k \"node scripts/dev/diagnostic-command.mjs dev:server\" \"node scripts/dev/diagnostic-command.mjs dev:web\"",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite --config src/web/vite.config.ts",
     "build": "npm run build:web && npm run build:server",
@@ -31,6 +31,7 @@
     "@mantine/hooks": "^7.17.8",
     "@mantine/notifications": "^7.17.8",
     "@tabler/icons-react": "^3.44.0",
+    "@xyflow/react": "^12.11.2",
     "ai": "^6.0.177",
     "ai-sdk-ollama": "^3.8.3",
     "better-sqlite3": "^12.9.0",

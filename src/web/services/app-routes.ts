@@ -1,4 +1,4 @@
-export type AppRouteId = 'control' | 'library' | 'monitor' | 'scheduling' | 'opds' | 'settings';
+export type AppRouteId = 'control' | 'library' | 'refined-translation' | 'monitor' | 'scheduling' | 'opds' | 'settings';
 
 export interface AppLocation {
   route: AppRouteDefinition;
@@ -31,6 +31,13 @@ export const APP_ROUTES: AppRouteDefinition[] = [
     label: '本地书库',
     title: '本地书库',
     description: '查看已采集的小说，补抓缺失章节，或直接开始阅读。',
+  },
+  {
+    id: 'refined-translation',
+    path: '/refined-translation',
+    label: '精翻工作区',
+    title: '精翻工作区',
+    description: '独立管理任务快照、术语、译文和审核物料。',
   },
   {
     id: 'monitor',

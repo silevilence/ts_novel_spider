@@ -9,7 +9,7 @@ import type { TranslationPipelineState, TranslationSegment } from '../../transla
  * - 过滤空白段，保留原文顺序。
  */
 export async function segmentNode(state: TranslationPipelineState): Promise<Partial<TranslationPipelineState>> {
-  const paragraphs = splitParagraphs(state.sourceContent);
+  const paragraphs = splitChapterParagraphs(state.sourceContent);
 
   if (paragraphs.length === 0) {
     return {
@@ -28,7 +28,7 @@ export async function segmentNode(state: TranslationPipelineState): Promise<Part
 }
 
 /** 按标准小说段落分隔符切分 */
-function splitParagraphs(text: string): string[] {
+export function splitChapterParagraphs(text: string): string[] {
   // 优先按双换行切分
   const coarseParts = text.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
 

@@ -40,6 +40,27 @@ export function stripTranslationNumberPrefix(sourceText: string, translatedText:
   return trimmed.replace(TRANSLATION_PREFIX_PATTERN, '').trim();
 }
 
+/** Lightweight task-scoped generation entry point used by the refined workspace. */
+export async function generateRefinedTranslationText(
+  preferences: SystemPreferencesService,
+  route: { providerId: string; modelId: string },
+  system: string,
+  prompt: string,
+): Promise<string> {
+  const provider = getProvider(preferences, route.providerId);
+  if (!provider) {
+    throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
+  }
+
+  const result = await generateText({
+    model: createLanguageModel(provider, route.modelId),
+    system,
+    prompt,
+    temperature: 0.2,
+  });
+  return result.text.trim();
+}
+
 /**
  * 翻译节点：批量段落翻译 + 对话历史上下文。
  *

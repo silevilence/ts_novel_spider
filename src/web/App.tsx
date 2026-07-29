@@ -8,6 +8,7 @@ import { MonitorDashboard } from './components/monitor-dashboard';
 import { OpdsDashboard } from './components/opds-dashboard';
 import { SchedulingDashboard } from './components/scheduling-dashboard';
 import { SystemPreferences } from './components/system-preferences';
+import { RefinedTranslationWorkspace } from './components/refined-translation-workspace';
 import {
   APP_ROUTES,
   normalizePathname,
@@ -92,6 +93,7 @@ export function App() {
         {activeRoute.id === 'library' ? (
           <LibraryWorkspace model={libraryModel} onOpenControl={() => navigate('/')} onNotify={pushNotice} />
         ) : null}
+        {activeRoute.id === 'refined-translation' ? <RefinedTranslationWorkspace onNotify={pushNotice} /> : null}
         {activeRoute.id === 'monitor' ? <MonitorDashboard model={model} /> : null}
         {activeRoute.id === 'scheduling' ? <SchedulingDashboard onNotify={pushNotice} /> : null}
         {activeRoute.id === 'opds' ? (

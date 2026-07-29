@@ -27,6 +27,7 @@ import {
   IconPlayerPlay,
   IconWorld,
   IconClock,
+  IconWriting,
 } from '@tabler/icons-react';
 import type { HealthPayload } from '../../server/routes/health';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
@@ -47,6 +48,7 @@ interface AppShellProps {
 const ROUTE_ICONS: Record<string, React.FC<{ size?: number }>> = {
   control: IconSpider,
   library: IconBooks,
+  'refined-translation': IconWriting,
   monitor: IconActivity,
   scheduling: IconClock,
   opds: IconBook,

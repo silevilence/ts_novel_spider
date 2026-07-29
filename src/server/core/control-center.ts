@@ -62,6 +62,7 @@ import {
   type TranslationBuild,
   type TranslationChapterDetail,
 } from './translation-service';
+import { RefinedTranslationService } from './refined-translation';
 import type { StoredScheduledNovelRow, StoredScheduledCheckRunRow, StoredScheduledSummaryRow, StoredTranslationTermRow, StoredOpdsNovelRow, StoredOpdsCompilationRunRow } from './novel-repository';
 import type { OpdsNovelFeedEntry } from './opds-feed';
 import {
@@ -223,6 +224,7 @@ export class ControlCenterService {
   readonly #exportEngine: LocalExportEngine;
   readonly #libraryIntelligence: LibraryIntelligenceService;
   readonly #translation: TranslationService;
+  readonly #refinedTranslation: RefinedTranslationService;
   readonly #taskLogDispatcher: SpiderLogDispatcher;
   readonly #scheduling: SchedulingService;
   readonly #opdsCompilation: OpdsCompilationService;
@@ -252,6 +254,8 @@ export class ControlCenterService {
       ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     });
     this.#translation = new TranslationService(this.#repository, this.#systemPreferences);
+    this.#refinedTranslation = new RefinedTranslationService(this.#repository, this.#systemPreferences, this.#exportEngine);
+    this.#refinedTranslation.recoverInterruptedTasks();
     this.#registry = new Map(
       (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
     );
@@ -911,6 +915,40 @@ export class ControlCenterService {
   cancelLibraryTranslation(sourceId: string, novelId: string): TranslationBuild | null {
     return this.#translation.cancelTranslation(sourceId, novelId);
   }
+
+  // ── 精翻工作区（独立任务与快照） ──
+  createRefinedTranslationTask(sourceId: string, novelId: string, input: Parameters<RefinedTranslationService['createTask']>[2]) {
+    return this.#refinedTranslation.createTask(sourceId, novelId, input);
+  }
+  listRefinedTranslationTasks(recycleBin = false) { return this.#refinedTranslation.listTasks(recycleBin); }
+  updateRefinedTranslationTaskConfiguration(taskId: string, input: Parameters<RefinedTranslationService['updateTaskConfiguration']>[1]) { return this.#refinedTranslation.updateTaskConfiguration(taskId, input); }
+  getRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.getTaskDetail(taskId); }
+  getRefinedTranslationChapter(taskId: string, chapterId: string) { return this.#refinedTranslation.getChapter(taskId, chapterId); }
+  listRefinedTranslationTerms(taskId: string) { return this.#refinedTranslation.listTerms(taskId); }
+  extractRefinedTranslationTerms(taskId: string) { return this.#refinedTranslation.extractGlossaryCandidates(taskId); }
+  createRefinedTranslationTerm(taskId: string, input: Parameters<RefinedTranslationService['createTerm']>[1]) { return this.#refinedTranslation.createTerm(taskId, input); }
+  updateRefinedTranslationTerm(taskId: string, termId: string, input: Parameters<RefinedTranslationService['updateTerm']>[2]) { return this.#refinedTranslation.updateTerm(taskId, termId, input); }
+  deleteRefinedTranslationTerm(taskId: string, termId: string) { return this.#refinedTranslation.deleteTerm(taskId, termId); }
+  bulkUpdateRefinedTranslationTerms(taskId: string, termIds: string[], status: 'confirmed' | 'excluded') { return this.#refinedTranslation.bulkUpdateTerms(taskId, termIds, status); }
+  suggestRefinedTranslationGlossaryRevision(taskId: string, termId: string, feedback: string) { return this.#refinedTranslation.suggestGlossaryRevision(taskId, termId, feedback); }
+  suggestRefinedTranslationSegmentRevision(taskId: string, chapterId: string, paragraphIndex: number, feedback: string) { return this.#refinedTranslation.suggestSegmentRevision(taskId, chapterId, paragraphIndex, feedback); }
+  chatAboutRefinedTranslationChapter(taskId: string, chapterId: string, input: Parameters<RefinedTranslationService['chatAboutChapter']>[2]) { return this.#refinedTranslation.chatAboutChapter(taskId, chapterId, input); }
+  applyRefinedTranslationChapterAgentEdits(taskId: string, chapterId: string, input: Parameters<RefinedTranslationService['applyChapterAgentEdits']>[2]) { return this.#refinedTranslation.applyChapterAgentEdits(taskId, chapterId, input); }
+  writeRefinedTranslationSegment(taskId: string, chapterId: string, paragraphIndex: number, input: Parameters<RefinedTranslationService['writeSegment']>[3]) { return this.#refinedTranslation.writeSegment(taskId, chapterId, paragraphIndex, input); }
+  updateRefinedTranslationChapterTitle(taskId: string, chapterId: string, translatedTitle: string | null) { return this.#refinedTranslation.updateChapterTitle(taskId, chapterId, translatedTitle); }
+  listRefinedTranslationReviews(taskId: string, chapterId?: string) { return this.#refinedTranslation.listReviews(taskId, chapterId); }
+  writeRefinedTranslationReview(taskId: string, input: Parameters<RefinedTranslationService['writeReview']>[1]) { return this.#refinedTranslation.writeReview(taskId, input); }
+  resolveRefinedTranslationReview(taskId: string, reviewId: string, resolution: Parameters<RefinedTranslationService['resolveReview']>[2], resolutionNote?: Parameters<RefinedTranslationService['resolveReview']>[3]) { return this.#refinedTranslation.resolveReview(taskId, reviewId, resolution, resolutionNote); }
+  retryRefinedTranslationFailedSegments(taskId: string, chapterId?: string, paragraphIndex?: number) { return this.#refinedTranslation.retryFailedSegments(taskId, chapterId, paragraphIndex); }
+  advanceRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.advance(taskId); }
+  pauseRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.pause(taskId); }
+  resumeRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.resume(taskId); }
+  deleteRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.markDeleted(taskId); }
+  restoreRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.restore(taskId); }
+  getRefinedTranslationPurgeStatus(taskId: string) { return this.#refinedTranslation.getPurgeStatus(taskId); }
+  purgeRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.purge(taskId); }
+  exportRefinedTranslationTask(taskId: string, format: LibraryExportFormat, mode: LibraryExportTranslationMode, includeIncomplete: boolean) { return this.#refinedTranslation.exportTask(taskId, format, mode, includeIncomplete); }
+  subscribeToRefinedTranslationTask(taskId: string, listener: Parameters<RefinedTranslationService['subscribe']>[1]) { return this.#refinedTranslation.subscribe(taskId, listener); }
 
   getNetworkProxyState(): NetworkProxyState {
     return this.#networkProxy.getState();

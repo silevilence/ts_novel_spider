@@ -36,6 +36,27 @@ export function isServerEntrypointInvocation(
   return path.resolve(entryPath) === path.resolve(currentFilePath);
 }
 
+/** Emits the first fatal process-level error into the dev diagnostic wrapper. */
+export function registerServerProcessDiagnostics(): void {
+  process.on('uncaughtException', (error) => {
+    console.error('[dev-diagnostics] Uncaught server exception:', error.stack ?? error.message);
+    setImmediate(() => process.exit(1));
+  });
+  process.on('unhandledRejection', (reason) => {
+    const detail = reason instanceof Error ? errorDetail(reason) : String(reason);
+    console.error('[dev-diagnostics] Unhandled server rejection:', detail);
+    setImmediate(() => process.exit(1));
+  });
+  process.on('exit', (code) => {
+    console.info(`[dev-diagnostics] Server process exiting with code=${code}`);
+  });
+}
+
+function errorDetail(error: Error): string {
+  return error.stack ?? error.message;
+}
+
 if (isServerEntrypointInvocation()) {
+  registerServerProcessDiagnostics();
   startServer();
 }

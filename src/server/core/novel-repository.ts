@@ -586,6 +586,52 @@ interface KnowledgeGraphChunkRow {
   updated_at: string;
 }
 
+// ── 精翻工作区（与小说级粗翻完全隔离） ──
+
+export type RefinedTranslationTaskStatus = 'draft' | 'paused' | 'running' | 'completed' | 'needs_attention' | 'deleted';
+export type RefinedTranslationStage = 'glossary_setup' | 'glossary_translation' | 'translating' | 'checking' | 'reviewing' | 'completed';
+export type RefinedTranslationSegmentStatus = 'pending' | 'translated' | 'skipped' | 'failed';
+export type RefinedTranslationChapterStatus = RefinedTranslationSegmentStatus | 'reviewed' | 'needs_attention';
+export type RefinedTranslationTermStatus = 'pending' | 'confirmed' | 'excluded';
+export type RefinedTranslationReviewResolution = 'open' | 'accepted' | 'partially_accepted' | 'rejected' | 'resolved' | 'ignored' | 'superseded';
+
+export interface RefinedModelRoute { providerId: string; modelId: string; }
+export interface RefinedTranslationModelConfig {
+  termExtractionModel: RefinedModelRoute | null;
+  termTranslationModel: RefinedModelRoute | null;
+  translationModels: RefinedModelRoute[];
+  omissionModel: RefinedModelRoute | null;
+  reviewModel: RefinedModelRoute | null;
+  concurrency: number;
+  maxReviewRounds: number;
+}
+
+export interface StoredRefinedTranslationTaskRow {
+  id: string; sourceId: string | null; novelId: string | null; name: string; novelTitle: string; author: string;
+  /** Immutable source metadata copied at task creation; it survives source-novel deletion. */
+  sourceMetadata: { title: string; author: string; description: string; tags: string[]; infoPageUrl: string };
+  sourceLang: string; targetLang: string; status: RefinedTranslationTaskStatus; stage: RefinedTranslationStage;
+  modelConfig: RefinedTranslationModelConfig; deletedAt: string | null; createdAt: string; updatedAt: string;
+}
+export interface StoredRefinedTranslationChapterRow {
+  taskId: string; chapterId: string; chapterIndex: number; title: string; volumeTitle: string | null; sourceContent: string;
+  translatedTitle: string | null; status: RefinedTranslationChapterStatus; reviewRound: number; reviewScore: number | null; updatedAt: string;
+}
+export interface StoredRefinedTranslationSegmentRow {
+  id: string; taskId: string; chapterId: string; paragraphIndex: number; sourceText: string; translatedText: string | null;
+  status: RefinedTranslationSegmentStatus; updatedAt: string;
+}
+export interface StoredRefinedTranslationTermRow {
+  id: string; taskId: string; sourceTerm: string; targetTerm: string | null; entityType: string | null; priority: number;
+  suggestion: string | null; status: RefinedTranslationTermStatus; updatedAt: string;
+}
+export interface StoredRefinedTranslationReviewRow {
+  id: string; taskId: string; chapterId: string; reviewRound: number; severity: string; paragraphIndices: number[];
+  scores: Record<string, number>; suggestion: string; replacementText: string | null; forceChange: boolean; resolved: boolean; resolution: RefinedTranslationReviewResolution; resolutionNote: string | null; createdAt: string;
+}
+export interface StoredRefinedTranslationLogRow { id: string; taskId: string; level: 'info' | 'warn' | 'error'; message: string; createdAt: string; }
+export interface StoredRefinedTranslationTransitionRow { id: string; taskId: string; fromStage: RefinedTranslationStage | null; toStage: RefinedTranslationStage; condition: string; chapterId: string | null; reviewRound: number | null; createdAt: string; }
+
 interface KnowledgeGraphSummaryRow {
   summary_id: string;
   source_id: string;
@@ -3717,6 +3763,230 @@ export class SqliteNovelRepository {
       .run(new Date().toISOString());
   }
 
+  // ── 精翻工作区 ──
+
+  createRefinedTranslationTask(input: {
+    id: string; sourceId: string; novelId: string; name: string; novelTitle: string; author: string;
+    sourceMetadata?: StoredRefinedTranslationTaskRow['sourceMetadata'];
+    sourceLang: string; targetLang: string; modelConfig: RefinedTranslationModelConfig;
+    chapters: Array<{ id: string; index: number; title: string; volumeTitle: string | null; content: string; paragraphs: string[] }>;
+    terms: Array<{ sourceTerm: string; targetTerm: string | null; entityType: string | null; priority: number; suggestion: string | null }>;
+  }): StoredRefinedTranslationTaskRow {
+    const now = new Date().toISOString();
+    const insertTask = this.#database.prepare(`INSERT INTO refined_translation_tasks
+      (task_id, source_id, novel_id, task_name, novel_title, author, source_metadata_json, source_lang, target_lang, status, stage, model_config_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused', 'glossary_setup', ?, ?, ?)`);
+    const insertChapter = this.#database.prepare(`INSERT INTO refined_translation_chapters
+      (task_id, chapter_id, chapter_index, title, volume_title, source_content, status, review_round, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)`);
+    const insertSegment = this.#database.prepare(`INSERT INTO refined_translation_segments
+      (segment_id, task_id, chapter_id, paragraph_index, source_text, status, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?)`);
+    const insertTerm = this.#database.prepare(`INSERT OR IGNORE INTO refined_translation_terms
+      (term_id, task_id, source_term, target_term, entity_type, priority, suggestion, status, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`);
+    this.#database.transaction(() => {
+      insertTask.run(input.id, input.sourceId, input.novelId, input.name, input.novelTitle, input.author, JSON.stringify(input.sourceMetadata ?? { title: input.novelTitle, author: input.author, description: '', tags: [], infoPageUrl: '' }), input.sourceLang, input.targetLang, JSON.stringify(input.modelConfig), now, now);
+      for (const chapter of input.chapters) {
+        insertChapter.run(input.id, chapter.id, chapter.index, chapter.title, chapter.volumeTitle, chapter.content, now);
+        chapter.paragraphs.forEach((sourceText, paragraphIndex) => insertSegment.run(crypto.randomUUID(), input.id, chapter.id, paragraphIndex, sourceText, now));
+      }
+      for (const term of input.terms) insertTerm.run(crypto.randomUUID(), input.id, term.sourceTerm, term.targetTerm, term.entityType, term.priority, term.suggestion, now);
+    })();
+    const task = this.getRefinedTranslationTask(input.id);
+    if (!task) throw new Error('Failed to create refined translation task.');
+    this.appendRefinedTranslationLog(input.id, 'info', `已创建任务快照：${input.chapters.length} 章，等待确认术语表。`);
+    return task;
+  }
+
+  listRefinedTranslationTasks(includeDeleted = false): StoredRefinedTranslationTaskRow[] {
+    const where = includeDeleted ? '' : 'WHERE deleted_at IS NULL';
+    return this.#database.prepare(`SELECT * FROM refined_translation_tasks ${where} ORDER BY updated_at DESC`).all()
+      .map((row) => mapRefinedTaskRow(row as RefinedTaskRow));
+  }
+
+  listResumableRefinedTranslationTasks(): StoredRefinedTranslationTaskRow[] {
+    return this.#database.prepare(`SELECT * FROM refined_translation_tasks WHERE deleted_at IS NULL AND status = 'running' ORDER BY updated_at ASC`).all()
+      .map((row) => mapRefinedTaskRow(row as RefinedTaskRow));
+  }
+
+  getRefinedTranslationTask(taskId: string): StoredRefinedTranslationTaskRow | null {
+    const row = this.#database.prepare('SELECT * FROM refined_translation_tasks WHERE task_id = ?').get(taskId) as RefinedTaskRow | undefined;
+    return row ? mapRefinedTaskRow(row) : null;
+  }
+
+  updateRefinedTranslationTask(taskId: string, input: { name?: string | undefined; sourceLang?: string | undefined; targetLang?: string | undefined; status?: RefinedTranslationTaskStatus | undefined; stage?: RefinedTranslationStage | undefined; modelConfig?: RefinedTranslationModelConfig | undefined }): StoredRefinedTranslationTaskRow | null {
+    const current = this.getRefinedTranslationTask(taskId); if (!current) return null;
+    const now = new Date().toISOString();
+    this.#database.prepare(`UPDATE refined_translation_tasks SET task_name = ?, source_lang = ?, target_lang = ?, status = ?, stage = ?, model_config_json = ?, updated_at = ? WHERE task_id = ?`)
+      .run(input.name?.trim() || current.name, input.sourceLang?.trim() || current.sourceLang, input.targetLang?.trim() || current.targetLang, input.status ?? current.status, input.stage ?? current.stage, JSON.stringify(input.modelConfig ?? current.modelConfig), now, taskId);
+    return this.getRefinedTranslationTask(taskId);
+  }
+
+  markRefinedTranslationTaskDeleted(taskId: string): StoredRefinedTranslationTaskRow | null {
+    const task = this.getRefinedTranslationTask(taskId); if (!task || task.deletedAt) return null;
+    const now = new Date().toISOString();
+    this.#database.prepare(`UPDATE refined_translation_tasks SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE task_id = ?`).run(now, now, taskId);
+    return this.getRefinedTranslationTask(taskId);
+  }
+
+  restoreRefinedTranslationTask(taskId: string): StoredRefinedTranslationTaskRow | null {
+    const task = this.getRefinedTranslationTask(taskId); if (!task || !task.deletedAt) return null;
+    const now = new Date().toISOString();
+    this.#database.prepare(`UPDATE refined_translation_tasks SET status = 'paused', deleted_at = NULL, updated_at = ? WHERE task_id = ?`).run(now, taskId);
+    return this.getRefinedTranslationTask(taskId);
+  }
+
+  purgeRefinedTranslationTask(taskId: string): boolean {
+    const result = this.#database.prepare(`DELETE FROM refined_translation_tasks
+      WHERE task_id = ? AND deleted_at IS NOT NULL
+        AND datetime(deleted_at, '+15 days') <= datetime('now')`).run(taskId);
+    return result.changes > 0;
+  }
+
+  getRefinedTranslationPurgeStatus(taskId: string): { canPurge: boolean; remainingDays: number; deletedAt: string | null } | null {
+    const task = this.getRefinedTranslationTask(taskId);
+    if (!task) return null;
+    if (!task.deletedAt) return { canPurge: false, remainingDays: 15, deletedAt: null };
+    const elapsedMs = Math.max(0, Date.now() - Date.parse(task.deletedAt));
+    const remainingDays = Math.max(0, Math.ceil((15 * 24 * 60 * 60 * 1000 - elapsedMs) / (24 * 60 * 60 * 1000)));
+    return { canPurge: remainingDays === 0, remainingDays, deletedAt: task.deletedAt };
+  }
+
+  listRefinedTranslationChapters(taskId: string): StoredRefinedTranslationChapterRow[] {
+    return this.#database.prepare('SELECT * FROM refined_translation_chapters WHERE task_id = ? ORDER BY chapter_index').all(taskId)
+      .map((row) => mapRefinedChapterRow(row as RefinedChapterRow));
+  }
+
+  getRefinedTranslationChapter(taskId: string, chapterId: string): StoredRefinedTranslationChapterRow | null {
+    const row = this.#database.prepare('SELECT * FROM refined_translation_chapters WHERE task_id = ? AND chapter_id = ?').get(taskId, chapterId) as RefinedChapterRow | undefined;
+    return row ? mapRefinedChapterRow(row) : null;
+  }
+
+  listRefinedTranslationSegments(taskId: string, chapterId: string): StoredRefinedTranslationSegmentRow[] {
+    return this.#database.prepare('SELECT * FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? ORDER BY paragraph_index').all(taskId, chapterId)
+      .map((row) => mapRefinedSegmentRow(row as RefinedSegmentRow));
+  }
+
+  updateRefinedTranslationSegment(taskId: string, chapterId: string, paragraphIndex: number, translatedText: string | null, status: RefinedTranslationSegmentStatus): StoredRefinedTranslationSegmentRow | null {
+    const now = new Date().toISOString();
+    const result = this.#database.prepare(`UPDATE refined_translation_segments SET translated_text = ?, status = ?, updated_at = ? WHERE task_id = ? AND chapter_id = ? AND paragraph_index = ?`)
+      .run(translatedText, status, now, taskId, chapterId, paragraphIndex);
+    if (!result.changes) return null;
+    this.#database.prepare(`UPDATE refined_translation_chapters SET status = CASE WHEN EXISTS(SELECT 1 FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? AND status = 'failed') THEN 'failed' WHEN NOT EXISTS(SELECT 1 FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? AND status = 'pending') THEN 'translated' ELSE 'pending' END, updated_at = ? WHERE task_id = ? AND chapter_id = ?`)
+      .run(taskId, chapterId, taskId, chapterId, now, taskId, chapterId);
+    const row = this.#database.prepare('SELECT * FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? AND paragraph_index = ?').get(taskId, chapterId, paragraphIndex) as RefinedSegmentRow | undefined;
+    return row ? mapRefinedSegmentRow(row) : null;
+  }
+
+  updateRefinedTranslationChapterTitle(taskId: string, chapterId: string, translatedTitle: string | null): StoredRefinedTranslationChapterRow | null {
+    const result = this.#database.prepare('UPDATE refined_translation_chapters SET translated_title = ?, updated_at = ? WHERE task_id = ? AND chapter_id = ?')
+      .run(translatedTitle?.trim() || null, new Date().toISOString(), taskId, chapterId);
+    return result.changes ? this.getRefinedTranslationChapter(taskId, chapterId) : null;
+  }
+
+  listRefinedTranslationTerms(taskId: string): StoredRefinedTranslationTermRow[] {
+    return this.#database.prepare('SELECT * FROM refined_translation_terms WHERE task_id = ? ORDER BY priority DESC, source_term COLLATE NOCASE').all(taskId)
+      .map((row) => mapRefinedTermRow(row as RefinedTermRow));
+  }
+
+  createRefinedTranslationTerm(taskId: string, input: { sourceTerm: string; targetTerm?: string | null; entityType?: string | null; priority?: number; suggestion?: string | null; status?: RefinedTranslationTermStatus }): StoredRefinedTranslationTermRow {
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    this.#database.prepare(`INSERT INTO refined_translation_terms (term_id, task_id, source_term, target_term, entity_type, priority, suggestion, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, taskId, input.sourceTerm.trim(), input.targetTerm ?? null, input.entityType ?? null, input.priority ?? 0, input.suggestion ?? null, input.status ?? 'pending', now);
+    const row = this.#database.prepare('SELECT * FROM refined_translation_terms WHERE term_id = ?').get(id) as RefinedTermRow;
+    return mapRefinedTermRow(row);
+  }
+
+  updateRefinedTranslationTerm(taskId: string, termId: string, input: { targetTerm?: string | null; entityType?: string | null; priority?: number; suggestion?: string | null; status?: RefinedTranslationTermStatus }): StoredRefinedTranslationTermRow | null {
+    const existing = this.#database.prepare('SELECT * FROM refined_translation_terms WHERE task_id = ? AND term_id = ?').get(taskId, termId) as RefinedTermRow | undefined;
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    this.#database.prepare(`UPDATE refined_translation_terms SET target_term = ?, entity_type = ?, priority = ?, suggestion = ?, status = ?, updated_at = ? WHERE task_id = ? AND term_id = ?`)
+      .run(input.targetTerm !== undefined ? input.targetTerm : existing.target_term, input.entityType !== undefined ? input.entityType : existing.entity_type, input.priority ?? existing.priority, input.suggestion !== undefined ? input.suggestion : existing.suggestion, input.status ?? existing.status, now, taskId, termId);
+    const row = this.#database.prepare('SELECT * FROM refined_translation_terms WHERE task_id = ? AND term_id = ?').get(taskId, termId) as RefinedTermRow;
+    return mapRefinedTermRow(row);
+  }
+
+  deleteRefinedTranslationTerm(taskId: string, termId: string): boolean {
+    return this.#database.prepare('DELETE FROM refined_translation_terms WHERE task_id = ? AND term_id = ?').run(taskId, termId).changes > 0;
+  }
+
+  listRefinedTranslationReviews(taskId: string, chapterId?: string): StoredRefinedTranslationReviewRow[] {
+    const rows = chapterId
+      ? this.#database.prepare('SELECT * FROM refined_translation_reviews WHERE task_id = ? AND chapter_id = ? ORDER BY created_at DESC').all(taskId, chapterId)
+      : this.#database.prepare('SELECT * FROM refined_translation_reviews WHERE task_id = ? ORDER BY created_at DESC').all(taskId);
+    return rows.map((row) => mapRefinedReviewRow(row as RefinedReviewRow));
+  }
+
+  createRefinedTranslationReview(input: Omit<StoredRefinedTranslationReviewRow, 'id' | 'createdAt'>): StoredRefinedTranslationReviewRow {
+    const id = crypto.randomUUID(); const createdAt = new Date().toISOString();
+    this.#database.prepare(`INSERT INTO refined_translation_reviews (review_id, task_id, chapter_id, review_round, severity, paragraph_indices_json, scores_json, suggestion, replacement_text, force_change, resolved, resolution, resolution_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.taskId, input.chapterId, input.reviewRound, input.severity, JSON.stringify(input.paragraphIndices), JSON.stringify(input.scores), input.suggestion, input.replacementText, input.forceChange ? 1 : 0, input.resolved ? 1 : 0, input.resolution, input.resolutionNote, createdAt);
+    return { id, ...input, createdAt };
+  }
+
+  updateRefinedTranslationReview(taskId: string, reviewId: string, resolution: RefinedTranslationReviewResolution, resolutionNote: string | null = null): boolean {
+    return this.#database.prepare('UPDATE refined_translation_reviews SET resolved = ?, resolution = ?, resolution_note = ? WHERE task_id = ? AND review_id = ?').run(resolution === 'open' ? 0 : 1, resolution, resolutionNote, taskId, reviewId).changes > 0;
+  }
+
+  supersedeOpenRefinedTranslationReviews(taskId: string, chapterId: string): number {
+    return this.#database.prepare("UPDATE refined_translation_reviews SET resolved = 1, resolution = 'superseded' WHERE task_id = ? AND chapter_id = ? AND resolution = 'open'").run(taskId, chapterId).changes;
+  }
+
+  updateRefinedTranslationChapterReview(taskId: string, chapterId: string, input: { reviewRound: number; reviewScore: number | null; status: RefinedTranslationChapterStatus }): StoredRefinedTranslationChapterRow | null {
+    const result = this.#database.prepare(`UPDATE refined_translation_chapters SET review_round = ?, review_score = ?, status = ?, updated_at = ? WHERE task_id = ? AND chapter_id = ?`)
+      .run(input.reviewRound, input.reviewScore, input.status, new Date().toISOString(), taskId, chapterId);
+    return result.changes ? this.getRefinedTranslationChapter(taskId, chapterId) : null;
+  }
+
+  appendRefinedTranslationLog(taskId: string, level: StoredRefinedTranslationLogRow['level'], message: string): StoredRefinedTranslationLogRow {
+    const id = crypto.randomUUID(); const createdAt = new Date().toISOString();
+    this.#database.prepare('INSERT INTO refined_translation_logs (log_id, task_id, level, message, created_at) VALUES (?, ?, ?, ?, ?)').run(id, taskId, level, message, createdAt);
+    return { id, taskId, level, message, createdAt };
+  }
+
+  listRefinedTranslationLogs(taskId: string): StoredRefinedTranslationLogRow[] {
+    return this.#database.prepare('SELECT * FROM refined_translation_logs WHERE task_id = ? ORDER BY created_at DESC LIMIT 200').all(taskId)
+      .map((row) => { const value = row as { log_id: string; task_id: string; level: StoredRefinedTranslationLogRow['level']; message: string; created_at: string }; return { id: value.log_id, taskId: value.task_id, level: value.level, message: value.message, createdAt: value.created_at }; }).reverse();
+  }
+
+  appendRefinedTranslationTransition(input: Omit<StoredRefinedTranslationTransitionRow, 'id' | 'createdAt'>): StoredRefinedTranslationTransitionRow {
+    const id = crypto.randomUUID(); const createdAt = new Date().toISOString();
+    this.#database.prepare('INSERT INTO refined_translation_transitions (transition_id, task_id, from_stage, to_stage, condition_text, chapter_id, review_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, input.taskId, input.fromStage, input.toStage, input.condition, input.chapterId, input.reviewRound, createdAt);
+    return { id, ...input, createdAt };
+  }
+
+  listRefinedTranslationTransitions(taskId: string): StoredRefinedTranslationTransitionRow[] {
+    return this.#database.prepare('SELECT transition_id, task_id, from_stage, to_stage, condition_text, chapter_id, review_round, created_at FROM refined_translation_transitions WHERE task_id = ? ORDER BY created_at ASC, transition_id ASC').all(taskId)
+      .map((row) => { const value = row as { transition_id: string; task_id: string; from_stage: RefinedTranslationStage | null; to_stage: RefinedTranslationStage; condition_text: string; chapter_id: string | null; review_round: number | null; created_at: string }; return { id: value.transition_id, taskId: value.task_id, fromStage: value.from_stage, toStage: value.to_stage, condition: value.condition_text, chapterId: value.chapter_id, reviewRound: value.review_round, createdAt: value.created_at }; });
+  }
+
+  saveRefinedTranslationCheckpoint(taskId: string, stage: RefinedTranslationStage, state: Record<string, unknown>): void {
+    this.#database.prepare(`INSERT INTO refined_translation_checkpoints (task_id, stage, state_json, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(task_id, stage) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`)
+      .run(taskId, stage, JSON.stringify(state), new Date().toISOString());
+  }
+
+  getRefinedTranslationCheckpoint(taskId: string, stage: RefinedTranslationStage): { stage: RefinedTranslationStage; state: Record<string, unknown>; updatedAt: string } | null {
+    const row = this.#database.prepare('SELECT stage, state_json, updated_at FROM refined_translation_checkpoints WHERE task_id = ? AND stage = ?').get(taskId, stage) as { stage: RefinedTranslationStage; state_json: string; updated_at: string } | undefined;
+    if (!row) return null;
+    try { const state = JSON.parse(row.state_json) as unknown; return { stage: row.stage, state: state && typeof state === 'object' && !Array.isArray(state) ? state as Record<string, unknown> : {}, updatedAt: row.updated_at }; } catch { return { stage: row.stage, state: {}, updatedAt: row.updated_at }; }
+  }
+
+  listRefinedTranslationCheckpoints(taskId: string): Array<{ stage: RefinedTranslationStage; state: Record<string, unknown>; updatedAt: string }> {
+    return this.#database.prepare('SELECT stage, state_json, updated_at FROM refined_translation_checkpoints WHERE task_id = ? ORDER BY updated_at DESC').all(taskId)
+      .flatMap((row) => {
+        const value = row as { stage: RefinedTranslationStage; state_json: string; updated_at: string };
+        try {
+          const parsed = JSON.parse(value.state_json) as unknown;
+          return [{ stage: value.stage, state: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}, updatedAt: value.updated_at }];
+        } catch { return [{ stage: value.stage, state: {}, updatedAt: value.updated_at }]; }
+      });
+  }
+
   private migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS novels (
@@ -4187,6 +4457,61 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novel_translation_builds', 'total_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novel_translation_builds', 'total_paragraph_estimate', 'INTEGER NOT NULL DEFAULT 0');
 
+    // 精翻任务：不设置 novels 外键，保证源小说删除后任务快照仍可查看与导出。
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS refined_translation_tasks (
+        task_id TEXT NOT NULL PRIMARY KEY, source_id TEXT, novel_id TEXT,
+        task_name TEXT NOT NULL, novel_title TEXT NOT NULL, author TEXT NOT NULL, source_metadata_json TEXT NOT NULL DEFAULT '{}',
+        source_lang TEXT NOT NULL, target_lang TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL,
+        model_config_json TEXT NOT NULL, deleted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_chapters (
+        task_id TEXT NOT NULL, chapter_id TEXT NOT NULL, chapter_index INTEGER NOT NULL, title TEXT NOT NULL,
+        volume_title TEXT, source_content TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL,
+        review_round INTEGER NOT NULL DEFAULT 0, review_score REAL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(task_id, chapter_id), FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_segments (
+        segment_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, chapter_id TEXT NOT NULL, paragraph_index INTEGER NOT NULL,
+        source_text TEXT NOT NULL, translated_text TEXT, status TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(task_id, chapter_id, paragraph_index),
+        FOREIGN KEY(task_id, chapter_id) REFERENCES refined_translation_chapters(task_id, chapter_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_terms (
+        term_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, source_term TEXT NOT NULL, target_term TEXT,
+        entity_type TEXT, priority INTEGER NOT NULL DEFAULT 0, suggestion TEXT, status TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(task_id, source_term), FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_reviews (
+        review_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, chapter_id TEXT NOT NULL, review_round INTEGER NOT NULL,
+        severity TEXT NOT NULL, paragraph_indices_json TEXT NOT NULL, scores_json TEXT NOT NULL, suggestion TEXT NOT NULL, replacement_text TEXT,
+        force_change INTEGER NOT NULL DEFAULT 0, resolved INTEGER NOT NULL DEFAULT 0, resolution TEXT NOT NULL DEFAULT 'open', resolution_note TEXT, created_at TEXT NOT NULL,
+        FOREIGN KEY(task_id, chapter_id) REFERENCES refined_translation_chapters(task_id, chapter_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_logs (
+        log_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_checkpoints (
+        task_id TEXT NOT NULL, stage TEXT NOT NULL, state_json TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(task_id, stage), FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_transitions (
+        transition_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, from_stage TEXT, to_stage TEXT NOT NULL, condition_text TEXT NOT NULL,
+        chapter_id TEXT, review_round INTEGER, created_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_refined_translation_tasks_lookup ON refined_translation_tasks(deleted_at, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_refined_translation_transitions_task ON refined_translation_transitions(task_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_refined_translation_segments_lookup ON refined_translation_segments(task_id, chapter_id, paragraph_index);
+      CREATE INDEX IF NOT EXISTS idx_refined_translation_terms_lookup ON refined_translation_terms(task_id, status, priority DESC);
+      CREATE INDEX IF NOT EXISTS idx_refined_translation_reviews_lookup ON refined_translation_reviews(task_id, chapter_id, created_at DESC);
+    `);
+    this.ensureColumnExists('refined_translation_tasks', 'source_metadata_json', "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumnExists('refined_translation_reviews', 'resolution', "TEXT NOT NULL DEFAULT 'open'");
+    this.ensureColumnExists('refined_translation_reviews', 'replacement_text', 'TEXT');
+    this.ensureColumnExists('refined_translation_reviews', 'resolution_note', 'TEXT');
+
     // ── OPDS: novels 表新增列 ──
     this.ensureColumnExists('novels', 'opds_visible', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novels', 'content_updated_at', 'TEXT');
@@ -4547,6 +4872,12 @@ function mapKnowledgeGraphChunkRow(row: KnowledgeGraphChunkRow): StoredKnowledge
   };
 }
 
+interface RefinedTaskRow { task_id: string; source_id: string | null; novel_id: string | null; task_name: string; novel_title: string; author: string; source_metadata_json: string | null; source_lang: string; target_lang: string; status: RefinedTranslationTaskStatus; stage: RefinedTranslationStage; model_config_json: string; deleted_at: string | null; created_at: string; updated_at: string; }
+interface RefinedChapterRow { task_id: string; chapter_id: string; chapter_index: number; title: string; volume_title: string | null; source_content: string; translated_title: string | null; status: RefinedTranslationChapterStatus; review_round: number; review_score: number | null; updated_at: string; }
+interface RefinedSegmentRow { segment_id: string; task_id: string; chapter_id: string; paragraph_index: number; source_text: string; translated_text: string | null; status: RefinedTranslationSegmentStatus; updated_at: string; }
+interface RefinedTermRow { term_id: string; task_id: string; source_term: string; target_term: string | null; entity_type: string | null; priority: number; suggestion: string | null; status: RefinedTranslationTermStatus; updated_at: string; }
+interface RefinedReviewRow { review_id: string; task_id: string; chapter_id: string; review_round: number; severity: string; paragraph_indices_json: string; scores_json: string; suggestion: string; replacement_text: string | null; force_change: number; resolved: number; resolution: RefinedTranslationReviewResolution | null; resolution_note: string | null; created_at: string; }
+
 function mapKnowledgeGraphSummaryRow(row: KnowledgeGraphSummaryRow): StoredKnowledgeGraphSummaryRow {
   return {
     id: row.summary_id,
@@ -4697,6 +5028,45 @@ function mapChapterTranslationQaRow(row: ChapterTranslationQaRow): StoredChapter
     createdAt: row.created_at,
   };
 }
+
+function mapRefinedTaskRow(row: RefinedTaskRow): StoredRefinedTranslationTaskRow {
+  return { id: row.task_id, sourceId: row.source_id, novelId: row.novel_id, name: row.task_name, novelTitle: row.novel_title, author: row.author, sourceMetadata: parseRefinedSourceMetadata(row.source_metadata_json, row.novel_title, row.author), sourceLang: row.source_lang, targetLang: row.target_lang, status: row.status, stage: row.stage, modelConfig: parseRefinedModelConfig(row.model_config_json), deletedAt: row.deleted_at, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+function mapRefinedChapterRow(row: RefinedChapterRow): StoredRefinedTranslationChapterRow {
+  return { taskId: row.task_id, chapterId: row.chapter_id, chapterIndex: row.chapter_index, title: row.title, volumeTitle: row.volume_title, sourceContent: row.source_content, translatedTitle: row.translated_title, status: row.status, reviewRound: row.review_round, reviewScore: row.review_score, updatedAt: row.updated_at };
+}
+function mapRefinedSegmentRow(row: RefinedSegmentRow): StoredRefinedTranslationSegmentRow {
+  return { id: row.segment_id, taskId: row.task_id, chapterId: row.chapter_id, paragraphIndex: row.paragraph_index, sourceText: row.source_text, translatedText: row.translated_text, status: row.status, updatedAt: row.updated_at };
+}
+function mapRefinedTermRow(row: RefinedTermRow): StoredRefinedTranslationTermRow {
+  return { id: row.term_id, taskId: row.task_id, sourceTerm: row.source_term, targetTerm: row.target_term, entityType: row.entity_type, priority: row.priority, suggestion: row.suggestion, status: row.status, updatedAt: row.updated_at };
+}
+function mapRefinedReviewRow(row: RefinedReviewRow): StoredRefinedTranslationReviewRow {
+  const resolution = row.resolution === 'accepted' || row.resolution === 'partially_accepted' || row.resolution === 'rejected' || row.resolution === 'resolved' || row.resolution === 'ignored' || row.resolution === 'superseded' ? row.resolution : row.resolved !== 0 ? 'resolved' : 'open';
+  return { id: row.review_id, taskId: row.task_id, chapterId: row.chapter_id, reviewRound: row.review_round, severity: row.severity, paragraphIndices: parseNumberArray(row.paragraph_indices_json), scores: parseScoreObject(row.scores_json), suggestion: row.suggestion, replacementText: row.replacement_text, forceChange: row.force_change !== 0, resolved: resolution !== 'open', resolution, resolutionNote: row.resolution_note, createdAt: row.created_at };
+}
+function parseRefinedModelConfig(raw: string): RefinedTranslationModelConfig {
+  const fallback: RefinedTranslationModelConfig = { termExtractionModel: null, termTranslationModel: null, translationModels: [], omissionModel: null, reviewModel: null, concurrency: 2, maxReviewRounds: 5 };
+  try {
+    const value = JSON.parse(raw) as Partial<RefinedTranslationModelConfig>;
+    return { ...fallback, ...value, translationModels: Array.isArray(value.translationModels) ? value.translationModels : [] };
+  } catch { return fallback; }
+}
+function parseRefinedSourceMetadata(raw: string | null, title: string, author: string): StoredRefinedTranslationTaskRow['sourceMetadata'] {
+  const fallback: StoredRefinedTranslationTaskRow['sourceMetadata'] = { title, author, description: '', tags: [], infoPageUrl: '' };
+  try {
+    const value = JSON.parse(raw ?? '{}') as Partial<typeof fallback>;
+    return {
+      title: typeof value.title === 'string' && value.title.trim() ? value.title : title,
+      author: typeof value.author === 'string' && value.author.trim() ? value.author : author,
+      description: typeof value.description === 'string' ? value.description : '',
+      tags: Array.isArray(value.tags) ? value.tags.filter((item): item is string => typeof item === 'string') : [],
+      infoPageUrl: typeof value.infoPageUrl === 'string' ? value.infoPageUrl : '',
+    };
+  } catch { return fallback; }
+}
+function parseNumberArray(raw: string): number[] { try { const value = JSON.parse(raw) as unknown; return Array.isArray(value) ? value.filter((item): item is number => typeof item === 'number') : []; } catch { return []; } }
+function parseScoreObject(raw: string): Record<string, number> { try { const value = JSON.parse(raw) as unknown; if (!value || typeof value !== 'object') return {}; return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === 'number')); } catch { return {}; } }
 
 function parseTranslationModelRoutesJson(value: string): TranslationModelRoute[] {
   try {
