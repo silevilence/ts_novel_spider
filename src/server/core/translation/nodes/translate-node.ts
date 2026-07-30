@@ -1,4 +1,4 @@
-import { generateText } from 'ai';
+import { generateText, stepCountIs, type ToolSet } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -59,6 +59,33 @@ export async function generateRefinedTranslationText(
     temperature: 0.2,
   });
   return result.text.trim();
+}
+
+/** Runs a bounded, real tool-calling loop for task-scoped refined agents. */
+export async function runRefinedTranslationToolAgent(
+  preferences: SystemPreferencesService,
+  route: { providerId: string; modelId: string },
+  system: string,
+  prompt: string,
+  tools: ToolSet,
+  firstToolName: string = 'read_current_translation',
+): Promise<{ text: string; toolCallCount: number; toolCalls: Array<{ toolName: string; input: unknown }> }> {
+  const provider = getProvider(preferences, route.providerId);
+  if (!provider) throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
+  const result = await generateText({
+    model: createLanguageModel(provider, route.modelId),
+    system,
+    prompt,
+    tools,
+    stopWhen: stepCountIs(8),
+    // Every refined Agent begins by resolving its task-scoped material through
+    // the ToolSet. Later steps are free to read more material, write, or answer.
+    prepareStep: async ({ stepNumber }) => stepNumber === 0
+      ? { toolChoice: { type: 'tool', toolName: firstToolName } }
+      : {},
+    temperature: 0.2,
+  });
+  return { text: result.text.trim(), toolCallCount: result.toolCalls.length, toolCalls: result.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })) };
 }
 
 /**

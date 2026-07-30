@@ -82,15 +82,23 @@ test('chapter agent carries task locators and requires approval before applying 
       chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文一', paragraphs: ['原文一'] }], terms: [],
     });
     let prompt = '';
+    let agentReadMaterial: unknown = null;
     const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system, input) => {
       prompt = `${system}\n${input}`;
       return system.includes('仅返回 JSON') ? '{"reply":"已调整语气","edits":[{"paragraphIndex":0,"translatedText":"修改后的译文"}]}' : '只读分析结果';
+    }, async (_preferences, _route, system, input, tools) => {
+      prompt = `${system}\n${input}`;
+      const readTool = tools.read_current_translation as { execute?: (toolInput: { chapterId: string }) => Promise<unknown> };
+      agentReadMaterial = await readTool.execute?.({ chapterId: 'c1' });
+      if (system.includes('只读模式')) return { text: '只读分析结果', toolCallCount: 1, toolCalls: [] };
+      return { text: '已生成待确认修改。', toolCallCount: 2, toolCalls: [{ toolName: 'write_translation_segment', input: { chapterId: 'c1', paragraphIndex: 0, translatedText: '修改后的译文' } }] };
     });
 
     const readResult = await service.chatAboutChapter('task-agent', 'c1', { message: '分析这一章', mode: 'read', paragraphIndices: [0] });
     assert.equal(readResult.reply, '只读分析结果');
     assert.match(prompt, /task_id=task-agent/);
     assert.match(prompt, /chapter_id=c1/);
+    assert.ok(agentReadMaterial);
     assert.equal(repository.listRefinedTranslationSegments('task-agent', 'c1')[0]?.translatedText, null);
 
     const editResult = await service.chatAboutChapter('task-agent', 'c1', { message: '直接改写', mode: 'edit_skip_review', paragraphIndices: [0] });

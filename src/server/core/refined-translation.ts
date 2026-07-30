@@ -6,8 +6,9 @@ import type { GeneratedLibraryExport, LibraryExportFormat, LibraryExportTranslat
 import type { RefinedTranslationModelConfig, RefinedTranslationReviewResolution, RefinedTranslationSegmentStatus, RefinedTranslationStage, RefinedTranslationTaskStatus, RefinedTranslationTermStatus, SqliteNovelRepository, StoredRefinedTranslationReviewRow, StoredRefinedTranslationTaskRow } from './novel-repository';
 import type { SystemPreferencesService } from './system-preferences';
 import type { StoredChapterRecord, StoredNovelSnapshot } from './spider';
+import { createRefinedTranslationTools } from './refined-translation-tools';
 import { splitChapterParagraphs } from './translation/nodes/segment-node';
-import { generateRefinedTranslationText } from './translation/nodes/translate-node';
+import { generateRefinedTranslationText, runRefinedTranslationToolAgent } from './translation/nodes/translate-node';
 import { resolveTranslationModel } from './translation-pipeline';
 
 export const REFINED_TRANSLATION_STAGES: Array<{ id: RefinedTranslationStage; label: string; automatic: boolean }> = [
@@ -26,6 +27,7 @@ const TRANSLATION_CONTEXT_SEGMENTS = 3;
 const GLOSSARY_EXTRACTION_SOURCE_LIMIT = 18_000;
 
 type RefinedTextGenerator = (preferences: SystemPreferencesService, route: { providerId: string; modelId: string }, system: string, prompt: string) => Promise<string>;
+type RefinedToolAgentRunner = (preferences: SystemPreferencesService, route: { providerId: string; modelId: string }, system: string, prompt: string, tools: import('ai').ToolSet, firstToolName?: string) => Promise<{ text: string; toolCallCount: number; toolCalls: Array<{ toolName: string; input: unknown }> }>;
 type WorkflowDecision = 'pause' | 'retranslate' | 'review' | 'revise' | 'next_chapter' | 'complete' | 'needs_attention';
 export type RefinedChapterAgentMode = 'read' | 'edit_review' | 'edit_skip_review';
 export interface RefinedChapterAgentEdit { paragraphIndex: number; translatedText: string; }
@@ -69,13 +71,18 @@ export class RefinedTranslationService {
   readonly #preferences: SystemPreferencesService;
   readonly #exportEngine: LocalExportEngine;
   readonly #generateText: RefinedTextGenerator;
+  readonly #runToolAgent: RefinedToolAgentRunner | null;
   readonly #abortControllers = new Map<string, AbortController>();
 
-  constructor(repository: SqliteNovelRepository, preferences: SystemPreferencesService, exportEngine: LocalExportEngine, generateText: RefinedTextGenerator = generateRefinedTranslationText) {
+  constructor(repository: SqliteNovelRepository, preferences: SystemPreferencesService, exportEngine: LocalExportEngine, generateText: RefinedTextGenerator = generateRefinedTranslationText, toolAgentRunner?: RefinedToolAgentRunner) {
     this.#repository = repository;
     this.#preferences = preferences;
     this.#exportEngine = exportEngine;
     this.#generateText = generateText;
+    this.#runToolAgent = toolAgentRunner ?? (generateText === generateRefinedTranslationText ? async (runnerPreferences, route, system, prompt, tools, firstToolName) => {
+      const result = await runRefinedTranslationToolAgent(runnerPreferences, route, system, prompt, tools, firstToolName);
+      return { ...result, toolCalls: result.toolCalls };
+    } : null);
   }
 
   recoverInterruptedTasks(): void {
@@ -196,7 +203,15 @@ export class RefinedTranslationService {
       .join('\n\n')
       .slice(0, GLOSSARY_EXTRACTION_SOURCE_LIMIT);
     if (!source.trim()) throw new Error('任务中没有可用于提取术语的原文快照。');
-    const response = await this.#generateText(
+    const toolResult = await this.#tryRunToolAgent(
+      taskId,
+      route,
+      `从${task.sourceLang}小说原文中提取需要保持一致的术语候选。必须先调用 read_original_chapters 与 read_glossary；只返回 JSON：{"terms":[{"sourceTerm":"...","entityType":"character|location|organization|item|concept|other","priority":0-10,"suggestion":"简短说明"}]}。不要翻译术语，也不要输出 JSON 之外的内容。`,
+      '请从当前任务原文快照中提取术语候选。',
+      createRefinedTranslationTools(this, { taskId, writable: false }),
+      'read_original_chapters',
+    );
+    const response = toolResult?.text || await this.#generateText(
       this.#preferences,
       route,
       `从${task.sourceLang}小说原文中提取需要保持一致的术语候选。只返回 JSON：{"terms":[{"sourceTerm":"...","entityType":"character|location|organization|item|concept|other","priority":0-10,"suggestion":"简短说明"}]}。不要翻译术语，也不要输出 JSON 之外的内容。`,
@@ -234,12 +249,23 @@ export class RefinedTranslationService {
     const visibleRows = selected.size ? rows.filter((row) => selected.has(row.paragraphIndex)) : rows;
     const material = `章节标题：${chapter.title}\n当前标题译文：${chapter.translatedTitle ?? '（未译）'}\n\n${visibleRows.map((row) => `段落 #${row.paragraphIndex + 1}（paragraphIndex=${row.paragraphIndex}）\n原文：${row.sourceText}\n当前译文：${row.translatedText ?? '（未译）'}`).join('\n\n')}`;
     const history = (input.history ?? []).slice(-8).map((item) => `${item.role === 'user' ? '用户' : 'Agent'}：${item.content}`).join('\n');
-    const locator = `当前工具定位信息：task_id=${taskId}，chapter_id=${chapterId}，章节序号=${chapter.chapterIndex}。可读取 read_original_chapter(task_id, chapter_id)、read_current_translation(task_id, chapter_id)、read_glossary(task_id)；仅在编辑模式可调用 write_translation_segment(task_id, chapter_id, paragraphIndex, translatedText)。`;
+    const locator = `当前工具定位信息：task_id=${taskId}，chapter_id=${chapterId}，章节序号=${chapter.chapterIndex}。工具已经绑定到此任务和章节，不需要也不能自行传 task_id。`;
     const editInstruction = input.mode === 'read'
-      ? '你处于只读模式：不能提出或执行任何写入。直接以自然语言回答用户问题。'
-      : '你处于编辑模式。仅返回 JSON：{"reply":"给用户的简短说明","edits":[{"paragraphIndex":0,"translatedText":"修改后的完整译文"}]}。只提交确有必要的段落修改；不要修改未提供的段落。';
-    const response = await this.#generateText(this.#preferences, route, `你是精翻工作区的章节 Agent。${editInstruction}\n${locator}`, `章节：${chapter.title}\n用户问题：${input.message}\n${history ? `历史对话：\n${history}\n` : ''}可用段落：\n${material}`);
+      ? '你处于只读模式：必须先按需调用 read_original_chapter、read_current_translation、read_glossary 读取任务物料；不能调用写入工具。随后直接以自然语言回答用户问题。'
+      : '你处于编辑模式：必须先读取当前译文和术语表。每个确有必要的段落修改都必须调用 write_translation_segment。该工具会生成待用户批准的修改请求，调用后不要自行声称已经写入；不要修改未提供的段落。';
+    const toolResult = await this.#tryRunToolAgent(taskId, route,
+      `你是精翻工作区的章节 Agent。${editInstruction}\n${locator}`,
+      `章节：${chapter.title}\n用户问题：${input.message}\n${history ? `历史对话：\n${history}\n` : ''}当前选中段落索引：${[...selected].join(', ') || '全部'}。`,
+      createRefinedTranslationTools(this, { taskId, chapterIds: [chapterId], writable: input.mode !== 'read', requireWriteApproval: input.mode !== 'read' }),
+    );
+    const response = toolResult?.text || await this.#generateText(this.#preferences, route, `你是精翻工作区的章节 Agent。${input.mode === 'read' ? '你处于只读模式：不能提出或执行任何写入。直接以自然语言回答用户问题。' : '你处于编辑模式。仅返回 JSON：{"reply":"给用户的简短说明","edits":[{"paragraphIndex":0,"translatedText":"修改后的完整译文"}]}。只提交确有必要的段落修改；不要修改未提供的段落。'}\n${locator}`, `章节：${chapter.title}\n用户问题：${input.message}\n${history ? `历史对话：\n${history}\n` : ''}可用段落：\n${material}`);
     if (input.mode === 'read') return { reply: response.trim(), mode: input.mode, appliedParagraphIndices: [] as number[], proposedEdits: [] as RefinedChapterAgentEdit[] };
+    const toolEdits = toolResult?.toolCalls.flatMap((call) => {
+      if (call.toolName !== 'write_translation_segment' || !call.input || typeof call.input !== 'object') return [];
+      const value = call.input as { chapterId?: unknown; paragraphIndex?: unknown; translatedText?: unknown };
+      return value.chapterId === chapterId && typeof value.paragraphIndex === 'number' && typeof value.translatedText === 'string' ? [{ paragraphIndex: value.paragraphIndex, translatedText: value.translatedText.trim() }] : [];
+    }) ?? [];
+    if (toolEdits.length) return { reply: response.trim() || '已生成待确认的章节修改请求。', mode: input.mode, appliedParagraphIndices: [] as number[], proposedEdits: toolEdits };
     const parsed = parseChapterAgentResponse(response);
     const proposedEdits = parsed.edits.filter((edit) => rows.some((row) => row.paragraphIndex === edit.paragraphIndex) && edit.translatedText.trim()).map((edit) => ({ paragraphIndex: edit.paragraphIndex, translatedText: edit.translatedText.trim() }));
     return { reply: parsed.reply || '已生成修改提案，请确认后再写入任务。', mode: input.mode, appliedParagraphIndices: [] as number[], proposedEdits };
@@ -514,6 +540,15 @@ export class RefinedTranslationService {
     return { decision: 'needs_attention' };
   }
 
+  async #tryRunToolAgent(taskId: string, route: { providerId: string; modelId: string }, system: string, prompt: string, tools: import('ai').ToolSet, firstToolName?: string): Promise<{ text: string; toolCallCount: number; toolCalls: Array<{ toolName: string; input: unknown }> } | null> {
+    if (!this.#runToolAgent) return null;
+    try {
+      return await this.#runToolAgent(this.#preferences, route, system, prompt, tools, firstToolName);
+    } catch (error) {
+      this.#log(taskId, 'warn', `模型未完成工具调用，已回退到确定性工作流：${toMessage(error)}`);
+      return null;
+    }
+  }
   #resolveRoute(task: StoredRefinedTranslationTaskRow, kind: 'translationModels' | 'omissionModel' | 'reviewModel') { const configured = kind === 'translationModels' ? task.modelConfig.translationModels[0] ?? null : task.modelConfig[kind]; return configured ?? resolveTranslationModel(this.#preferences) ?? null; }
   #resolveSegmentRoute(task: StoredRefinedTranslationTaskRow, paragraphIndex: number) { const routes = task.modelConfig.translationModels; return routes.length ? routes[paragraphIndex % routes.length] ?? null : resolveTranslationModel(this.#preferences) ?? null; }
   #findNextChapter(taskId: string) { return this.#repository.listRefinedTranslationChapters(taskId).find((chapter) => chapter.status !== 'reviewed' && chapter.status !== 'failed' && chapter.status !== 'needs_attention') ?? null; }
@@ -553,7 +588,11 @@ export class RefinedTranslationService {
     }
     for (const term of this.listTerms(taskId)) {
       if (signal.aborted) return;
-      try { const response = await this.#generateText(this.#preferences, route, '评估小说术语候选。仅返回 JSON：{"status":"pending|excluded","entityType":"...","priority":0-10,"suggestion":"简短中文建议"}。', `${term.sourceTerm}\n当前类型：${term.entityType ?? '未知'}`); if (signal.aborted) return; const parsed = parseGlossarySuggestion(response); this.updateTerm(taskId, term.id, parsed); } catch (error) { this.#log(taskId, 'warn', `术语“${term.sourceTerm}”筛选建议失败：${toMessage(error)}`); }
+      try {
+        const toolResult = await this.#tryRunToolAgent(taskId, route, '评估小说术语候选。必须先调用 read_glossary。仅返回 JSON：{"status":"pending|excluded","entityType":"...","priority":0-10,"suggestion":"简短中文建议"}。', `术语 ID：${term.id}`, createRefinedTranslationTools(this, { taskId, writable: false }), 'read_glossary');
+        const response = toolResult?.text || await this.#generateText(this.#preferences, route, '评估小说术语候选。仅返回 JSON：{"status":"pending|excluded","entityType":"...","priority":0-10,"suggestion":"简短中文建议"}。', `${term.sourceTerm}\n当前类型：${term.entityType ?? '未知'}`);
+        if (signal.aborted) return; const parsed = parseGlossarySuggestion(response); this.updateTerm(taskId, term.id, parsed);
+      } catch (error) { this.#log(taskId, 'warn', `术语“${term.sourceTerm}”筛选建议失败：${toMessage(error)}`); }
     }
     this.#repository.updateRefinedTranslationTask(taskId, { status: 'paused', stage: 'glossary_setup' }); this.#checkpoint(taskId, 'glossary_setup', { output: 'suggestions generated' }); this.#touch(taskId, '术语筛选建议已生成，请确认后进入术语翻译。');
   }
@@ -564,7 +603,13 @@ export class RefinedTranslationService {
     for (const term of this.listTerms(taskId)) {
       if (signal.aborted) return;
       if (term.status === 'excluded' || term.targetTerm) continue;
-      try { const translated = await this.#generateText(this.#preferences, route, `将术语从${task.sourceLang}翻译成${task.targetLang}。仅输出术语译文，不加解释。实体类型：${term.entityType ?? '未知'}。`, term.sourceTerm); if (!signal.aborted) this.updateTerm(taskId, term.id, { targetTerm: translated, status: 'pending' }); } catch (error) { this.#log(taskId, 'warn', `术语“${term.sourceTerm}”翻译失败：${toMessage(error)}`); }
+      try {
+        const toolResult = await this.#tryRunToolAgent(taskId, route, `将术语从${task.sourceLang}翻译成${task.targetLang}。必须先调用 read_glossary，再调用 update_glossary_term 写入术语 ID=${term.id} 的译法。只处理这一条术语，不加解释。`, `术语 ID：${term.id}；实体类型：${term.entityType ?? '未知'}。`, createRefinedTranslationTools(this, { taskId, writable: true }), 'read_glossary');
+        const afterTool = this.listTerms(taskId).find((item) => item.id === term.id);
+        if (toolResult?.toolCallCount && afterTool?.targetTerm) continue;
+        const translated = toolResult?.text || await this.#generateText(this.#preferences, route, `将术语从${task.sourceLang}翻译成${task.targetLang}。仅输出术语译文，不加解释。实体类型：${term.entityType ?? '未知'}。`, term.sourceTerm);
+        if (!signal.aborted) this.updateTerm(taskId, term.id, { targetTerm: translated, status: 'pending' });
+      } catch (error) { this.#log(taskId, 'warn', `术语“${term.sourceTerm}”翻译失败：${toMessage(error)}`); }
     }
     this.#checkpoint(taskId, 'glossary_translation', { output: 'initial translations generated' }); this.#touch(taskId, '术语初译已生成，将自动进入正文初翻。');
   }
@@ -587,7 +632,12 @@ export class RefinedTranslationService {
       if (!route) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: null, status: 'failed' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章缺少正文初翻模型。`); continue; }
       try {
         const context = this.#translationContext(taskId, chapterId, segment.paragraphIndex);
-        const text = await this.#generateText(this.#preferences, route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。\n术语表：\n${glossary || '（无）'}\n前文上下文：\n${context || '（当前为本章开头）'}`, segment.sourceText);
+        const toolResult = await this.#tryRunToolAgent(taskId, route,
+          `你是专业文学译者。必须先调用 read_original_chapter、read_current_translation 和 read_glossary，确认 task_id=${taskId}、chapter_id=${chapterId}、paragraphIndex=${segment.paragraphIndex} 的快照与术语。然后只输出该段从${task.sourceLang}到${task.targetLang}的译文，不得输出解释或调用写入工具。`,
+          `翻译任务定位：chapter_id=${chapterId}，paragraphIndex=${segment.paragraphIndex}。`,
+          createRefinedTranslationTools(this, { taskId, chapterIds: [chapterId], writable: false }),
+        );
+        const text = toolResult?.text || await this.#generateText(this.#preferences, route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。\n术语表：\n${glossary || '（无）'}\n前文上下文：\n${context || '（当前为本章开头）'}`, segment.sourceText);
         if (!signal.aborted) this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: text || null, status: text ? 'translated' : 'pending' });
       } catch (error) { if (!signal.aborted) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: null, status: 'failed' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${segment.paragraphIndex + 1} 段失败：${toMessage(error)}`); } }
     }
@@ -641,6 +691,21 @@ export class RefinedTranslationService {
       const activeReviews = reviews.filter((review) => !processedReviewIds.has(review.id));
       if (!activeReviews.length) continue;
       try {
+        const toolResult = await this.#tryRunToolAgent(taskId, route,
+          `你是文学翻译的审核修订 Agent。必须先调用 read_current_translation、read_review_issues 与 read_glossary。只允许处理 chapterId=${chapterId} 的 paragraphIndex=${paragraphIndex}：禁止重翻整章、禁止改动章节标题、禁止改动其他段落或术语表。对每条审核意见，按需调用 write_translation_segment 写入完整修订译文，并调用 resolve_review_issue 记录 accepted、partially_accepted 或 rejected 及理由。不要输出 JSON 提案；工具调用就是实际修订记录。`,
+          `任务定位：task_id=${taskId}，chapter_id=${chapterId}，paragraphIndex=${paragraphIndex}。待处理意见：\n${activeReviews.map((review, index) => `${index + 1}. reviewId=${review.id}；意见：${review.suggestion}`).join('\n')}`,
+          createRefinedTranslationTools(this, { taskId, chapterIds: [chapterId], writable: true }),
+        );
+        if (toolResult?.toolCallCount) {
+          const resolvedByTools = activeReviews.filter((review) => this.#repository.listRefinedTranslationReviews(taskId, chapterId).some((stored) => stored.id === review.id && stored.resolution !== 'open'));
+          if (resolvedByTools.length) {
+            for (const review of resolvedByTools) {
+              processedReviewIds.add(review.id);
+              processed += 1;
+            }
+            continue;
+          }
+        }
         const rawText = await this.#generateText(
           this.#preferences,
           route,
@@ -715,7 +780,12 @@ export class RefinedTranslationService {
     const adjacent = this.readContextChapters(taskId, chapterId).map((item) => `${item.chapter.title}\n${item.segments.map((segment) => segment.translatedText ?? segment.sourceText).join('\n')}`).join('\n\n');
     const rejectedDirections = this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((review) => review.resolution === 'rejected' || review.resolution === 'ignored').map((review) => `段落 #${review.paragraphIndices.map((index) => index + 1).join('、')}：${review.suggestion}${review.resolutionNote ? `（理由：${review.resolutionNote}）` : ''}`).join('\n');
     try {
-      const response = await this.#generateText(this.#preferences, route, `审核文学翻译。术语表：\n${glossary || '（无）'}\n相邻章节译文（仅作一致性参考）：\n${adjacent || '（无）'}\n用户已拒绝的修改方向（除非出现新的严重错误，不要再次提出相同方向）：\n${rejectedDirections || '（无）'}\n仅返回 JSON：{"score":0-100,"severity":"low|medium|high","issues":[{"paragraphIndex":0,"sourceExcerpt":"该段原文的连续短句","translationExcerpt":"该段当前译文的连续短句","suggestion":"简明说明问题与修改理由","replacementText":"可直接替换的完整目标译文；无法安全给出则为 null","forceChange":false}],"scores":{"fluency":0,"consistency":0,"termAccuracy":0,"format":0}}。paragraphIndex 只是提示；服务端只会以 sourceExcerpt 与 translationExcerpt 的唯一双锚点定位。每条意见必须给出这两个连续短句；无法可靠定位则不要输出该意见。`, content);
+      const toolResult = await this.#tryRunToolAgent(taskId, route,
+        `你是文学翻译审核 Agent。必须先调用 read_chapter_translation、read_context_chapters、read_glossary 和 read_review_issues，审核 chapter_id=${chapterId}。用户已拒绝的修改方向（除非出现新的严重错误，不要再次提出相同方向）：\n${rejectedDirections || '（无）'}\n随后只返回 JSON：{"score":0-100,"severity":"low|medium|high","issues":[{"paragraphIndex":0,"sourceExcerpt":"该段原文的连续短句","translationExcerpt":"该段当前译文的连续短句","suggestion":"简明说明问题与修改理由","replacementText":"可直接替换的完整目标译文；无法安全给出则为 null","forceChange":false}],"scores":{"fluency":0,"consistency":0,"termAccuracy":0,"format":0}}。paragraphIndex 只是提示；服务端只会以 sourceExcerpt 与 translationExcerpt 的唯一双锚点定位。每条意见必须给出这两个连续短句；无法可靠定位则不要输出该意见。`,
+        `审核任务定位：task_id=${taskId}，chapter_id=${chapterId}，第 ${chapter.chapterIndex} 章。`,
+        createRefinedTranslationTools(this, { taskId, chapterIds: [chapterId], writable: false }),
+      );
+      const response = toolResult?.text || await this.#generateText(this.#preferences, route, `审核文学翻译。术语表：\n${glossary || '（无）'}\n相邻章节译文（仅作一致性参考）：\n${adjacent || '（无）'}\n用户已拒绝的修改方向（除非出现新的严重错误，不要再次提出相同方向）：\n${rejectedDirections || '（无）'}\n仅返回 JSON：{"score":0-100,"severity":"low|medium|high","issues":[{"paragraphIndex":0,"sourceExcerpt":"该段原文的连续短句","translationExcerpt":"该段当前译文的连续短句","suggestion":"简明说明问题与修改理由","replacementText":"可直接替换的完整目标译文；无法安全给出则为 null","forceChange":false}],"scores":{"fluency":0,"consistency":0,"termAccuracy":0,"format":0}}。paragraphIndex 只是提示；服务端只会以 sourceExcerpt 与 translationExcerpt 的唯一双锚点定位。每条意见必须给出这两个连续短句；无法可靠定位则不要输出该意见。`, content);
       if (signal.aborted) return { needsRevision: false, reviewRound, maxReviewRounds: task.modelConfig.maxReviewRounds };
       const parsed = parseReviewJson(response); const needsRevision = parsed.score < 80 || parsed.issues.some((issue) => issue.forceChange);
       const superseded = this.#repository.supersedeOpenRefinedTranslationReviews(taskId, chapterId);
