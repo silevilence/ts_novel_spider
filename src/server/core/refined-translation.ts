@@ -16,6 +16,7 @@ export const REFINED_TRANSLATION_STAGES: Array<{ id: RefinedTranslationStage; la
   { id: 'translating', label: '正文初翻', automatic: true },
   { id: 'checking', label: '遗漏检查', automatic: true },
   { id: 'reviewing', label: '审核校对', automatic: true },
+  { id: 'revising', label: '审核修订', automatic: true },
   { id: 'completed', label: '完成', automatic: false },
 ];
 
@@ -25,7 +26,7 @@ const TRANSLATION_CONTEXT_SEGMENTS = 3;
 const GLOSSARY_EXTRACTION_SOURCE_LIMIT = 18_000;
 
 type RefinedTextGenerator = (preferences: SystemPreferencesService, route: { providerId: string; modelId: string }, system: string, prompt: string) => Promise<string>;
-type WorkflowDecision = 'pause' | 'retranslate' | 'review' | 'next_chapter' | 'complete' | 'needs_attention';
+type WorkflowDecision = 'pause' | 'retranslate' | 'review' | 'revise' | 'next_chapter' | 'complete' | 'needs_attention';
 export type RefinedChapterAgentMode = 'read' | 'edit_review' | 'edit_skip_review';
 export interface RefinedChapterAgentEdit { paragraphIndex: number; translatedText: string; }
 
@@ -293,27 +294,30 @@ export class RefinedTranslationService {
     const taskBeforeRetry = this.#repository.getRefinedTranslationTask(taskId);
     const chapters = chapterId ? [this.#repository.getRefinedTranslationChapter(taskId, chapterId)].filter((item): item is NonNullable<typeof item> => item !== null) : this.#repository.listRefinedTranslationChapters(taskId);
     let firstRetriedChapterId: string | null = null;
+    let firstReviewRevisionChapterId: string | null = null;
+    let hasFailedSegments = false;
     for (const chapter of chapters) {
       let retried = false;
       const openReviews = this.#repository.listRefinedTranslationReviews(taskId, chapter.chapterId).filter((review) => !review.resolved);
-      const reviewedParagraphs = new Set(openReviews.flatMap((review) => review.paragraphIndices));
+      if (openReviews.length) firstReviewRevisionChapterId ??= chapter.chapterId;
       for (const segment of this.#repository.listRefinedTranslationSegments(taskId, chapter.chapterId)) {
         const explicitlyRequested = paragraphIndex === undefined || segment.paragraphIndex === paragraphIndex;
-        const retryAfterReview = chapter.status === 'needs_attention' && explicitlyRequested && (reviewedParagraphs.size === 0 || reviewedParagraphs.has(segment.paragraphIndex));
-        if (!explicitlyRequested || (segment.status !== 'failed' && !retryAfterReview)) continue;
+        if (!explicitlyRequested || segment.status !== 'failed') continue;
         this.#repository.updateRefinedTranslationSegment(taskId, chapter.chapterId, segment.paragraphIndex, segment.translatedText, 'pending');
         retried = true;
+        hasFailedSegments = true;
       }
-      if (retried || chapter.status === 'needs_attention') {
-        const reviewRound = chapter.status === 'needs_attention' ? 0 : chapter.reviewRound;
-        this.#repository.updateRefinedTranslationChapterReview(taskId, chapter.chapterId, { reviewRound, reviewScore: null, status: 'pending' });
+      if (retried || openReviews.length || chapter.status === 'needs_attention') {
+        this.#repository.updateRefinedTranslationChapterReview(taskId, chapter.chapterId, { reviewRound: chapter.reviewRound, reviewScore: chapter.reviewScore, status: 'pending' });
         firstRetriedChapterId ??= chapter.chapterId;
       }
     }
-    const updated = this.#repository.updateRefinedTranslationTask(taskId, { stage: 'translating', status: 'running' });
-    this.#checkpoint(taskId, 'translating', { event: 'retry_failed', chapterId: firstRetriedChapterId });
-    this.#repository.appendRefinedTranslationTransition({ taskId, fromStage: taskBeforeRetry?.stage ?? null, toStage: 'translating', condition: '用户按审核意见重新处理', chapterId: firstRetriedChapterId, reviewRound: firstRetriedChapterId ? this.#repository.getRefinedTranslationChapter(taskId, firstRetriedChapterId)?.reviewRound ?? null : null });
-    this.#touch(taskId, firstRetriedChapterId ? '相关段落已重新入队；如有审核意见，翻译 Agent 将按意见自动修订并重新审核。' : '没有找到可重试的段落。'); void this.#run(taskId); return updated;
+    const stage: RefinedTranslationStage = firstReviewRevisionChapterId && !hasFailedSegments ? 'revising' : 'translating';
+    const targetChapterId = stage === 'revising' ? firstReviewRevisionChapterId : firstRetriedChapterId;
+    const updated = this.#repository.updateRefinedTranslationTask(taskId, { stage, status: 'running' });
+    this.#checkpoint(taskId, stage, { event: 'retry_failed', chapterId: targetChapterId });
+    this.#repository.appendRefinedTranslationTransition({ taskId, fromStage: taskBeforeRetry?.stage ?? null, toStage: stage, condition: stage === 'revising' ? '用户要求 Agent 按开放审核意见逐段修订' : '用户重试失败段落', chapterId: targetChapterId, reviewRound: targetChapterId ? this.#repository.getRefinedTranslationChapter(taskId, targetChapterId)?.reviewRound ?? null : null });
+    this.#touch(taskId, targetChapterId ? stage === 'revising' ? '审核修订 Agent 已入队，将只处理审核意见关联段落。' : '失败段落已重新入队，将先补译后重新审核。' : '没有找到可重试的段落。'); void this.#run(taskId); return updated;
   }
 
   advance(taskId: string): StoredRefinedTranslationTaskRow | null {
@@ -387,14 +391,16 @@ export class RefinedTranslationService {
       .addNode('translating', async (state: RefinedWorkflowStateValue) => this.#runTranslating(state, signal))
       .addNode('checking', async (state: RefinedWorkflowStateValue) => this.#runChecking(state, signal))
       .addNode('reviewing', async (state: RefinedWorkflowStateValue) => this.#runReviewing(state, signal))
+      .addNode('revising', async (state: RefinedWorkflowStateValue) => this.#runRevising(state, signal))
       .addNode('completed', async (state: RefinedWorkflowStateValue) => this.#runCompleted(state))
       .addNode('needs_attention', async (state: RefinedWorkflowStateValue) => this.#runNeedsAttention(state))
-      .addConditionalEdges(START, (state: RefinedWorkflowStateValue) => state.stage, { glossary_setup: 'glossary_setup', glossary_translation: 'glossary_translation', translating: 'translating', checking: 'checking', reviewing: 'reviewing', completed: 'completed' })
+      .addConditionalEdges(START, (state: RefinedWorkflowStateValue) => state.stage, { glossary_setup: 'glossary_setup', glossary_translation: 'glossary_translation', translating: 'translating', checking: 'checking', reviewing: 'reviewing', revising: 'revising', completed: 'completed' })
       .addEdge('glossary_setup', END)
       .addConditionalEdges('glossary_translation', (state: RefinedWorkflowStateValue) => state.stage, { glossary_translation: END, translating: 'translating' })
       .addEdge('translating', 'checking')
       .addConditionalEdges('checking', (state: RefinedWorkflowStateValue) => state.decision, { retranslate: 'translating', review: 'reviewing', next_chapter: 'translating', complete: 'completed', needs_attention: 'needs_attention' })
-      .addConditionalEdges('reviewing', (state: RefinedWorkflowStateValue) => state.decision, { retranslate: 'translating', next_chapter: 'translating', complete: 'completed', needs_attention: 'needs_attention' })
+      .addConditionalEdges('reviewing', (state: RefinedWorkflowStateValue) => state.decision, { revise: 'revising', next_chapter: 'translating', complete: 'completed', needs_attention: 'needs_attention' })
+      .addConditionalEdges('revising', (state: RefinedWorkflowStateValue) => state.decision, { review: 'checking', needs_attention: 'needs_attention' })
       .addEdge('completed', END)
       .addEdge('needs_attention', END)
       .compile();
@@ -437,6 +443,11 @@ export class RefinedTranslationService {
     if (!state.chapterId) return { decision: this.#hasFailures(state.taskId) ? 'needs_attention' : 'complete' };
     const existingChapter = this.#repository.getRefinedTranslationChapter(state.taskId, state.chapterId);
     const task = this.#repository.getRefinedTranslationTask(state.taskId);
+    const pendingReviewRevision = this.#repository.listRefinedTranslationReviews(state.taskId, state.chapterId).some((review) => review.resolution === 'open');
+    if (pendingReviewRevision) {
+      this.#repository.appendRefinedTranslationTransition({ taskId: state.taskId, fromStage: 'reviewing', toStage: 'revising', condition: '检测到上一轮开放审核意见，先逐段修订后再复审', chapterId: state.chapterId, reviewRound: existingChapter?.reviewRound ?? null });
+      return { stage: 'revising', chapterId: state.chapterId, decision: 'revise' };
+    }
     if (existingChapter && task && existingChapter.reviewRound >= task.modelConfig.maxReviewRounds) {
       this.#repository.updateRefinedTranslationChapterReview(state.taskId, state.chapterId, { reviewRound: existingChapter.reviewRound, reviewScore: existingChapter.reviewScore, status: 'reviewed' });
       this.#repository.appendRefinedTranslationTransition({ taskId: state.taskId, fromStage: 'reviewing', toStage: 'translating', condition: `审核轮次已达上限 ${task.modelConfig.maxReviewRounds}；跳过重复审核并继续下一章`, chapterId: state.chapterId, reviewRound: existingChapter.reviewRound });
@@ -456,11 +467,34 @@ export class RefinedTranslationService {
         return nextChapter ? { stage: 'translating', chapterId: nextChapter.chapterId, decision: 'next_chapter' } : { stage: 'completed', chapterId: null, decision: 'complete' };
       }
       const score = this.#repository.getRefinedTranslationChapter(state.taskId, state.chapterId)?.reviewScore;
-      this.#repository.appendRefinedTranslationTransition({ taskId: state.taskId, fromStage: 'reviewing', toStage: 'translating', condition: `第 ${result.reviewRound} 轮审核未通过（${score === null || score === undefined ? '模型未返回有效评分' : `评分 ${score}`}；存在强制修改项或评分低于 80），回到正文初翻修订`, chapterId: state.chapterId, reviewRound: result.reviewRound });
-      return { stage: 'translating', chapterId: state.chapterId, decision: 'retranslate' };
+      this.#repository.appendRefinedTranslationTransition({ taskId: state.taskId, fromStage: 'reviewing', toStage: 'revising', condition: `第 ${result.reviewRound} 轮审核未通过（${score === null || score === undefined ? '模型未返回有效评分' : `评分 ${score}`}；存在强制修改项或评分低于 80），仅修订关联段落`, chapterId: state.chapterId, reviewRound: result.reviewRound });
+      return { stage: 'revising', chapterId: state.chapterId, decision: 'revise' };
     }
     const nextChapter = this.#findNextChapter(state.taskId);
     return nextChapter ? { stage: 'translating', chapterId: nextChapter.chapterId, decision: 'next_chapter' } : { stage: 'completed', chapterId: null, decision: this.#hasFailures(state.taskId) ? 'needs_attention' : 'complete' };
+  }
+  async #runRevising(state: RefinedWorkflowStateValue, signal: AbortSignal): Promise<Partial<RefinedWorkflowStateValue>> {
+    if (!state.chapterId) return { stage: 'checking', chapterId: null, decision: this.#hasFailures(state.taskId) ? 'needs_attention' : 'complete' };
+    const chapter = this.#repository.getRefinedTranslationChapter(state.taskId, state.chapterId);
+    const openReviews = this.#repository.listRefinedTranslationReviews(state.taskId, state.chapterId).filter((review) => review.resolution === 'open');
+    this.#setStage(state.taskId, 'revising', {
+      chapterId: state.chapterId,
+      reviewRound: chapter?.reviewRound ?? null,
+      transitionCondition: `第 ${chapter?.chapterIndex ?? '?'} 章审核未通过；仅按 ${openReviews.length} 条关联意见修订，不重翻全章`,
+    });
+    const result = await this.#reviseChapter(state.taskId, state.chapterId, signal);
+    this.#checkpoint(state.taskId, 'revising', {
+      chapterId: state.chapterId,
+      reviewRound: chapter?.reviewRound ?? null,
+      output: result,
+      transitionCondition: `审核修订完成：处理 ${result.processed} 条意见，未处理 ${result.unresolved} 条`,
+    });
+    if (result.unresolved) {
+      this.#repository.updateRefinedTranslationChapterReview(state.taskId, state.chapterId, { reviewRound: chapter?.reviewRound ?? 0, reviewScore: chapter?.reviewScore ?? null, status: 'needs_attention' });
+      this.#log(state.taskId, 'warn', `第 ${chapter?.chapterIndex ?? '?'} 章有 ${result.unresolved} 条审核意见无法自动修订，保留至最终人工复核。`);
+      return { stage: 'revising', chapterId: state.chapterId, decision: 'needs_attention' };
+    }
+    return { stage: 'checking', chapterId: state.chapterId, decision: 'review' };
   }
   async #runCompleted(state: RefinedWorkflowStateValue): Promise<Partial<RefinedWorkflowStateValue>> { const before = this.#repository.getRefinedTranslationTask(state.taskId); const openReviews = this.#repository.listRefinedTranslationReviews(state.taskId).filter((review) => review.resolution === 'open').length; this.#repository.updateRefinedTranslationTask(state.taskId, { stage: 'completed', status: 'completed' }); this.#repository.appendRefinedTranslationTransition({ taskId: state.taskId, fromStage: before?.stage ?? null, toStage: 'completed', condition: openReviews ? `自动流程已完成，保留 ${openReviews} 条意见供最终人工复核` : '所有章节达到审核通过条件', chapterId: state.chapterId, reviewRound: null }); this.#checkpoint(state.taskId, 'completed', { output: openReviews ? 'automatic processing completed with final review items' : 'all eligible chapters passed review', openReviews }); this.#touch(state.taskId, openReviews ? `精翻自动流程已完成，保留 ${openReviews} 条意见供最终复核。` : '精翻任务已完成。'); return { stage: 'completed', decision: 'complete' }; }
   async #runNeedsAttention(state: RefinedWorkflowStateValue): Promise<Partial<RefinedWorkflowStateValue>> {
@@ -537,15 +571,6 @@ export class RefinedTranslationService {
   async #translateChapter(taskId: string, chapterId: string, signal: AbortSignal): Promise<void> {
     const task = this.#repository.getRefinedTranslationTask(taskId); const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId); if (!task || !chapter) return;
     const glossary = this.listTerms(taskId).filter((term) => term.status !== 'excluded' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
-    const reviewSuggestionsByParagraph = new Map<number, StoredRefinedTranslationReviewRow[]>();
-    for (const review of this.#repository.listRefinedTranslationReviews(taskId, chapterId)) {
-      if (review.resolved) continue;
-      for (const paragraphIndex of review.paragraphIndices) {
-        const suggestions = reviewSuggestionsByParagraph.get(paragraphIndex) ?? [];
-        suggestions.push(review);
-        reviewSuggestionsByParagraph.set(paragraphIndex, suggestions);
-      }
-    }
     if (!chapter.translatedTitle?.trim() && chapter.title.trim() && !signal.aborted) {
       try {
         const route = this.#resolveSegmentRoute(task, 0);
@@ -554,7 +579,6 @@ export class RefinedTranslationService {
     }
     const pending = this.#repository.listRefinedTranslationSegments(taskId, chapterId).filter((segment) => segment.status !== 'translated' && segment.status !== 'skipped');
     let nextIndex = 0;
-    let reviewOutcomesUpdated = 0;
     const translateNext = async (): Promise<void> => {
       while (!signal.aborted) {
         const segment = pending[nextIndex++];
@@ -563,34 +587,95 @@ export class RefinedTranslationService {
       if (!route) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: null, status: 'failed' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章缺少正文初翻模型。`); continue; }
       try {
         const context = this.#translationContext(taskId, chapterId, segment.paragraphIndex);
-        const reviewSuggestions = reviewSuggestionsByParagraph.get(segment.paragraphIndex) ?? [];
-        const revisionInstruction = reviewSuggestions.length
-          ? `\n这是审核修订，不是重新初翻。必须优先落实下列审核意见；在保留原意和术语一致性的前提下改写当前译文。仅返回 JSON：{"translatedText":"修订后的完整译文","reviewFeedback":[{"reviewId":"...","decision":"accepted|partially_accepted|rejected","reason":"简短说明"}]}。每条意见都必须在 reviewFeedback 中给出结论；不能采用时填 rejected 并说明原因。\n当前译文：${segment.translatedText?.trim() || '（无，需重新翻译）'}\n审核意见：\n${reviewSuggestions.map((review, index) => `${index + 1}. reviewId=${review.id}；意见：${review.suggestion}`).join('\n')}`
-          : '';
-        const rawText = await this.#generateText(this.#preferences, route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。\n术语表：\n${glossary || '（无）'}\n前文上下文：\n${context || '（当前为本章开头）'}${revisionInstruction}`, segment.sourceText);
-        const revision = reviewSuggestions.length ? parseRevisionResponse(rawText) : { translatedText: rawText, reviewFeedback: [] };
-        const text = revision.translatedText;
-        for (const review of reviewSuggestions) {
-          const feedback = revision.reviewFeedback.find((item) => item.reviewId === review.id);
-          const resolution = feedback?.decision ?? 'partially_accepted';
-          const note = feedback?.reason ?? '模型未返回逐条结论，已按该意见提交修订，待下一轮审核确认。';
-          this.#repository.updateRefinedTranslationReview(taskId, review.id, resolution, note);
-          reviewOutcomesUpdated += 1;
-        }
+        const text = await this.#generateText(this.#preferences, route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。\n术语表：\n${glossary || '（无）'}\n前文上下文：\n${context || '（当前为本章开头）'}`, segment.sourceText);
         if (!signal.aborted) this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: text || null, status: text ? 'translated' : 'pending' });
       } catch (error) { if (!signal.aborted) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: null, status: 'failed' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${segment.paragraphIndex + 1} 段失败：${toMessage(error)}`); } }
     }
     };
     const concurrency = Math.max(1, Math.min(Math.floor(task.modelConfig.concurrency || 1), pending.length));
     await Promise.all(Array.from({ length: concurrency }, () => translateNext()));
-    if (reviewOutcomesUpdated > 0) {
-      this.#touch(taskId, `翻译 Agent 已对 ${reviewOutcomesUpdated} 条审核意见给出处理结论。`);
-      this.#emit(taskId, { type: 'review_updated', taskId, chapterId });
-    }
     const translatedSegments = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
     if (translatedSegments.length > 0 && translatedSegments.every((segment) => segment.status === 'translated' || segment.status === 'skipped')) {
       this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound: chapter.reviewRound, reviewScore: null, status: 'translated' });
     }
+  }
+  /**
+   * 审核修订是一个独立的深模块：它只暴露“处理当前章开放意见”的输入，
+   * 不会进入章节标题或全文初翻路径，因此不会重置未经意见关联的段落。
+   */
+  async #reviseChapter(taskId: string, chapterId: string, signal: AbortSignal): Promise<{ processed: number; unresolved: number }> {
+    const task = this.#repository.getRefinedTranslationTask(taskId);
+    const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId);
+    if (!task || !chapter) return { processed: 0, unresolved: 0 };
+    const openReviews = this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((review) => review.resolution === 'open');
+    if (!openReviews.length || signal.aborted) return { processed: 0, unresolved: openReviews.length };
+    const glossary = this.listTerms(taskId).filter((term) => term.status !== 'excluded' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
+    const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
+    const reviewsByParagraph = new Map<number, StoredRefinedTranslationReviewRow[]>();
+    for (const review of openReviews) {
+      for (const paragraphIndex of review.paragraphIndices) {
+        const reviews = reviewsByParagraph.get(paragraphIndex) ?? [];
+        reviews.push(review);
+        reviewsByParagraph.set(paragraphIndex, reviews);
+      }
+    }
+    let processed = 0;
+    const processedReviewIds = new Set<string>();
+    for (const [paragraphIndex, reviews] of reviewsByParagraph) {
+      if (signal.aborted) break;
+      const segment = rows.find((item) => item.paragraphIndex === paragraphIndex);
+      if (!segment) {
+        for (const review of reviews) {
+          if (processedReviewIds.has(review.id)) continue;
+          this.#repository.updateRefinedTranslationReview(taskId, review.id, 'rejected', '审核意见未能定位到当前任务快照中的段落，未自动改动译文。');
+          processedReviewIds.add(review.id);
+          processed += 1;
+        }
+        continue;
+      }
+      const route = this.#resolveSegmentRoute(task, paragraphIndex);
+      if (!route) {
+        this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章未配置审核修订可用模型，相关意见将保留至最终人工复核。`);
+        continue;
+      }
+      const activeReviews = reviews.filter((review) => !processedReviewIds.has(review.id));
+      if (!activeReviews.length) continue;
+      try {
+        const rawText = await this.#generateText(
+          this.#preferences,
+          route,
+          `你是文学翻译的审核修订 Agent。只允许修改当前给出的一个段落：禁止重翻整章、禁止改动章节标题、禁止改动其他段落或术语表。依据审核意见进行最小必要修改；若意见不应采纳，保留当前译文。\n术语表：\n${glossary || '（无）'}\n前文上下文：\n${this.#translationContext(taskId, chapterId, paragraphIndex) || '（当前为本章开头）'}\n只返回 JSON：{"translatedText":"修订后的完整当前段译文；不修改时返回当前译文","reviewFeedback":[{"reviewId":"...","decision":"accepted|partially_accepted|rejected","reason":"针对该意见的简短处理说明"}]}。reviewFeedback 必须覆盖每条 reviewId。`,
+          `当前段原文：${segment.sourceText}\n当前段译文：${segment.translatedText ?? '（缺失）'}\n审核意见：\n${activeReviews.map((review, index) => `${index + 1}. reviewId=${review.id}；意见：${review.suggestion}`).join('\n')}`,
+        );
+        if (signal.aborted) break;
+        const hasStructuredResponse = /\{[\s\S]*"translatedText"[\s\S]*\}/.test(rawText);
+        const revision = parseRevisionResponse(rawText);
+        const feedbackById = new Map(revision.reviewFeedback.map((feedback) => [feedback.reviewId, feedback]));
+        const shouldApply = hasStructuredResponse && Boolean(revision.translatedText) && activeReviews.some((review) => feedbackById.get(review.id)?.decision !== 'rejected');
+        if (shouldApply) this.writeSegment(taskId, chapterId, paragraphIndex, { translatedText: revision.translatedText, status: 'translated' });
+        for (const review of activeReviews) {
+          const feedback = feedbackById.get(review.id);
+          const resolution = feedback?.decision ?? (shouldApply ? 'partially_accepted' : 'rejected');
+          const note = feedback?.reason ?? (shouldApply ? '模型已修订当前段，但未返回该意见的明确结论。' : '模型未返回可验证的结构化审核修订结果，未自动改动译文。');
+          this.#repository.updateRefinedTranslationReview(taskId, review.id, resolution, note);
+          processedReviewIds.add(review.id);
+          processed += 1;
+        }
+      } catch (error) {
+        for (const review of activeReviews) {
+          this.#repository.updateRefinedTranslationReview(taskId, review.id, 'rejected', `自动审核修订调用失败：${toMessage(error)}`);
+          processedReviewIds.add(review.id);
+          processed += 1;
+        }
+        this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${paragraphIndex + 1} 段审核修订失败：${toMessage(error)}`);
+      }
+    }
+    const unresolved = this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((review) => review.resolution === 'open').length;
+    if (processed) {
+      this.#touch(taskId, `审核修订 Agent 已逐条处理 ${processed} 条审核意见，仅改动关联段落。`);
+      this.#emit(taskId, { type: 'review_updated', taskId, chapterId });
+    }
+    return { processed, unresolved };
   }
   #translationContext(taskId: string, chapterId: string, paragraphIndex: number) { return this.#repository.listRefinedTranslationSegments(taskId, chapterId).filter((segment) => segment.paragraphIndex < paragraphIndex && segment.translatedText?.trim()).slice(-TRANSLATION_CONTEXT_SEGMENTS).map((segment) => `原文：${segment.sourceText}\n译文：${segment.translatedText}`).join('\n\n'); }
   async #checkChapter(taskId: string, chapterId: string, signal: AbortSignal): Promise<{ retranslate: boolean; failed: boolean }> {
@@ -633,12 +718,13 @@ export class RefinedTranslationService {
       const response = await this.#generateText(this.#preferences, route, `审核文学翻译。术语表：\n${glossary || '（无）'}\n相邻章节译文（仅作一致性参考）：\n${adjacent || '（无）'}\n用户已拒绝的修改方向（除非出现新的严重错误，不要再次提出相同方向）：\n${rejectedDirections || '（无）'}\n仅返回 JSON：{"score":0-100,"severity":"low|medium|high","issues":[{"paragraphIndex":0,"sourceExcerpt":"该段原文的连续短句","translationExcerpt":"该段当前译文的连续短句","suggestion":"简明说明问题与修改理由","replacementText":"可直接替换的完整目标译文；无法安全给出则为 null","forceChange":false}],"scores":{"fluency":0,"consistency":0,"termAccuracy":0,"format":0}}。paragraphIndex 只是提示；服务端只会以 sourceExcerpt 与 translationExcerpt 的唯一双锚点定位。每条意见必须给出这两个连续短句；无法可靠定位则不要输出该意见。`, content);
       if (signal.aborted) return { needsRevision: false, reviewRound, maxReviewRounds: task.modelConfig.maxReviewRounds };
       const parsed = parseReviewJson(response); const needsRevision = parsed.score < 80 || parsed.issues.some((issue) => issue.forceChange);
+      const superseded = this.#repository.supersedeOpenRefinedTranslationReviews(taskId, chapterId);
+      if (superseded) this.#log(taskId, 'info', `第 ${chapter.chapterIndex} 章上一轮 ${superseded} 条未处理审核意见已由本轮复审归档替代。`);
       const issues = parsed.issues.length || !needsRevision ? parsed.issues : [{ paragraphIndex: 0, sourceExcerpt: rows[0]?.sourceText ?? '', translationExcerpt: rows[0]?.translatedText ?? '', suggestion: '审核评分未达标，请重新润色本章译文。', replacementText: null, forceChange: true }];
       for (const issue of issues) {
         const paragraphIndex = resolveReviewIssueParagraphIndex(issue, rows);
         if (paragraphIndex === null) { this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章审核意见缺少可靠段落锚点，已忽略以避免错挂到其他段落。`); continue; }
         this.markSegmentIssue(taskId, { chapterId, reviewRound, severity: parsed.severity, scores: parsed.scores, suggestion: issue.suggestion, replacementText: issue.replacementText, forceChange: issue.forceChange || parsed.score < 80, resolved: false, resolution: 'open', resolutionNote: null, paragraphIndex });
-        if (needsRevision) this.#repository.updateRefinedTranslationSegment(taskId, chapterId, paragraphIndex, rows[paragraphIndex]?.translatedText ?? null, 'pending');
       }
       this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound, reviewScore: parsed.score, status: needsRevision ? 'pending' : 'reviewed' });
       this.#checkpoint(taskId, 'reviewing', { chapterId, input: { reviewRound }, output: { score: parsed.score, needsRevision, issueCount: issues.length } });

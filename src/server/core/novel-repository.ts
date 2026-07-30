@@ -589,7 +589,7 @@ interface KnowledgeGraphChunkRow {
 // ── 精翻工作区（与小说级粗翻完全隔离） ──
 
 export type RefinedTranslationTaskStatus = 'draft' | 'paused' | 'running' | 'completed' | 'needs_attention' | 'deleted';
-export type RefinedTranslationStage = 'glossary_setup' | 'glossary_translation' | 'translating' | 'checking' | 'reviewing' | 'completed';
+export type RefinedTranslationStage = 'glossary_setup' | 'glossary_translation' | 'translating' | 'checking' | 'reviewing' | 'revising' | 'completed';
 export type RefinedTranslationSegmentStatus = 'pending' | 'translated' | 'skipped' | 'failed';
 export type RefinedTranslationChapterStatus = RefinedTranslationSegmentStatus | 'reviewed' | 'needs_attention';
 export type RefinedTranslationTermStatus = 'pending' | 'confirmed' | 'excluded';

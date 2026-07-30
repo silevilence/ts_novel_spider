@@ -95,6 +95,7 @@ const STAGE_LABEL: Record<string, string> = {
   translating: '正文初翻',
   checking: '遗漏检查',
   reviewing: '审核校对',
+  revising: '审核修订',
   completed: '已完成',
 };
 

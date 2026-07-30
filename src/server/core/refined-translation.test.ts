@@ -270,17 +270,18 @@ test('refined translation LangGraph pauses only for glossary confirmation then c
   }
 });
 
-test('refined translation gives the translation agent review feedback before automatic re-review', async () => {
+test('refined translation revises only review-linked segments in a dedicated agent node', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-revision-'));
   const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
   try {
     repository.createRefinedTranslationTask({
       id: 'task-auto-revision', sourceId: 'syosetu', novelId: 'n1', name: '自动修订', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
       modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'model' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'model' }, concurrency: 1, maxReviewRounds: 2 },
-      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文一', paragraphs: ['原文一'] }], terms: [],
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文一\n\n原文二', paragraphs: ['原文一', '原文二'] }], terms: [],
     });
     repository.updateRefinedTranslationTask('task-auto-revision', { stage: 'translating', status: 'paused' });
     let revisionPrompt = '';
+    const initialTranslationPrompts: string[] = [];
     const service = new RefinedTranslationService(
       repository,
       new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
@@ -288,25 +289,34 @@ test('refined translation gives the translation agent review feedback before aut
       async (_preferences, _route, system, prompt) => {
         if (system.includes('审核文学翻译')) return prompt.includes('按审核意见修订的译文')
           ? '{"score":92,"severity":"low","issues":[],"scores":{"fluency":92,"consistency":92,"termAccuracy":92,"format":92}}'
-          : '{"score":65,"severity":"medium","issues":[{"paragraphIndex":0,"sourceExcerpt":"原文一","translationExcerpt":"初始译文","suggestion":"将语气改得更自然。","replacementText":"按审核意见修订的译文","forceChange":true}],"scores":{"fluency":65}}';
-        if (system.includes('审核修订')) {
+          : '{"score":65,"severity":"medium","issues":[{"paragraphIndex":0,"sourceExcerpt":"原文一","translationExcerpt":"初始译文一","suggestion":"将语气改得更自然。","replacementText":"按审核意见修订的译文","forceChange":true}],"scores":{"fluency":65}}';
+        if (system.includes('审核修订 Agent')) {
           revisionPrompt = `${system}\n${prompt}`;
-          const reviewId = system.match(/reviewId=([^；\n]+)/u)?.[1] ?? '';
+          const reviewId = prompt.match(/reviewId=([^；\n]+)/u)?.[1] ?? '';
           return `{"translatedText":"按审核意见修订的译文","reviewFeedback":[{"reviewId":"${reviewId}","decision":"accepted","reason":"已采用建议并调整语气。"}]}`;
         }
-        return '初始译文';
+        if (system.includes('你是专业文学译者')) {
+          initialTranslationPrompts.push(prompt);
+          return prompt === '原文一' ? '初始译文一' : '不应改动的译文二';
+        }
+        return '初始译文一';
       },
     );
 
     service.resume('task-auto-revision');
     await waitFor(() => repository.getRefinedTranslationTask('task-auto-revision')?.status === 'completed');
     assert.match(revisionPrompt, /将语气改得更自然/);
-    assert.match(revisionPrompt, /当前译文：初始译文/);
+    assert.match(revisionPrompt, /当前段译文：初始译文一/);
+    assert.doesNotMatch(revisionPrompt, /原文二/);
+    assert.deepEqual(initialTranslationPrompts, ['原文一', '原文二']);
     assert.equal(repository.listRefinedTranslationSegments('task-auto-revision', 'c1')[0]?.translatedText, '按审核意见修订的译文');
+    assert.equal(repository.listRefinedTranslationSegments('task-auto-revision', 'c1')[1]?.translatedText, '不应改动的译文二');
     assert.equal(repository.listRefinedTranslationReviews('task-auto-revision', 'c1')[0]?.replacementText, '按审核意见修订的译文');
     assert.equal(repository.listRefinedTranslationReviews('task-auto-revision', 'c1')[0]?.resolution, 'accepted');
     assert.equal(repository.listRefinedTranslationReviews('task-auto-revision', 'c1')[0]?.resolutionNote, '已采用建议并调整语气。');
     assert.equal(repository.getRefinedTranslationChapter('task-auto-revision', 'c1')?.reviewRound, 2);
+    assert.ok(repository.listRefinedTranslationTransitions('task-auto-revision').some((item) => item.fromStage === 'reviewing' && item.toStage === 'revising'));
+    assert.ok(repository.listRefinedTranslationTransitions('task-auto-revision').some((item) => item.fromStage === 'revising' && item.toStage === 'checking'));
   } finally {
     repository.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
