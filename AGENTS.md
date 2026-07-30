@@ -39,9 +39,14 @@
 │   │   │       ├── syosetu-spider-adapter.ts      # Syosetu（继承 Syosetu18）
 │   │   │       ├── syosetu-spider-adapter.test.ts # 爬虫适配器测试
 │   │   │       └── mock-html-spider-adapter.ts    # 测试用 Mock
-│   │   ├── core/                  # 核心逻辑：爬虫调度、SQLite ORM、导出引擎、网络代理、系统偏好、知识图谱、翻译流水线、定时更新调度、OPDS 编译
+│   │   ├── core/                  # 核心逻辑：爬虫调度、SQLite ORM、导出引擎、网络代理、系统偏好、知识图谱、翻译流水线、精翻工作区、定时更新调度、OPDS 编译
+│   │   │   ├── refined-translation.ts        # 精翻工作区服务（任务/术语/审核生命周期）
+│   │   │   ├── refined-translation-tools.ts   # 精翻 Agent 工具表面（AI SDK ToolSet）
+│   │   │   ├── refined-translation.test.ts    # 精翻工作区测试
+│   │   │   ├── library-intelligence-rag.ts    # GraphRAG 检索（摘要召回 + 证据下钻）
 │   │   │   ├── scheduling-summary.ts # 更新总结服务（AI 摘要生成）
 │   │   ├── routes/
+│   │   │   ├── refined-translation.ts       # 精翻工作区 API
 │   │   │   ├── control-center.ts       # 管控 API（含 OPDS 偏好/运行记录）
 │   │   │   ├── library.ts              # 书库 API（含 OPDS 可见性管理）
 │   │   │   ├── opds.ts                 # OPDS 协议路由（v1/v2 Feed + 制品下载）
@@ -51,7 +56,9 @@
 │   │   ├── app.ts                 # createServerApp()，挂载路由与静态资源
 │   │   └── index.ts               # HTTP 监听入口
 │   └── web/                       # 前端 React 工程（Mantine v7 + Vite 构建）
-│       ├── components/            # UI 组件：控制台、书库列表/详情/阅读器、监控大盘、系统偏好面板、翻译面板、Cron 编辑器、定时更新面板、OPDS 面板
+│       ├── components/            # UI 组件：控制台、书库列表/详情/阅读器、监控大盘、系统偏好面板、翻译面板、精翻工作区、Cron 编辑器、定时更新面板、OPDS 面板
+│       │   ├── refined-translation-workspace.tsx  # 精翻工作区面板
+│       │   ├── refined-translation-task-panel.tsx  # 精翻任务详情与状态机流程图
 │       │   ├── opds-dashboard.tsx       # OPDS 书源管理面板
 │       │   ├── opds-dashboard.test.ts   # OPDS 面板测试
 │       │   ├── scheduling-dashboard.tsx # 定时更新管理面板
@@ -63,7 +70,7 @@
 │       │   └── ...
 │       ├── theme.ts               # Mantine 主题定义（暖色纸质暗调）
 │       ├── styles.css             # 全局样式
-│       ├── App.tsx                # 路由配置入口（含 OPDS、定时更新路由）
+│       ├── App.tsx                # 路由配置入口（含精翻工作区、OPDS、定时更新路由）
 │       └── vite.config.ts
 ├── scripts/ci/                    # CI 发布准备脚本
 ├── docs/                          # UX 设计规范与开发备忘
@@ -136,6 +143,10 @@
 - 构建过程可暂停/恢复，状态持久化至 SQLite。每个小说可独立配置抽取模型池与并发数。
 - LLM 提取失败时不再回退到本地启发式规则（已移除 `extractChunkHeuristically` 调用路径），失败片段标记 `status='failed'`，可通过 `POST .../graph/retry-failed` 端点单独重试。
 - `knowledge_graph_build_checkpoints` 表有 `status` 字段（`'success' | 'failed'`），构建入口强制要求至少配置一个提取模型。
+- AI 伴读采用 GraphRAG 两阶段检索：先按图谱摘要资产（子图 `subgraph`、章节簇 `chapter_cluster`、社区 `community` 三类）定位相关区域，再下钻证据片段。检索意图自动分类为局部（`local`，优先当前章节 + 子图）与全局（`global`，优先社区 + 章节簇摘要）。
+- 摘要资产存储在 `knowledge_graph_summaries` 表，含稳定键、源指纹与向量嵌入；检索时按得分排序后组装两阶段上下文（摘要召回 → 证据下钻）。
+- 图谱遍历支持实体对齐 + 1~2 跳邻域扩展，返回带评分的路径与章节证据回溯。
+- 前端伴读面板展示检索模式（局部/全局 GraphRAG）、摘要入口与下钻证据、实体对齐与多跳路径、命中子图等追踪信息。
 - AI 伴读采用混合检索：元数据 + 图谱子图 + 章节块（关键词评分 + 向量余弦相似度 + 可选重排序）。
 - OpenAI 兼容接口需确保 base URL 包含 `/v1` 路径（若原始 URL 无 path 则自动补齐）。
 - 支持将本地图谱数据同步至 Neo4j 图数据库（`POST .../graph/sync-neo4j`），用于与外部工具联动分析。
@@ -165,6 +176,21 @@
 - 翻译调度使用 `processUnits` 单元式迭代，按顺序依次处理：小说元数据（书名+简介）→ 各卷标题 → 各真实章节。进度百分比计算：启动时传递 `totalChapterCount`（`downloadedChapters.length`）作为分母，运行中所有 `progressPercent` 计算必须以 `totalChapterCount` 为分母，**不得**使用 `chapterIds.length`（剩余章节数）。恢复翻译时历史已译章节数计入分子，分母永远是总章节数。
 - 导出引擎（`export-engine.ts`）支持三种翻译导出模式：`original`（原文）、`translated`（纯译文）、`bilingual`（双语对照），通过 `?mode=` 查询参数控制。
 - 翻译相关测试集中在 `src/server/core/translation.test.ts`，应使用 SQLite 内存数据库，**不得**依赖真实 LLM 调用。
+
+### 4.10.1 精翻工作区：RefinedTranslationService
+
+- `RefinedTranslationService`（`src/server/core/refined-translation.ts`）管理精翻任务的全生命周期：创建、术语提取/翻译、正文初翻、遗漏检查、审核校对、审核修订、导出、回收站。
+- 精翻任务与书库粗翻（`TranslationService`）**彼此独立**：每本小说可创建独立精翻任务，自动快照原文与术语候选，不修改书库原始数据。
+- 六阶段流水线：`glossary_setup`（术语确认）→ `glossary_translation`（术语翻译）→ `translating`（正文初翻）→ `checking`（遗漏检查）→ `reviewing`（审核校对）→ `revising`（审核修订）→ `completed`。各阶段可暂停/继续/下一步骤，失败段落可重试。
+- 任务数据持久化至 SQLite（`refined_translation_tasks`、`refined_translation_chapters`、`refined_translation_segments`、`refined_translation_terms`、`refined_translation_reviews`、`refined_translation_logs`、`refined_translation_transitions`、`refined_translation_checkpoints` 表）。
+- **工具表面**：`createRefinedTranslationTools(service, scope)`（`src/server/core/refined-translation-tools.ts`）返回 AI SDK `ToolSet`，通过 `scope` 绑定 `taskId`、`chapterIds` 白名单、`writable` 标志，防止 Agent 越权访问其他任务或章节。写入工具在章节聊天编辑路径启用 `needsApproval`，产出待用户确认的提案。
+- **工具代理**：`runRefinedTranslationToolAgent`（`src/server/core/translation/nodes/translate-node.ts`）使用 AI SDK `generateText` + `stepCountIs(8)` 限步运行工具调用循环，`prepareStep` 强制首步读取任务物料。所有 6 个接入点（术语提取/筛选/翻译、正文初翻、审核修订、章节审核）均通过 `#tryRunToolAgent` 优先尝试工具代理，失败时回退到确定性 `#generateText` 工作流。
+- **章节 Agent**：`chatAboutChapter` 支持只读（`read`）与编辑（`edit_review` / `edit_skip_review`）两种模式；编辑模式下 Agent 产出的修改需用户通过 `applyChapterAgentEdits` 确认后才写入任务。
+- **审核修订 Agent**：仅修订与审核意见关联的段落，禁止重翻整章、禁止改动章节标题或其他段落。审核意见可接受（`accepted`）、部分接受（`partially_accepted`）、拒绝（`rejected`）、忽略（`ignored`）或重新打开（`open`）。
+- **导出**：支持 EPUB、Markdown、TXT 三种格式，可选原文（`original`）、纯译文（`translated`）、双语对照（`bilingual`）三种模式，可选全部章节或仅已完成章节。
+- **回收站**：删除的任务进入回收站，可恢复或永久清理（`purge`）；永久清理会移除原文快照、译文、术语、审核记录与操作日志。
+- 精翻相关测试在 `src/server/core/refined-translation.test.ts`，应使用 SQLite 内存数据库，**不得**依赖真实 LLM 调用。
+- 新增精翻相关代码需同步更新 `novel-repository.ts` 中的精翻表结构与迁移逻辑。
 
 ### 4.11 定时更新调度：SchedulingService
 
@@ -286,6 +312,36 @@
 | GET | `/opds/v2` | OPDS 2.0 根目录 Feed（JSON-LD） |
 | GET | `/opds/v2/:sourceId/:novelId` | OPDS 2.0 单书 Publication |
 | GET | `/opds/artifacts/:sourceId/:novelId/:fileName` | 下载 EPUB 制品（original/translated/bilingual） |
+| GET | `/api/refined-translations/tasks` | 精翻任务列表（支持 `?recycleBin=true`） |
+| POST | `/api/refined-translations/tasks` | 创建精翻任务 |
+| GET | `/api/refined-translations/tasks/:taskId` | 精翻任务详情 |
+| PUT | `/api/refined-translations/tasks/:taskId` | 更新精翻任务配置 |
+| GET | `/api/refined-translations/tasks/:taskId/stream` | SSE：精翻任务实时更新流 |
+| GET | `/api/refined-translations/tasks/:taskId/chapters/:chapterId` | 精翻章节快照 |
+| PUT | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/segments/:paragraphIndex` | 写入段落译文 |
+| PUT | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/title` | 更新章节标题译文 |
+| GET | `/api/refined-translations/tasks/:taskId/terms` | 精翻任务术语列表 |
+| POST | `/api/refined-translations/tasks/:taskId/terms/extract` | AI 提取术语候选 |
+| POST | `/api/refined-translations/tasks/:taskId/terms` | 创建术语条目 |
+| PUT | `/api/refined-translations/tasks/:taskId/terms/:termId` | 更新术语条目 |
+| DELETE | `/api/refined-translations/tasks/:taskId/terms/:termId` | 删除术语条目 |
+| POST | `/api/refined-translations/tasks/:taskId/terms/bulk-status` | 批量更新术语状态 |
+| POST | `/api/refined-translations/tasks/:taskId/terms/:termId/agent-suggestion` | 术语 AI 修订建议 |
+| POST | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/segments/:paragraphIndex/agent-suggestion` | 段落 AI 修订建议 |
+| POST | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/agent-chat` | 章节 Agent 对话 |
+| POST | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/agent-edits/approve` | 确认章节 Agent 修改提案 |
+| GET | `/api/refined-translations/tasks/:taskId/reviews` | 审核意见列表 |
+| POST | `/api/refined-translations/tasks/:taskId/reviews` | 创建审核意见 |
+| PUT | `/api/refined-translations/tasks/:taskId/reviews/:reviewId` | 处理审核意见（接受/拒绝/忽略） |
+| POST | `/api/refined-translations/tasks/:taskId/advance` | 推进到下一步骤 |
+| POST | `/api/refined-translations/tasks/:taskId/pause` | 暂停精翻任务 |
+| POST | `/api/refined-translations/tasks/:taskId/resume` | 继续精翻任务 |
+| POST | `/api/refined-translations/tasks/:taskId/retry-failed` | 重试失败段落 |
+| DELETE | `/api/refined-translations/tasks/:taskId` | 删除任务（移入回收站） |
+| POST | `/api/refined-translations/tasks/:taskId/restore` | 从回收站恢复任务 |
+| GET | `/api/refined-translations/tasks/:taskId/purge-status` | 查询永久删除状态 |
+| DELETE | `/api/refined-translations/tasks/:taskId/purge` | 永久删除任务 |
+| GET | `/api/refined-translations/tasks/:taskId/export/:format` | 导出精翻结果（epub/markdown/txt，`?mode=` 控制原文/译文/双语） |
 ## 6. 编码规范 (Coding Standards)
 
 1. **类型安全**：禁止使用 `any`。API 响应、数据库模型、爬虫中间态数据必须定义 `interface` 或 `type`。
@@ -313,7 +369,7 @@
 
 - **新增爬虫**：在 `src/server/adapters/spider/` 下创建适配器文件，继承 `BaseHtmlSpiderAdapter`，并在 `ControlCenterService` 注册表中追加，同时补充测试。
 - **前端组件**：默认使用 React Hooks + Mantine v7 组件库，通过 `src/web/services/api.ts` 调用后端接口。视觉风格遵循 `theme.ts` 中定义的暖色纸质暗调（`warmPaperDark`）。全局通知统一使用 `@mantine/notifications`（`notifications.show()`），不得自行实现通知中心组件。组件交互模式遵循：加载状态 → 草稿态编辑 → 验证反馈（✅/❌ 标识）→ 保存并通知。
-- **前端路由**：六个主路由定义在 `src/web/services/app-routes.ts`（采集工作台 `/`、本地书库 `/library`、任务大盘 `/monitor`、定时更新 `/scheduling`、OPDS 书源 `/opds-dashboard`、全局设置 `/settings`）。书库模块由 `LibraryWorkspace` 壳层按子路由分发到 `LibraryListView` / `LibraryDetailView` / `LibraryReaderView`。
+- **前端路由**：七个主路由定义在 `src/web/services/app-routes.ts`（采集工作台 `/`、本地书库 `/library`、精翻工作区 `/refined-translation`、任务大盘 `/monitor`、定时更新 `/scheduling`、OPDS 书源 `/opds-dashboard`、全局设置 `/settings`）。书库模块由 `LibraryWorkspace` 壳层按子路由分发到 `LibraryListView` / `LibraryDetailView` / `LibraryReaderView`。
 - **网络请求**：爬虫 HTTP 请求默认带完整 Headers，并经由 `createProxyAwareHtmlFetcher` 发出。
 - **知识图谱与 AI 伴读**：相关功能为实验性，未经用户明确要求不得主动启用。新增图谱相关代码时需同步更新 `novel-repository.ts` 中的表结构与迁移逻辑。构建入口强制要求至少配置一个提取模型（无模型时直接拒绝并给出清晰提示）。LLM 失败不再回退本地规则，改为标记失败 + 重试。图谱构建测试应使用 SQLite 内存数据库，不得依赖真实 Neo4j 或 LLM 调用。
 - **模型网关**：新增 AI 功能需通过 `resolveCapabilityRoute` / `resolveExtractionRoutes` 获取模型路由，不得硬编码模型选择。网关配置变更需同步更新 `system-preferences.ts` 中的 `LlmModelGatewayConfig` 类型与持久化逻辑。
@@ -322,6 +378,7 @@
 - **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义（使用 `Annotation.Root()` API）以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。从知识图谱实体导入术语（`importGraphEntitiesToTerms`）需要校验目标小说存在且术语表已就绪。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
 - **定时更新调度**：新增调度相关代码需同步更新 `novel-repository.ts` 中的 `scheduled_novels`、`scheduled_check_runs` 表结构与迁移逻辑。调度测试使用 `scheduling.test.ts`，应使用 SQLite 内存数据库。前端 `CronEditor` 组件（`cron-editor.tsx`）使用 `cron-parser` 做表达式校验与实时预览。定时更新书单管理入口收敛至系统偏好设置页面的一个操作按钮，唤起 Modal 浮窗勾选。定时更新支持自动翻译联动（`auto_translate`）和自动总结（`auto_summarize`）。
 - **OPDS 书源服务**：新增 OPDS 相关代码需同步更新 `novel-repository.ts` 中的 `opds_visible`、`content_updated_at`、`epub_compiled_at` 列以及 `opds_compilation_runs` 表结构与迁移逻辑。OPDS 测试使用 `opds-compilation.test.ts`、`opds-feed.test.ts`、`opds.test.ts`，应使用 SQLite 内存数据库。前端 OPDS 管理面板位于 `opds-dashboard.tsx`，视图模型位于 `opds-dashboard-model.ts`。OPDS 路由挂载在 `/opds` 路径下，注意与 `/api` 路由区分。
+- **精翻工作区**：新增精翻相关代码需同步更新 `novel-repository.ts` 中的精翻表结构与迁移逻辑。精翻测试使用 `refined-translation.test.ts`，应使用 SQLite 内存数据库，不得依赖真实 LLM 调用。工具表面（`refined-translation-tools.ts`）必须通过 `scope` 绑定任务与章节作用域，不得让 Agent 自行传入 `taskId`/`chapterId`。工具代理接入点必须保留 `#generateText` 确定性回退路径。章节 Agent 编辑产出的修改必须经用户确认后才写入任务。精翻路由挂载在 `/api/refined-translations` 路径下。前端精翻工作区面板位于 `refined-translation-workspace.tsx`，任务详情与状态机流程图位于 `refined-translation-task-panel.tsx`（使用 `@xyflow/react` 渲染状态机）。
 - **移动端布局**：采集页底部操作浮窗（`control-console.tsx`）的移动端版本必须单独渲染，使用紧凑布局（`p="xs"`、`compact-xs` 按钮、`wrap="nowrap"`），不得复用桌面端大卡片。移动端浮窗只需保留「解析目录」和「下发采集」两个按钮，「全局设置」按钮仅在桌面端出现。浮窗位置使用常量公式：`MOBILE_FOOTER_HEIGHT + MOBILE_AFFIX_GAP`，与 AppShell 的 `footer={{ height: isMobile ? 56 : 0 }}` 对齐。
 - **键盘检测**：`control-console.tsx` 中的移动端键盘检测必须使用基准高度差值模型（记录 `visualViewport.height` 初始值，差值超过 140px 则判定键盘打开），并配合 `focusin`/`focusout` 事件兜底（输入框获焦点即判定键盘打开）。不得使用比例判断（如 `viewport.height < window.innerHeight * 0.78`），因为安卓浏览器中两个值可能同时变化导致检测失效。检测阈值应提取为模块级常量。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
