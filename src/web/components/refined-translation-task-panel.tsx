@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -7,6 +7,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Collapse,
   Group,
   Modal,
@@ -15,6 +16,7 @@ import {
   Progress,
   ScrollArea,
   Select,
+  SegmentedControl,
   SimpleGrid,
   Stack,
   Table,
@@ -56,7 +58,7 @@ import {
 interface PurgeStatus { canPurge: boolean; remainingDays: number; deletedAt: string | null; }
 type TaskAction = 'advance' | 'pause' | 'resume' | 'restore' | 'delete' | 'retry-failed' | 'purge';
 type ReviewResolution = 'open' | 'accepted' | 'partially_accepted' | 'rejected' | 'resolved' | 'ignored' | 'superseded';
-type Review = { id: string; chapterId: string; severity: string; suggestion: string; replacementText: string | null; paragraphIndices: number[]; scores: Record<string, number>; resolved: boolean; resolution: ReviewResolution; resolutionNote: string | null };
+type Review = { id: string; chapterId: string; reviewRound: number; severity: string; suggestion: string; replacementText: string | null; paragraphIndices: number[]; scores: Record<string, number>; forceChange: boolean; resolved: boolean; resolution: ReviewResolution; resolutionNote: string | null; createdAt: string };
 
 const STAGE_LABEL: Record<string, string> = {
   glossary_setup: '确认术语候选', glossary_translation: '确认术语译文', translating: '正文初翻', checking: '遗漏检查', reviewing: '审核校对', revising: '审核修订', completed: '已完成',
@@ -91,6 +93,7 @@ interface Props {
   onApplyReviewReplacement: (review: Review) => Promise<void>;
   onUpdateTerm: (id: string, input: Partial<RefinedTerm>) => Promise<void>;
   onBulkUpdateTerms: (termIds: string[], status: 'confirmed' | 'excluded') => Promise<void>;
+  onBulkDeleteTerms: (termIds: string[]) => Promise<void>;
   onCreateTerm: (sourceTerm: string) => Promise<void>;
   onDeleteTerm: (termId: string) => Promise<void>;
   onExtractTerms: () => Promise<void>;
@@ -122,6 +125,7 @@ export function RefinedTranslationTaskPanel(props: Props) {
   const [suggesting, setSuggesting] = useState(false);
   const [configureOpen, setConfigureOpen] = useState(false);
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [agentMode, setAgentMode] = useState<RefinedChapterAgentMode>('read');
   const [agentPrompt, setAgentPrompt] = useState('');
@@ -132,13 +136,20 @@ export function RefinedTranslationTaskPanel(props: Props) {
   const [pendingReviewJump, setPendingReviewJump] = useState<{ chapterId: string; paragraphIndex: number } | null>(null);
   const [returnToReview, setReturnToReview] = useState(false);
   const [translationFilter, setTranslationFilter] = useState<'all' | 'review_required'>('all');
+  const [metadataView, setMetadataView] = useState<'source' | 'translated'>('source');
   const [configName, setConfigName] = useState(task.name);
   const [configSourceLang, setConfigSourceLang] = useState(task.sourceLang);
   const [configTargetLang, setConfigTargetLang] = useState(task.targetLang);
   const [configConcurrency, setConfigConcurrency] = useState(String(task.modelConfig.concurrency));
   const [configRounds, setConfigRounds] = useState(String(task.modelConfig.maxReviewRounds));
   const [configModels, setConfigModels] = useState<Record<string, string>>({});
+  const [configThinking, setConfigThinking] = useState<Record<string, boolean>>({});
   const [configTranslationModels, setConfigTranslationModels] = useState<string[]>([]);
+  const [configTranslationThinking, setConfigTranslationThinking] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [autoScrollLogs, setAutoScrollLogs] = useState(true);
+  const logViewportRef = useRef<HTMLDivElement>(null);
 
   const completedSegments = detail.progress.translated + detail.progress.skipped;
   const termTypes = useMemo(() => [...new Set(terms.map((term) => term.entityType).filter((value): value is string => Boolean(value)))], [terms]);
@@ -148,7 +159,9 @@ export function RefinedTranslationTaskPanel(props: Props) {
   const currentChapterId = checkpointChapterId(latestStageCheckpoint?.state) ?? chapterId;
   const currentChapter = detail.chapters.find((chapter) => chapter.chapterId === currentChapterId);
   const selectedChapter = detail.chapters.find((chapter) => chapter.chapterId === chapterId);
-  const manualStage = task.stage === 'glossary_setup';
+  const latestLogId = detail.logs[detail.logs.length - 1]?.id ?? '';
+  const manualStage = task.stage === 'glossary_setup' || task.stage === 'glossary_translation';
+  const hasTranslatedMetadata = Boolean(task.translatedMetadata.title || task.translatedMetadata.author || task.translatedMetadata.description || task.translatedMetadata.tags.length);
   const openReviewsByParagraph = useMemo(() => {
     const grouped = new Map<number, Review[]>();
     for (const review of reviews) {
@@ -167,6 +180,11 @@ export function RefinedTranslationTaskPanel(props: Props) {
     jumpToParagraph(pendingReviewJump.paragraphIndex);
     setPendingReviewJump(null);
   }, [chapterId, segments, pendingReviewJump]);
+  useEffect(() => {
+    if (!autoScrollLogs || activeTab !== 'log') return;
+    const frame = requestAnimationFrame(() => logViewportRef.current?.scrollTo({ top: logViewportRef.current.scrollHeight, behavior: 'smooth' }));
+    return () => cancelAnimationFrame(frame);
+  }, [activeTab, autoScrollLogs, latestLogId]);
 
   const jumpToParagraph = (paragraphIndex: number) => {
     setFocusedParagraph(paragraphIndex);
@@ -213,14 +231,21 @@ export function RefinedTranslationTaskPanel(props: Props) {
     setConfigName(task.name); setConfigSourceLang(task.sourceLang); setConfigTargetLang(task.targetLang);
     setConfigConcurrency(String(task.modelConfig.concurrency)); setConfigRounds(String(task.modelConfig.maxReviewRounds));
     setConfigModels({ termExtractionModel: toKey(task.modelConfig.termExtractionModel), termTranslationModel: toKey(task.modelConfig.termTranslationModel), omissionModel: toKey(task.modelConfig.omissionModel), reviewModel: toKey(task.modelConfig.reviewModel) });
+    setConfigThinking({ termExtractionModel: task.modelConfig.termExtractionModel?.thinkingEnabled === true, termTranslationModel: task.modelConfig.termTranslationModel?.thinkingEnabled === true, omissionModel: task.modelConfig.omissionModel?.thinkingEnabled === true, reviewModel: task.modelConfig.reviewModel?.thinkingEnabled === true });
     setConfigTranslationModels((task.modelConfig.translationModels ?? []).map(toKey).filter(Boolean));
+    setConfigTranslationThinking((task.modelConfig.translationModels ?? []).some((route) => route.thinkingEnabled === true));
+    setConfigError(null);
     setConfigureOpen(true);
   };
   const saveConfiguration = async () => {
-    const toRoute = (key: string) => { const [providerId, modelId] = (configModels[key] ?? '').split('\u0000'); return providerId && modelId ? { providerId, modelId } : null; };
-    const translationModels = configTranslationModels.flatMap((key) => { const [providerId, modelId] = key.split('\u0000'); return providerId && modelId ? [{ providerId, modelId }] : []; });
-    await props.onUpdateTask({ name: configName, sourceLang: configSourceLang, targetLang: configTargetLang, modelConfig: { ...task.modelConfig, termExtractionModel: toRoute('termExtractionModel'), termTranslationModel: toRoute('termTranslationModel'), translationModels, omissionModel: toRoute('omissionModel'), reviewModel: toRoute('reviewModel'), concurrency: Math.max(1, Number(configConcurrency) || 1), maxReviewRounds: Math.max(1, Number(configRounds) || 1) } });
-    setConfigureOpen(false);
+    setConfigSaving(true); setConfigError(null);
+    try {
+      const toRoute = (key: string) => { const [providerId, modelId] = (configModels[key] ?? '').split('\u0000'); return providerId && modelId ? { providerId, modelId, ...(configThinking[key] ? { thinkingEnabled: true } : {}) } : null; };
+      const translationModels = configTranslationModels.flatMap((key) => { const [providerId, modelId] = key.split('\u0000'); return providerId && modelId ? [{ providerId, modelId, ...(configTranslationThinking ? { thinkingEnabled: true } : {}) }] : []; });
+      await props.onUpdateTask({ name: configName, sourceLang: configSourceLang, targetLang: configTargetLang, modelConfig: { ...task.modelConfig, termExtractionModel: toRoute('termExtractionModel'), termTranslationModel: toRoute('termTranslationModel'), translationModels, omissionModel: toRoute('omissionModel'), reviewModel: toRoute('reviewModel'), concurrency: Math.max(1, Number(configConcurrency) || 1), maxReviewRounds: Math.max(1, Number(configRounds) || 1) } });
+      setConfigureOpen(false);
+    } catch (error) { setConfigError(error instanceof Error ? error.message : '保存配置失败，请稍后重试。'); }
+    finally { setConfigSaving(false); }
   };
   const requestTermSuggestion = async () => {
     if (!termSuggestion || !termFeedback.trim()) return;
@@ -258,8 +283,11 @@ export function RefinedTranslationTaskPanel(props: Props) {
       <Stack gap={2}><Title order={3}>{task.name}</Title><Text size="sm" c="dimmed">{task.novelTitle} · {task.sourceLang} → {task.targetLang}</Text></Stack>
       <Group>
         {recycleBin ? <><Button color="green" variant="light" leftSection={<IconRestore size={15} />} onClick={() => void props.onAction('restore')}>恢复任务</Button>{purgeStatus?.canPurge ? <Button color="red" variant="light" leftSection={<IconTrash size={15} />} onClick={() => setPurgeConfirmOpen(true)}>永久删除</Button> : null}</> : <>
-          <Button variant="default" size="compact-sm" leftSection={task.status === 'running' ? <IconPlayerPause size={14} /> : <IconPlayerPlay size={14} />} onClick={() => void props.onAction(task.status === 'running' ? 'pause' : 'resume')}>{task.status === 'running' ? '暂停' : task.stage === 'glossary_setup' ? '启动' : '继续'}</Button>
-          {manualStage ? <Button color="yellow" size="compact-sm" rightSection={<IconArrowRight size={14} />} onClick={() => void props.onAction('advance')}>确认并进入下一步</Button> : null}
+          {task.status === 'running'
+            ? <Button variant="default" size="compact-sm" leftSection={<IconPlayerPause size={14} />} onClick={() => void props.onAction('pause')}>暂停</Button>
+            : manualStage
+              ? <Button color="yellow" size="compact-sm" rightSection={<IconArrowRight size={14} />} onClick={() => void props.onAction('advance')}>{task.stage === 'glossary_translation' ? '确认术语，开始自动流程' : '确认并进入下一步'}</Button>
+              : <Button variant="default" size="compact-sm" leftSection={<IconPlayerPlay size={14} />} onClick={() => void props.onAction('resume')}>继续</Button>}
           <Button variant="subtle" size="compact-sm" onClick={openConfiguration}>配置</Button>
           <ActionIcon color="red" variant="subtle" onClick={() => void props.onAction('delete')}><IconTrash size={17} /></ActionIcon>
         </>}
@@ -274,7 +302,21 @@ export function RefinedTranslationTaskPanel(props: Props) {
     <Tabs value={activeTab} onChange={setActiveTab}>
       <Tabs.List><Tabs.Tab value="translation" leftSection={<IconWriting size={14} />}>译文对照</Tabs.Tab><Tabs.Tab value="glossary">术语表 ({terms.length})</Tabs.Tab><Tabs.Tab value="review">审核意见（待处理 {reviews.filter((review) => review.resolution === 'open').length} / 历史 {reviews.length}）</Tabs.Tab><Tabs.Tab value="log">操作日志</Tabs.Tab></Tabs.List>
       <Tabs.Panel value="translation" pt="md"><Stack gap="md">
-        <Paper p="sm" radius="md" style={{ border: '1px solid rgba(99,212,166,.26)', background: 'rgba(18,35,28,.2)' }}><Text size="xs" fw={700} c="teal.2" tt="uppercase">任务原文元数据快照</Text><Text size="sm" fw={600} mt={4}>{task.sourceMetadata.title}</Text><Text size="xs" c="dimmed">作者：{task.sourceMetadata.author}{task.sourceMetadata.tags.length ? ` · 标签：${task.sourceMetadata.tags.join(' / ')}` : ''}</Text>{task.sourceMetadata.description ? <Text size="sm" mt="xs" style={{ whiteSpace: 'pre-wrap' }}>{task.sourceMetadata.description}</Text> : <Text size="xs" c="dimmed" mt="xs">原作品未提供简介。</Text>}</Paper>
+        <Paper p="sm" radius="md" style={{ border: '1px solid rgba(99,212,166,.26)', background: 'rgba(18,35,28,.2)' }}>
+          <Group justify="space-between" align="flex-start" wrap="wrap">
+            <Stack gap={1}><Text size="xs" fw={700} c="teal.2" tt="uppercase">任务元数据</Text><Text size="xs" c="dimmed">{task.sourceLang} → {task.targetLang}</Text></Stack>
+            <SegmentedControl size="xs" value={metadataView} onChange={(value) => setMetadataView(value as 'source' | 'translated')} data={[{ value: 'source', label: '原文' }, { value: 'translated', label: '译文' }]} />
+          </Group>
+          {metadataView === 'source' ? <>
+            <Text size="sm" fw={600} mt={8}>{task.sourceMetadata.title}</Text>
+            <Text size="xs" c="dimmed">作者：{task.sourceMetadata.author}{task.sourceMetadata.tags.length ? ` · 标签：${task.sourceMetadata.tags.join(' / ')}` : ''}</Text>
+            {task.sourceMetadata.description ? <Text size="sm" mt="xs" style={{ whiteSpace: 'pre-wrap' }}>{task.sourceMetadata.description}</Text> : <Text size="xs" c="dimmed" mt="xs">原作品未提供简介。</Text>}
+          </> : hasTranslatedMetadata ? <>
+            <Text size="sm" fw={600} mt={8}>{task.translatedMetadata.title ?? '—'}</Text>
+            <Text size="xs" c="dimmed">作者：{task.translatedMetadata.author ?? '—'}{task.translatedMetadata.tags.length ? ` · 标签：${task.translatedMetadata.tags.join(' / ')}` : ''}</Text>
+            {task.translatedMetadata.description ? <Text size="sm" mt="xs" style={{ whiteSpace: 'pre-wrap' }}>{task.translatedMetadata.description}</Text> : <Text size="xs" c="dimmed" mt="xs">该作品未提供可翻译的简介。</Text>}
+          </> : <Text size="sm" c="dimmed" mt="sm">元数据译文尚未生成；确认术语译文后，系统会在开始第一章前自动翻译标题、作者、简介和标签。</Text>}
+        </Paper>
         <Paper p="sm" radius="md" style={{ border: '1px solid rgba(168,133,96,.22)', background: 'rgba(17,12,10,.42)' }}><Text size="xs" fw={700} c="yellow" tt="uppercase">浏览与定位</Text><SimpleGrid cols={{ base: 1, md: 2 }} mt="xs"><Select label="章节" value={chapterId} onChange={(value) => value && void props.onSelectChapter(value)} data={detail.chapters.map((chapter) => ({ value: chapter.chapterId, label: `第 ${chapter.chapterIndex} 章 · ${chapter.title}` }))} /><TextInput label="跳转段落" value={paragraphJump} onChange={(event) => setParagraphJump(event.currentTarget.value)} description="段落编号显示在每个卡片左上角，例如输入 12 跳到 #12。" rightSection={<ActionIcon variant="subtle" onClick={() => { const index = Number(paragraphJump) - 1; if (Number.isInteger(index) && index >= 0) jumpToParagraph(index); }}>↵</ActionIcon>} placeholder="例如 12" /></SimpleGrid></Paper>
         <Group justify="space-between" align="flex-end"><Select label="段落筛选" value={translationFilter} onChange={(value) => setTranslationFilter(value === 'review_required' ? 'review_required' : 'all')} data={[{ value: 'all', label: `全部段落（${segments.length}）` }, { value: 'review_required', label: `仅待按审核修改（${openReviewsByParagraph.size}）` }]} /><Group>{returnToReview ? <Button size="compact-sm" variant="light" onClick={() => { setActiveTab('review'); setReturnToReview(false); }}>返回审核意见</Button> : null}<Text size="xs" c="dimmed">待修改段落会显示审核原因与可用的一键替换。</Text></Group></Group>
         <ScrollArea h="85vh">
@@ -300,7 +342,12 @@ export function RefinedTranslationTaskPanel(props: Props) {
           </Stack>
         </ScrollArea>
       </Stack></Tabs.Panel>
-      <Tabs.Panel value="glossary" pt="md"><Stack gap="sm"><SimpleGrid cols={{ base: 1, sm: 3 }}><TextInput label="搜索" value={termQuery} onChange={(event) => setTermQuery(event.currentTarget.value)} placeholder="术语、译文或 AI 建议" /><Select label="状态" value={termStatus} onChange={(value) => setTermStatus((value ?? 'all') as typeof termStatus)} data={[{ value: 'all', label: '全部状态' }, { value: 'pending', label: '待确认' }, { value: 'confirmed', label: '已确认' }, { value: 'excluded', label: '已排除' }]} /><Select label="实体类型" value={termType} onChange={(value) => setTermType(value ?? 'all')} data={[{ value: 'all', label: '全部类型' }, ...termTypes.map((type) => ({ value: type, label: type }))]} /></SimpleGrid><Group><Button size="compact-sm" color="yellow" variant="light" leftSection={<IconSparkles size={14} />} disabled={recycleBin} onClick={() => void props.onExtractTerms()}>术语 AI 提取</Button><TextInput size="xs" value={newTerm} onChange={(event) => setNewTerm(event.currentTarget.value)} placeholder="新增源术语" disabled={recycleBin} /><Button size="compact-sm" disabled={recycleBin || !newTerm.trim()} onClick={() => { void props.onCreateTerm(newTerm.trim()); setNewTerm(''); }}>新增术语</Button><Button size="compact-sm" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'confirmed')}>批量确认</Button><Button size="compact-sm" variant="default" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'excluded')}>批量排除</Button></Group><Text size="xs" c="dimmed">已确认 {detail.stepProgress.glossary.confirmed}/{detail.stepProgress.glossary.total} 条。没有候选术语时，可先用“术语 AI 提取”从任务原文中生成候选。</Text><ScrollArea h={430}><Table striped highlightOnHover><Table.Thead><Table.Tr><Table.Th><input type="checkbox" checked={filteredTerms.length > 0 && filteredTerms.every((term) => selectedTerms.includes(term.id))} onChange={(event) => setSelectedTerms(event.currentTarget.checked ? [...new Set([...selectedTerms, ...filteredTerms.map((term) => term.id)])] : selectedTerms.filter((id) => !filteredTerms.some((term) => term.id === id)))} /></Table.Th><Table.Th>原术语</Table.Th><Table.Th>译文</Table.Th><Table.Th>类型 / 优先级</Table.Th><Table.Th>AI 建议</Table.Th><Table.Th>状态</Table.Th><Table.Th>操作</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{filteredTerms.map((term) => <Table.Tr key={term.id}><Table.Td><input type="checkbox" checked={selectedTerms.includes(term.id)} onChange={(event) => setSelectedTerms((items) => event.currentTarget.checked ? [...items, term.id] : items.filter((id) => id !== term.id))} /></Table.Td><Table.Td>{term.sourceTerm}</Table.Td><Table.Td><TextInput key={`${term.id}:${term.targetTerm ?? ''}`} size="xs" defaultValue={term.targetTerm ?? ''} disabled={recycleBin} onBlur={(event) => void props.onUpdateTerm(term.id, { targetTerm: event.currentTarget.value, status: 'confirmed' })} /></Table.Td><Table.Td>{term.entityType ?? '—'} / {term.priority}</Table.Td><Table.Td><Text size="xs">{term.suggestion ?? '—'}</Text></Table.Td><Table.Td><Badge size="sm" color={term.status === 'confirmed' ? 'green' : term.status === 'excluded' ? 'gray' : 'yellow'}>{term.status === 'confirmed' ? '已确认' : term.status === 'excluded' ? '已排除' : '待确认'}</Badge></Table.Td><Table.Td><Group gap="xs"><Button size="compact-xs" variant="subtle" leftSection={<IconSparkles size={13} />} disabled={recycleBin} onClick={() => { setTermSuggestion(term); setTermFeedback(''); setTermSuggestionText(''); }}>提意见</Button><ActionIcon color="red" variant="subtle" disabled={recycleBin} onClick={() => void props.onDeleteTerm(term.id)}><IconTrash size={14} /></ActionIcon></Group></Table.Td></Table.Tr>)}</Table.Tbody></Table></ScrollArea></Stack></Tabs.Panel>
+      <Tabs.Panel value="glossary" pt="md"><Stack gap="sm">
+        <SimpleGrid cols={{ base: 1, sm: 3 }}><TextInput label="搜索" value={termQuery} onChange={(event) => setTermQuery(event.currentTarget.value)} placeholder="术语、译文或 AI 建议" /><Select label="状态" value={termStatus} onChange={(value) => setTermStatus((value ?? 'all') as typeof termStatus)} data={[{ value: 'all', label: '全部状态' }, { value: 'pending', label: '待确认' }, { value: 'confirmed', label: '已确认' }, { value: 'excluded', label: '已排除' }]} /><Select label="实体类型" value={termType} onChange={(value) => setTermType(value ?? 'all')} data={[{ value: 'all', label: '全部类型' }, ...termTypes.map((type) => ({ value: type, label: type }))]} /></SimpleGrid>
+        <Group><Button size="compact-sm" color="yellow" variant="light" leftSection={<IconSparkles size={14} />} disabled={recycleBin} onClick={() => void props.onExtractTerms()}>术语 AI 提取</Button><TextInput size="xs" value={newTerm} onChange={(event) => setNewTerm(event.currentTarget.value)} placeholder="新增源术语" disabled={recycleBin} /><Button size="compact-sm" disabled={recycleBin || !newTerm.trim()} onClick={() => { void props.onCreateTerm(newTerm.trim()); setNewTerm(''); }}>新增术语</Button><Button size="compact-sm" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'confirmed')}>批量确认</Button><Button size="compact-sm" variant="default" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'excluded')}>批量排除</Button><Button size="compact-sm" color="red" variant="light" leftSection={<IconTrash size={14} />} disabled={recycleBin || !selectedTerms.length} onClick={() => setBulkDeleteConfirmOpen(true)}>批量删除</Button></Group>
+        <Text size="xs" c="dimmed">已选 {selectedTerms.length} 条 · 已确认 {detail.stepProgress.glossary.confirmed}/{detail.stepProgress.glossary.total} 条。表头固定在滚动区域顶部。</Text>
+        <ScrollArea h={430}><Table stickyHeader striped highlightOnHover style={{ minWidth: 1050 }}><Table.Thead style={{ background: 'var(--mantine-color-body)' }}><Table.Tr><Table.Th w={46}><input type="checkbox" checked={filteredTerms.length > 0 && filteredTerms.every((term) => selectedTerms.includes(term.id))} onChange={(event) => setSelectedTerms(event.currentTarget.checked ? [...new Set([...selectedTerms, ...filteredTerms.map((term) => term.id)])] : selectedTerms.filter((id) => !filteredTerms.some((term) => term.id === id)))} /></Table.Th><Table.Th w={180}>原术语</Table.Th><Table.Th w={200}>译文</Table.Th><Table.Th w={150}>类型 / 优先级</Table.Th><Table.Th>AI 建议</Table.Th><Table.Th w={92}>状态</Table.Th><Table.Th w={150}>操作</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{filteredTerms.map((term) => <Table.Tr key={term.id}><Table.Td><input type="checkbox" checked={selectedTerms.includes(term.id)} onChange={(event) => setSelectedTerms((items) => event.currentTarget.checked ? [...items, term.id] : items.filter((id) => id !== term.id))} /></Table.Td><Table.Td>{term.sourceTerm}</Table.Td><Table.Td><TextInput key={`${term.id}:${term.targetTerm ?? ''}`} size="xs" defaultValue={term.targetTerm ?? ''} disabled={recycleBin} onBlur={(event) => void props.onUpdateTerm(term.id, { targetTerm: event.currentTarget.value, status: 'confirmed' })} /></Table.Td><Table.Td>{term.entityType ?? '—'} / {term.priority}</Table.Td><Table.Td><Text size="xs">{term.suggestion ?? '—'}</Text></Table.Td><Table.Td><Badge size="sm" style={{ minWidth: 64, whiteSpace: 'nowrap' }} color={term.status === 'confirmed' ? 'green' : term.status === 'excluded' ? 'gray' : 'yellow'}>{term.status === 'confirmed' ? '已确认' : term.status === 'excluded' ? '已排除' : '待确认'}</Badge></Table.Td><Table.Td><Group gap="xs" wrap="nowrap"><Button size="compact-xs" variant="subtle" leftSection={<IconSparkles size={13} />} disabled={recycleBin} onClick={() => { setTermSuggestion(term); setTermFeedback(''); setTermSuggestionText(''); }}>提意见</Button><ActionIcon color="red" variant="subtle" disabled={recycleBin} onClick={() => void props.onDeleteTerm(term.id)}><IconTrash size={14} /></ActionIcon></Group></Table.Td></Table.Tr>)}</Table.Tbody></Table></ScrollArea>
+      </Stack></Tabs.Panel>
       <Tabs.Panel value="review" pt="md"><Stack gap="xs">{(() => {
         const openReviews = reviews.filter((review) => review.resolution === 'open');
         const historicalReviews = reviews.filter((review) => review.resolution !== 'open');
@@ -310,22 +357,23 @@ export function RefinedTranslationTaskPanel(props: Props) {
           <ScrollArea h="85vh" type="auto"><Stack gap="xs" pr="xs">{visibleReviews.length ? visibleReviews.map((review) => {
             const resolution = reviewResolutionMeta(review);
             return <Paper key={review.id} p="sm" radius="sm" style={{ borderLeft: `3px solid ${review.resolution === 'superseded' ? '#7d8792' : review.resolved ? '#63d4a6' : '#ff8c69'}`, opacity: review.resolution === 'superseded' ? .62 : 1 }}>
-              <Group justify="space-between"><Badge color={resolution.color}>{resolution.label}</Badge>{reviewResolutionActions(review)}</Group>
+              <Group justify="space-between" align="flex-start"><Group gap="xs" wrap="wrap"><Badge color={resolution.color}>{resolution.label}</Badge><Badge color={review.severity.toLowerCase() === 'high' ? 'red' : review.severity.toLowerCase() === 'medium' ? 'yellow' : 'gray'}>级别：{review.severity}</Badge><Badge variant="outline" color={review.forceChange ? 'red' : 'gray'}>{review.forceChange ? '强制修订' : '非强制'}</Badge><Badge variant="light" color="blue">第 {detail.chapters.find((chapter) => chapter.chapterId === review.chapterId)?.chapterIndex ?? '？'} 章</Badge><Badge variant="light" color="violet">第 {review.reviewRound} 轮</Badge></Group>{reviewResolutionActions(review)}</Group>
               <Text size="sm" mt="xs">{review.suggestion}</Text>
               {review.resolutionNote ? <Text size="xs" c="dimmed" mt={4}>处理反馈：{review.resolutionNote}</Text> : null}
               {review.replacementText && review.paragraphIndices.length === 1 ? <Paper p="xs" mt="xs" radius="sm" style={{ background: 'rgba(255,255,255,.04)' }}><Text size="xs" c="dimmed">结构化替换文本</Text><Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{review.replacementText}</Text>{review.resolution === 'open' ? <Button size="compact-xs" mt="xs" disabled={recycleBin || task.status === 'running'} onClick={() => void applyReviewReplacement(review)}>接受并替换该段</Button> : null}</Paper> : null}
               <Group gap="xs" mt="xs">{review.paragraphIndices.length ? review.paragraphIndices.map((index) => <Button key={index} size="compact-xs" variant="light" onClick={() => void jumpToReview({ ...review, paragraphIndices: [index] })}>跳转 # {index + 1}</Button>) : <Text size="xs" c="dimmed">全章意见</Text>}</Group>
-              <Text size="xs" c="dimmed">{Object.entries(review.scores).map(([key, value]) => `${key} ${value}`).join(' / ')}</Text>
+              <Text size="xs" c="dimmed">{Object.entries(review.scores).map(([key, value]) => `${key} ${value}`).join(' / ') || '未提供分项评分'} · 提出于 {new Date(review.createdAt).toLocaleString()}</Text>
             </Paper>;
           }) : <Text c="dimmed" ta="center" py="xl">{showHistoricalReviews ? '暂无审核意见。' : '当前没有待处理的审核意见。'}</Text>}</Stack></ScrollArea>
         </>;
       })()}</Stack></Tabs.Panel>
-      <Tabs.Panel value="log" pt="md"><ScrollArea h="85vh" type="auto"><Stack gap="xs" pr="xs">{detail.logs.map((log) => <Paper key={log.id} p="xs" radius="sm"><Text size="sm">{log.message}</Text><Text size="xs" c="dimmed">{new Date(log.createdAt).toLocaleString()}</Text></Paper>)}</Stack></ScrollArea></Tabs.Panel>
+      <Tabs.Panel value="log" pt="md"><Stack gap="xs"><Group justify="space-between"><Text size="xs" c="dimmed">共 {detail.logs.length} 条操作记录</Text><Checkbox size="xs" checked={autoScrollLogs} onChange={(event) => setAutoScrollLogs(event.currentTarget.checked)} label="新日志自动滚到底部" /></Group><ScrollArea h="85vh" type="auto" viewportRef={logViewportRef}><Stack gap="xs" pr="xs">{detail.logs.map((log) => <Paper key={log.id} p="xs" radius="sm"><Text size="sm">{log.message}</Text><Text size="xs" c="dimmed">{new Date(log.createdAt).toLocaleString()}</Text></Paper>)}</Stack></ScrollArea></Stack></Tabs.Panel>
     </Tabs>
     <Affix position={{ bottom: 28, right: 28 }}><Button size="md" radius="xl" leftSection={<IconMessageChatbot size={18} />} onClick={() => setAgentOpen(true)}>章节 Agent</Button></Affix>
     <Modal opened={agentOpen} onClose={() => setAgentOpen(false)} title="章节 Agent 对话" size="lg" centered><Stack gap="sm"><Paper p="sm" radius="sm" style={{ background: 'rgba(255,209,102,.08)' }}><Text size="sm" fw={600}>{currentChapter ? `第 ${currentChapter.chapterIndex} 章 · ${currentChapter.title}` : '未选择章节'}</Text><Text size="xs" c="dimmed">每次提问都会携带 task_id、chapter_id 以及可用的段落定位工具。{focusedParagraph !== null ? `当前已附带段落 #${focusedParagraph + 1}。` : '点击译文卡片的 # 编号，可额外附带该段。'}</Text></Paper><Select label="对话模式" value={agentMode} onChange={(value) => { setAgentMode((value ?? 'read') as RefinedChapterAgentMode); setPendingProposal(null); }} data={recycleBin ? [{ value: 'read', label: '只读：仅分析与回答' }] : [{ value: 'read', label: '只读：仅分析与回答' }, { value: 'edit_review', label: '可编辑：生成提案，确认后自动审核（推荐）' }, { value: 'edit_skip_review', label: '可编辑：生成提案，确认后跳过审核' }]} /><Text size="xs" c={agentMode === 'edit_skip_review' ? 'orange.3' : 'dimmed'}>{agentMode === 'read' ? '只读模式不会向 Agent 提供写入能力。' : agentMode === 'edit_review' ? 'Agent 只能生成提案；你确认后才会写入并进入审核。' : 'Agent 只能生成提案；你确认后才会写入且跳过审核，请谨慎使用。'}</Text>{pendingProposal ? <Alert color="yellow" title="Agent 修改提案等待批准"><Stack gap="xs"><Text size="sm">确认前不会更改任何译文。请逐项确认：</Text>{pendingProposal.edits.map((edit) => <Paper key={edit.paragraphIndex} p="xs" radius="sm"><Text size="xs" c="dimmed">段落 #{edit.paragraphIndex + 1}</Text><Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{edit.translatedText}</Text></Paper>)}<Group justify="flex-end"><Button size="compact-sm" variant="default" onClick={() => { setPendingProposal(null); setAgentMessages((items) => [...items, { role: 'assistant', content: '已取消该修改提案，任务译文未发生变化。' }]); }}>取消</Button><Button size="compact-sm" color={pendingProposal.mode === 'edit_skip_review' ? 'orange' : 'yellow'} loading={agentSending} onClick={() => void approveProposal()}>确认应用{pendingProposal.mode === 'edit_review' ? '并审核' : '（跳过审核）'}</Button></Group></Stack></Alert> : null}<ScrollArea h={250}><Stack gap="xs">{agentMessages.length ? agentMessages.map((message, index) => <Paper key={`${message.role}-${index}`} p="sm" radius="sm" style={{ background: message.role === 'user' ? 'rgba(255,209,102,.1)' : 'rgba(255,255,255,.045)' }}><Text size="xs" c="dimmed">{message.role === 'user' ? '你' : '章节 Agent'}</Text><Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{message.content}</Text></Paper>) : <Text size="sm" c="dimmed" py="md">可以询问本章的术语、一致性、措辞理由，或在可编辑模式下要求 Agent 生成指定段落的修改提案。</Text>}</Stack></ScrollArea><Textarea label="向章节 Agent 提问" value={agentPrompt} onChange={(event) => setAgentPrompt(event.currentTarget.value)} minRows={3} placeholder="例如：检查本章人物称谓是否一致；或：将当前段落改得更口语化。" /><Group justify="flex-end"><Button loading={agentSending} disabled={!agentPrompt.trim() || !chapterId || Boolean(pendingProposal)} leftSection={<IconSend size={15} />} onClick={() => void sendAgentMessage()}>发送</Button></Group></Stack></Modal>
     <Modal opened={termSuggestion !== null} onClose={() => setTermSuggestion(null)} title="向术语 Agent 提意见" centered><Stack><Text size="sm" c="dimmed">术语：{termSuggestion?.sourceTerm}</Text><Textarea label="修改要求" value={termFeedback} onChange={(event) => setTermFeedback(event.currentTarget.value)} minRows={3} /><Button loading={suggesting} disabled={!termFeedback.trim()} onClick={() => void requestTermSuggestion()}>生成建议</Button>{termSuggestionText ? <><Textarea label="Agent 建议" value={termSuggestionText} onChange={(event) => setTermSuggestionText(event.currentTarget.value)} minRows={3} /><Group justify="flex-end"><Button variant="default" onClick={() => setTermSuggestion(null)}>取消</Button><Button onClick={() => { if (termSuggestion) void props.onUpdateTerm(termSuggestion.id, { targetTerm: termSuggestionText, status: 'confirmed' }); setTermSuggestion(null); }}>确认采纳</Button></Group></> : null}</Stack></Modal>
-    <Modal opened={configureOpen} onClose={() => setConfigureOpen(false)} title="编辑任务配置" centered><Stack><TextInput label="任务名称" value={configName} onChange={(event) => setConfigName(event.currentTarget.value)} /><SimpleGrid cols={2}><TextInput label="源语言" value={configSourceLang} onChange={(event) => setConfigSourceLang(event.currentTarget.value)} /><TextInput label="目标语言" value={configTargetLang} onChange={(event) => setConfigTargetLang(event.currentTarget.value)} /></SimpleGrid><SimpleGrid cols={2}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Select key={key} label={label} clearable data={modelOptions} value={configModels[key] ?? null} onChange={(value) => setConfigModels((current) => ({ ...current, [key]: value ?? '' }))} />)}</SimpleGrid><MultiSelect label="正文初翻模型池" data={modelOptions} value={configTranslationModels} onChange={setConfigTranslationModels} clearable /><SimpleGrid cols={2}><TextInput label="正文并发数" value={configConcurrency} onChange={(event) => setConfigConcurrency(event.currentTarget.value)} /><TextInput label="最大审核轮次" value={configRounds} onChange={(event) => setConfigRounds(event.currentTarget.value)} /></SimpleGrid><Button onClick={() => void saveConfiguration()}>保存配置</Button></Stack></Modal>
+    <Modal opened={configureOpen} onClose={() => setConfigureOpen(false)} title="编辑任务配置" centered><Stack><TextInput label="任务名称" value={configName} onChange={(event) => setConfigName(event.currentTarget.value)} /><SimpleGrid cols={2}><TextInput label="源语言" value={configSourceLang} onChange={(event) => setConfigSourceLang(event.currentTarget.value)} /><TextInput label="目标语言" value={configTargetLang} onChange={(event) => setConfigTargetLang(event.currentTarget.value)} /></SimpleGrid><SimpleGrid cols={2}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Stack key={key} gap={4}><Select label={label} clearable data={modelOptions} value={configModels[key] ?? null} onChange={(value) => setConfigModels((current) => ({ ...current, [key]: value ?? '' }))} /><Checkbox size="xs" label="启用模型思考" checked={configThinking[key] ?? false} disabled={!configModels[key]} onChange={(event) => { const enabled = event.currentTarget.checked; setConfigThinking((current) => ({ ...current, [key]: enabled })); }} /></Stack>)}</SimpleGrid><Stack gap={4}><MultiSelect label="正文初翻模型池" data={modelOptions} value={configTranslationModels} onChange={setConfigTranslationModels} clearable /><Checkbox size="xs" label="正文初翻启用模型思考" checked={configTranslationThinking} disabled={!configTranslationModels.length} onChange={(event) => setConfigTranslationThinking(event.currentTarget.checked)} /></Stack><Text size="xs" c="dimmed">翻译和审核可对同一模型分别设置。仅为支持原生思考的模型开启。</Text>{configError ? <Alert color="red" title="配置未保存">{configError}</Alert> : null}<SimpleGrid cols={2}><TextInput label="正文并发数" value={configConcurrency} onChange={(event) => setConfigConcurrency(event.currentTarget.value)} /><TextInput label="最大审核轮次" value={configRounds} onChange={(event) => setConfigRounds(event.currentTarget.value)} /></SimpleGrid><Button loading={configSaving} onClick={() => void saveConfiguration()}>保存配置</Button></Stack></Modal>
+    <Modal opened={bulkDeleteConfirmOpen} onClose={() => setBulkDeleteConfirmOpen(false)} title="批量删除术语" centered><Stack><Text>将删除已选的 {selectedTerms.length} 条术语。此操作不能从精翻任务中恢复。</Text><Group justify="flex-end"><Button variant="default" onClick={() => setBulkDeleteConfirmOpen(false)}>取消</Button><Button color="red" onClick={() => { const termIds = selectedTerms; setBulkDeleteConfirmOpen(false); void props.onBulkDeleteTerms(termIds).then(() => setSelectedTerms((current) => current.filter((id) => !termIds.includes(id)))); }}>确认删除</Button></Group></Stack></Modal>
     <Modal opened={purgeConfirmOpen} onClose={() => setPurgeConfirmOpen(false)} title="永久删除精翻任务" centered><Stack><Text>将永久清理该任务的原文快照、译文、术语、审核记录、checkpoint 与操作日志；此操作不可恢复。</Text><Group justify="flex-end"><Button variant="default" onClick={() => setPurgeConfirmOpen(false)}>取消</Button><Button color="red" onClick={() => { setPurgeConfirmOpen(false); void props.onAction('purge'); }}>确认永久删除</Button></Group></Stack></Modal>
   </Stack>;
 }
@@ -336,7 +384,7 @@ function TaskActionGuidance({ task, termCount, reviewCount, hasRemainingAutomati
   if (task.status === 'needs_attention') return <Alert color="orange" icon={<IconAlertTriangle size={16} />} title="自动流程已结束，存在待人工复核项"><Text size="sm">翻译与审核已自动跑完；达到审核轮次上限或发生不可自动恢复的失败时，相关意见会保留到最终复核。你可以查看意见后微调，也可让 Agent 再次按全部意见修订。</Text><Group mt="sm"><Button size="compact-sm" variant="light" onClick={onShowReviews}>查看待处理审核{reviewCount ? `（${reviewCount}）` : ''}</Button><Button size="compact-sm" color="orange" leftSection={<IconRefresh size={14} />} onClick={() => void onRetry()}>让 Agent 按意见自动修订</Button></Group></Alert>;
   if (task.status === 'running') return <Alert color="blue" title={task.stage === 'glossary_setup' && !termCount ? '术语 AI 正在从原文提取候选' : '正在自动处理'}>{task.stage === 'glossary_setup' && !termCount ? '已开始术语 AI 提取；提取完成后会显示候选术语并暂停等待你的确认。' : '当前步骤会自行推进；如需人工改稿，请先暂停任务。'}</Alert>;
   if (task.stage === 'glossary_setup') return <Alert color="yellow" title={termCount ? '当前需要你处理：确认术语候选' : '当前需要你处理：生成术语候选'}><Text size="sm">{termCount ? '检查术语表后，点击“确认并进入下一步”。' : '现有粗翻术语与图谱实体均为空。请使用术语 AI 从任务原文中提取候选，然后确认。'}</Text>{!termCount ? <Button mt="sm" size="compact-sm" color="yellow" onClick={() => void onExtractTerms()}>术语 AI 提取</Button> : null}</Alert>;
-  if (task.stage === 'glossary_translation') return <Alert color="blue" title="术语译文正在自动生成">术语初译完成后会自动进入正文初翻；术语表仍可在任务完成后继续微调。</Alert>;
+  if (task.stage === 'glossary_translation') return <Alert color="yellow" title="当前需要你处理：确认术语译文"><Text size="sm">检查并确认或排除全部术语译文后，点击“确认术语，开始自动流程”。</Text></Alert>;
   if (task.stage === 'completed') return reviewCount ? <Alert color="yellow" title="自动流程已完成，等待最终复核"><Text size="sm">正文、检查与审核已自动跑完；仍有 {reviewCount} 条意见保留给最终人工复核。你可以在完成后集中处理、让章节 Agent 协助，或直接导出当前结果。</Text><Button size="compact-sm" mt="sm" variant="light" onClick={onShowReviews}>查看最终复核意见</Button></Alert> : <Alert color="green" title="任务已完成">全部章节已通过审核。你仍可手动微调、使用章节 Agent 或导出当前结果。</Alert>;
   return <Alert color="blue" title="任务已暂停">点击“继续”会从当前 checkpoint 恢复。</Alert>;
 }

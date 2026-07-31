@@ -66,6 +66,10 @@ interface ExportRenderContext {
   translatedParagraphsByChapterId: Map<string, TranslatedParagraph[]>;
   /** 翻译后的小说标题 */
   translatedNovelTitle?: string | null | undefined;
+  /** 翻译后的作者/笔名 */
+  translatedAuthor?: string | null | undefined;
+  /** 翻译后的标签 */
+  translatedTags?: string[] | undefined;
   /** 翻译后的小说简介段落 */
   translatedDescriptionParagraphs?: TranslatedParagraph[] | undefined;
   /** 卷原标题 → 卷标题译文 */
@@ -95,6 +99,10 @@ export interface ExportTranslationOptions {
   translatedParagraphsByChapterId: Map<string, TranslatedParagraph[]>;
   /** 小说标题译文（来自 __novel_meta__ 单元） */
   translatedNovelTitle?: string | null | undefined;
+  /** 作者/笔名译文 */
+  translatedAuthor?: string | null | undefined;
+  /** 标签译文 */
+  translatedTags?: string[] | undefined;
   /** 小说简介译文段落（来自 __novel_meta__ 单元） */
   translatedDescriptionParagraphs?: TranslatedParagraph[] | undefined;
   /** 卷标题译文映射：卷 ID → 译文 */
@@ -189,6 +197,8 @@ export class LocalExportEngine {
       translationMode: translation?.mode ?? 'original',
       translatedParagraphsByChapterId: translation?.translatedParagraphsByChapterId ?? new Map(),
       translatedNovelTitle: translation?.translatedNovelTitle,
+      translatedAuthor: translation?.translatedAuthor,
+      translatedTags: translation?.translatedTags,
       translatedDescriptionParagraphs: translation?.translatedDescriptionParagraphs,
       translatedVolumeTitles: translation?.translatedVolumeTitles,
       translatedChapterTitles: translation?.translatedChapterTitles,
@@ -379,7 +389,7 @@ class EpubExportStrategy implements LibraryExportStrategy {
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="bookid">${escapeXml(bookId)}</dc:identifier>
     <dc:title>${escapeXml(opfTitle)}</dc:title>
-    <dc:creator>${escapeXml(context.snapshot.metadata.author || '未知作者')}</dc:creator>
+    <dc:creator>${escapeXml(localizedText(context.snapshot.metadata.author || '未知作者', context.translatedAuthor, context.translationMode))}</dc:creator>
     <dc:description>${opfDescription}</dc:description>
     <dc:language>zh-CN</dc:language>
     <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}</meta>
@@ -414,7 +424,7 @@ function renderMarkdownDocument(context: ExportRenderContext): string {
   const lines: string[] = [
     `# ${novelTitle}`,
     '',
-    `- 作者：${context.snapshot.metadata.author || '未知作者'}`,
+    `- 作者：${localizedText(context.snapshot.metadata.author || '未知作者', context.translatedAuthor, translationMode)}`,
     `- 数据源：${context.snapshot.sourceId}`,
     `- 作品 ID：${context.snapshot.metadata.novelId}`,
     `- 已导出章节：${context.chapters.length}/${context.snapshot.metadata.chapterCount}`,
@@ -422,7 +432,7 @@ function renderMarkdownDocument(context: ExportRenderContext): string {
   ];
 
   if (context.snapshot.metadata.tags.length > 0) {
-    lines.push(`- 标签：${context.snapshot.metadata.tags.join(' / ')}`);
+    lines.push(`- 标签：${localizedTags(context.snapshot.metadata.tags, context.translatedTags, translationMode).join(' / ')}`);
   }
 
   if (context.translationMode !== 'original') {
@@ -494,7 +504,7 @@ function renderPlainTextDocument(context: ExportRenderContext): string {
 
   const lines: string[] = [
     novelTitle,
-    `作者：${context.snapshot.metadata.author || '未知作者'}`,
+    `作者：${localizedText(context.snapshot.metadata.author || '未知作者', context.translatedAuthor, translationMode)}`,
     '',
     normalizePlainParagraph(descriptionText),
     '',
@@ -547,7 +557,7 @@ function renderEpubIntro(context: ExportRenderContext): string {
   <body>
     <section>
       <h1>${escapeXml(novelTitle)}</h1>
-      <p class="meta">作者：${escapeXml(context.snapshot.metadata.author || '未知作者')}</p>
+      <p class="meta">作者：${escapeXml(localizedText(context.snapshot.metadata.author || '未知作者', context.translatedAuthor, translationMode))}</p>
       <p class="meta">数据源：${escapeXml(context.snapshot.sourceId)}</p>
       <p class="meta">作品 ID：${escapeXml(context.snapshot.metadata.novelId)}</p>
       <p class="meta">已导出章节：${context.chapters.length}/${context.snapshot.metadata.chapterCount}</p>
@@ -849,4 +859,10 @@ function formatVolumeHeading(index: number, rawTitle: string): string {
   }
 
   return `第${index}卷 ${normalizedTitle}`;
+}
+
+function localizedTags(original: string[], translated: string[] | undefined, mode: LibraryExportTranslationMode): string[] {
+  if (mode === 'original' || !translated?.length) return original;
+  if (mode === 'translated') return translated;
+  return original.map((tag, index) => translated[index] ? `${tag}【${translated[index]}】` : tag);
 }

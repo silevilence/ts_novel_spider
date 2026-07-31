@@ -30,11 +30,18 @@ test('refined translation task owns its source snapshot and supports recycle-bin
     assert.equal(repository.updateRefinedTranslationChapterTitle('task-1', 'c1', '第一章译文')?.translatedTitle, '第一章译文');
     const extraTerm = repository.createRefinedTranslationTerm('task-1', { sourceTerm: '新术语', targetTerm: null });
     assert.equal(repository.deleteRefinedTranslationTerm('task-1', extraTerm.id), true);
+    const bulkTermOne = repository.createRefinedTranslationTerm('task-1', { sourceTerm: '批量术语一', targetTerm: null });
+    const bulkTermTwo = repository.createRefinedTranslationTerm('task-1', { sourceTerm: '批量术语二', targetTerm: null });
+    assert.deepEqual(repository.deleteRefinedTranslationTerms('task-1', [bulkTermOne.id, bulkTermTwo.id, bulkTermOne.id]), [bulkTermOne.id, bulkTermTwo.id]);
+    assert.equal(repository.listRefinedTranslationTerms('task-1').length, 1);
     const saved = repository.updateRefinedTranslationSegment('task-1', 'c1', 0, '译文一', 'translated');
     assert.equal(saved?.translatedText, '译文一');
     repository.saveRefinedTranslationCheckpoint('task-1', 'translating', { chapterId: 'c1', paragraphIndex: 0 });
     assert.deepEqual(repository.getRefinedTranslationCheckpoint('task-1', 'translating')?.state, { chapterId: 'c1', paragraphIndex: 0 });
     const review = repository.createRefinedTranslationReview({ taskId: 'task-1', chapterId: 'c1', reviewRound: 1, severity: 'high', paragraphIndices: [0], scores: { fluency: 75 }, suggestion: '调整语序', forceChange: true, resolved: false, resolution: 'open' });
+    assert.equal(review.reviewRound, 1);
+    assert.equal(review.forceChange, true);
+    assert.ok(review.createdAt);
     assert.equal(repository.updateRefinedTranslationReview('task-1', review.id, 'resolved'), true);
     assert.equal(repository.listRefinedTranslationReviews('task-1', 'c1')[0]?.resolved, true);
     assert.equal(repository.markRefinedTranslationTaskDeleted('task-1')?.status, 'deleted');
@@ -66,6 +73,51 @@ test('refined translation can extract glossary candidates when the copied source
     const terms = await service.extractGlossaryCandidates('task-empty-terms');
     assert.deepEqual(terms.map((term) => term.sourceTerm), ['アリス', '王都']);
     assert.equal(terms[0]?.status, 'pending');
+  } finally {
+    repository.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('glossary setup does not re-run a tool agent for candidates that extraction already explained', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-glossary-fast-'));
+  const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  try {
+    repository.createRefinedTranslationTask({
+      id: 'task-glossary-fast', sourceId: 'syosetu', novelId: 'n1', name: '快速术语提取', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
+      modelConfig: { termExtractionModel: { providerId: 'fake', modelId: 'model' }, termTranslationModel: null, translationModels: [], omissionModel: null, reviewModel: null, concurrency: 1, maxReviewRounds: 5 },
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: 'アリス在王都使用フェロモン。', paragraphs: ['アリス在王都使用フェロモン。'] }], terms: [],
+    });
+    let toolAgentCalls = 0;
+    const result = '{"terms":[{"sourceTerm":"アリス","entityType":"character","priority":9,"suggestion":"角色名"},{"sourceTerm":"フェロモン","entityType":"concept","priority":8,"suggestion":"设定用语"}]}';
+    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => result, async () => { toolAgentCalls += 1; return { text: result, toolCallCount: 1, toolCalls: [] }; });
+
+    service.resume('task-glossary-fast');
+    await waitFor(() => repository.getRefinedTranslationTask('task-glossary-fast')?.status === 'paused');
+    assert.equal(toolAgentCalls, 0);
+    assert.equal(repository.listRefinedTranslationTerms('task-glossary-fast').length, 2);
+  } finally {
+    repository.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('glossary translation falls back when the tool agent replies with narration instead of writing the term', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-glossary-translation-'));
+  const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  try {
+    repository.createRefinedTranslationTask({
+      id: 'task-glossary-translation', sourceId: 'syosetu', novelId: 'n1', name: '术语译法', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
+      modelConfig: { termExtractionModel: null, termTranslationModel: { providerId: 'fake', modelId: 'model' }, translationModels: [], omissionModel: null, reviewModel: null, concurrency: 1, maxReviewRounds: 5 },
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: 'フェロモン', paragraphs: ['フェロモン'] }],
+      terms: [{ sourceTerm: 'フェロモン', targetTerm: null, entityType: 'concept', priority: 8, suggestion: '设定用语', status: 'confirmed' }],
+    });
+    repository.updateRefinedTranslationTask('task-glossary-translation', { stage: 'glossary_translation', status: 'paused' });
+    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => '费洛蒙', async () => ({ text: '术语「フェロモン」的译法已更新为「费洛蒙」。', toolCallCount: 1, toolCalls: [{ toolName: 'read_glossary', input: {} }] }));
+
+    service.resume('task-glossary-translation');
+    await waitFor(() => repository.getRefinedTranslationTask('task-glossary-translation')?.status === 'paused');
+    assert.equal(repository.listRefinedTranslationTerms('task-glossary-translation')[0]?.targetTerm, '费洛蒙');
   } finally {
     repository.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -240,13 +292,14 @@ test('refined translation export excludes incomplete chapters when requested', a
   }
 });
 
-test('refined translation LangGraph pauses only for glossary confirmation then completes automatically', async () => {
+test('refined translation pauses for both glossary confirmations, translates metadata, then completes automatically', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-workflow-'));
   const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
   try {
     repository.createRefinedTranslationTask({
       id: 'task-workflow', sourceId: 'syosetu', novelId: 'n1', name: '流程精翻', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
       modelConfig: { termExtractionModel: { providerId: 'fake', modelId: 'model' }, termTranslationModel: { providerId: 'fake', modelId: 'model' }, translationModels: [{ providerId: 'fake', modelId: 'model' }], omissionModel: { providerId: 'fake', modelId: 'model' }, reviewModel: { providerId: 'fake', modelId: 'model' }, concurrency: 2, maxReviewRounds: 2 },
+      sourceMetadata: { title: '测试小说', author: '作者', description: '作品简介', tags: ['奇幻'], infoPageUrl: 'https://example.test/novel' },
       chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文一\n\n原文二', paragraphs: ['原文一', '原文二'] }],
       terms: [{ sourceTerm: '主人公', targetTerm: null, entityType: 'character', priority: 2, suggestion: null }],
     });
@@ -257,6 +310,10 @@ test('refined translation LangGraph pauses only for glossary confirmation then c
       async (_preferences, _route, system) => {
         if (system.includes('评估小说术语')) return '{"status":"pending","entityType":"character","priority":8,"suggestion":"保留角色名"}';
         if (system.includes('将术语')) return '主角';
+        if (system.includes('小说标题')) return '测试小说译名';
+        if (system.includes('作者/笔名')) return '作者译名';
+        if (system.includes('小说简介')) return '作品简介译文';
+        if (system.includes('小说标签')) return '幻想';
         if (system.includes('判断原文')) return 'NO';
         if (system.includes('审核文学翻译')) return '{"score":91,"severity":"low","issues":[],"scores":{"fluency":91,"consistency":91,"termAccuracy":91,"format":91}}';
         return '测试译文';
@@ -267,10 +324,24 @@ test('refined translation LangGraph pauses only for glossary confirmation then c
     await waitFor(() => repository.getRefinedTranslationTask('task-workflow')?.status === 'paused');
     assert.equal(repository.getRefinedTranslationTask('task-workflow')?.stage, 'glossary_setup');
     service.advance('task-workflow');
-    await waitFor(() => repository.getRefinedTranslationTask('task-workflow')?.status === 'completed');
+    await waitFor(() => repository.getRefinedTranslationTask('task-workflow')?.stage === 'glossary_translation' && repository.getRefinedTranslationTask('task-workflow')?.status === 'paused');
     assert.equal(repository.listRefinedTranslationTerms('task-workflow')[0]?.targetTerm, '主角');
+    assert.throws(() => service.advance('task-workflow'), /待确认/u);
+    const term = repository.listRefinedTranslationTerms('task-workflow')[0];
+    assert.ok(term);
+    repository.updateRefinedTranslationTerm('task-workflow', term.id, { status: 'confirmed' });
+    service.advance('task-workflow');
+    await waitFor(() => repository.getRefinedTranslationTask('task-workflow')?.status === 'completed');
     assert.equal(repository.getRefinedTranslationChapter('task-workflow', 'c1')?.status, 'reviewed');
     assert.equal(repository.getRefinedTranslationChapter('task-workflow', 'c1')?.reviewScore, 91);
+    assert.deepEqual(repository.getRefinedTranslationTask('task-workflow')?.translatedMetadata, { title: '测试小说译名', author: '作者译名', description: '作品简介译文', tags: ['幻想'] });
+    const exported = await service.exportTask('task-workflow', 'markdown', 'translated', true);
+    assert.ok(exported);
+    const content = await readMarkdownArtifact(exported.filePath);
+    assert.match(content, /# 测试小说译名/);
+    assert.match(content, /作者：作者译名/);
+    assert.match(content, /标签：幻想/);
+    assert.match(content, /作品简介译文/);
     assert.ok(repository.getRefinedTranslationCheckpoint('task-workflow', 'reviewing'));
   } finally {
     repository.close();
@@ -413,13 +484,13 @@ test('updated task model configuration is used by the next model call', async ()
       chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '甲', paragraphs: ['甲'] }], terms: [],
     });
     repository.updateRefinedTranslationTask('task-config-live', { stage: 'translating', status: 'paused' });
-    const routes: string[] = [];
+    const routes: Array<{ modelId: string; thinkingEnabled?: boolean }> = [];
     let releaseFirstTranslation: (() => void) | null = null;
     const firstTranslationStarted = new Promise<void>((resolve) => { releaseFirstTranslation = resolve; });
     let waitForRelease: (() => void) | null = null;
     const allowFirstTranslation = new Promise<void>((resolve) => { waitForRelease = resolve; });
     const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, route, system) => {
-      routes.push(route.modelId);
+      routes.push({ modelId: route.modelId, thinkingEnabled: route.thinkingEnabled });
       if (route.modelId === 'old-translation') { releaseFirstTranslation?.(); await allowFirstTranslation; return '译文'; }
       if (system.includes('审核文学翻译')) return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
       return '译文';
@@ -427,12 +498,12 @@ test('updated task model configuration is used by the next model call', async ()
 
     service.resume('task-config-live');
     await firstTranslationStarted;
-    service.updateTaskConfiguration('task-config-live', { modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'new-translation' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'new-review' }, concurrency: 1, maxReviewRounds: 2 } });
+    service.updateTaskConfiguration('task-config-live', { modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'new-translation' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'new-review', thinkingEnabled: true }, concurrency: 1, maxReviewRounds: 2 } });
     waitForRelease?.();
     await waitFor(() => repository.getRefinedTranslationTask('task-config-live')?.status === 'completed');
 
-    assert.equal(routes[0], 'old-translation');
-    assert.ok(routes.includes('new-review'));
+    assert.equal(routes[0]?.modelId, 'old-translation');
+    assert.ok(routes.some((route) => route.modelId === 'new-review' && route.thinkingEnabled === true));
     assert.equal(repository.getRefinedTranslationTask('task-config-live')?.modelConfig.reviewModel?.modelId, 'new-review');
   } finally {
     repository.close();

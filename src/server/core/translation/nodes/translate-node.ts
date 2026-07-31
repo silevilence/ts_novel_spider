@@ -43,7 +43,7 @@ export function stripTranslationNumberPrefix(sourceText: string, translatedText:
 /** Lightweight task-scoped generation entry point used by the refined workspace. */
 export async function generateRefinedTranslationText(
   preferences: SystemPreferencesService,
-  route: { providerId: string; modelId: string },
+  route: { providerId: string; modelId: string; thinkingEnabled?: boolean },
   system: string,
   prompt: string,
 ): Promise<string> {
@@ -56,7 +56,7 @@ export async function generateRefinedTranslationText(
     model: createLanguageModel(provider, route.modelId),
     system,
     prompt,
-    temperature: 0.2,
+    ...(route.thinkingEnabled ? { providerOptions: refinedThinkingProviderOptions(provider) as never } : { temperature: 0.2 }),
   });
   return result.text.trim();
 }
@@ -64,7 +64,7 @@ export async function generateRefinedTranslationText(
 /** Runs a bounded, real tool-calling loop for task-scoped refined agents. */
 export async function runRefinedTranslationToolAgent(
   preferences: SystemPreferencesService,
-  route: { providerId: string; modelId: string },
+  route: { providerId: string; modelId: string; thinkingEnabled?: boolean },
   system: string,
   prompt: string,
   tools: ToolSet,
@@ -78,12 +78,14 @@ export async function runRefinedTranslationToolAgent(
     prompt,
     tools,
     stopWhen: stepCountIs(8),
-    // Every refined Agent begins by resolving its task-scoped material through
-    // the ToolSet. Later steps are free to read more material, write, or answer.
+    // Do not force toolChoice here. Some reasoning/Thinking-mode providers reject
+    // forced tool selection altogether ("Thinking mode does not support this
+    // tool_choice"), which used to make every refined-agent invocation fall back.
+    // The system prompts still require the scoped read tool before the agent acts.
     prepareStep: async ({ stepNumber }) => stepNumber === 0
-      ? { toolChoice: { type: 'tool', toolName: firstToolName } }
+      ? { system: `${system}\n开始前请先调用 ${firstToolName} 读取任务物料；不要跳过此步骤。` }
       : {},
-    temperature: 0.2,
+    ...(route.thinkingEnabled ? { providerOptions: refinedThinkingProviderOptions(provider) as never } : { temperature: 0.2 }),
   });
   return { text: result.text.trim(), toolCallCount: result.toolCalls.length, toolCalls: result.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })) };
 }
@@ -594,7 +596,7 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
         baseURL,
         ...(provider.organization ? { organization: provider.organization } : {}),
       });
-      return factory.chat(modelId);
+       return factory.chat(modelId);
     }
 
     case 'anthropic':
@@ -619,5 +621,15 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
         apiKey: provider.apiKey || 'sk-placeholder',
         baseURL: 'https://api.openai.com/v1',
       }).chat(modelId);
+  }
+}
+
+/** Provider-native thinking parameters for the optional refined-workflow switch. */
+function refinedThinkingProviderOptions(provider: LlmProviderConfig): Record<string, Record<string, unknown>> {
+  switch (provider.type) {
+    case 'openai-compatible': return { openai: { reasoningEffort: 'medium' } };
+    case 'anthropic': return { anthropic: { thinking: { type: 'enabled', budgetTokens: 2048 } } };
+    case 'google-generative-ai': return { google: { thinkingConfig: { thinkingBudget: 2048, includeThoughts: false } } };
+    case 'ollama': return { ollama: { think: true } };
   }
 }

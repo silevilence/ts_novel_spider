@@ -929,6 +929,7 @@ export class ControlCenterService {
   createRefinedTranslationTerm(taskId: string, input: Parameters<RefinedTranslationService['createTerm']>[1]) { return this.#refinedTranslation.createTerm(taskId, input); }
   updateRefinedTranslationTerm(taskId: string, termId: string, input: Parameters<RefinedTranslationService['updateTerm']>[2]) { return this.#refinedTranslation.updateTerm(taskId, termId, input); }
   deleteRefinedTranslationTerm(taskId: string, termId: string) { return this.#refinedTranslation.deleteTerm(taskId, termId); }
+  deleteRefinedTranslationTerms(taskId: string, termIds: string[]) { return this.#refinedTranslation.deleteTerms(taskId, termIds); }
   bulkUpdateRefinedTranslationTerms(taskId: string, termIds: string[], status: 'confirmed' | 'excluded') { return this.#refinedTranslation.bulkUpdateTerms(taskId, termIds, status); }
   suggestRefinedTranslationGlossaryRevision(taskId: string, termId: string, feedback: string) { return this.#refinedTranslation.suggestGlossaryRevision(taskId, termId, feedback); }
   suggestRefinedTranslationSegmentRevision(taskId: string, chapterId: string, paragraphIndex: number, feedback: string) { return this.#refinedTranslation.suggestSegmentRevision(taskId, chapterId, paragraphIndex, feedback); }
