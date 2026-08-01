@@ -308,11 +308,9 @@ export class RefinedTranslationService {
   markSegmentIssue(taskId: string, input: Omit<StoredRefinedTranslationReviewRow, 'id' | 'taskId' | 'createdAt' | 'paragraphIndices'> & { paragraphIndex: number }) { return this.writeReview(taskId, { ...input, paragraphIndices: [input.paragraphIndex] }); }
   resolveReview(taskId: string, reviewId: string, resolution: RefinedTranslationReviewResolution, resolutionNote: string | null = null) {
     if (!this.#editable(taskId)) return false;
-    const review = this.#repository.listRefinedTranslationReviews(taskId).find((item) => item.id === reviewId);
     const ok = this.#repository.updateRefinedTranslationReview(taskId, reviewId, resolution, resolutionNote);
     if (!ok) return false;
     this.#touch(taskId, resolution === 'rejected' || resolution === 'ignored' ? '已拒绝审核意见。' : resolution === 'accepted' || resolution === 'resolved' ? '已接受审核意见。' : resolution === 'partially_accepted' ? '已部分接受审核意见。' : '已重新打开审核意见。');
-    if (review && resolution !== 'open') this.#restartManualReviewIfReady(taskId, review.chapterId);
     return true;
   }
 
@@ -576,19 +574,6 @@ export class RefinedTranslationService {
     return true;
   }
   #hasFailures(taskId: string) { return this.#repository.listRefinedTranslationChapters(taskId).some((chapter) => chapter.status === 'failed' || chapter.status === 'needs_attention'); }
-  #restartManualReviewIfReady(taskId: string, chapterId: string): void {
-    const task = this.#repository.getRefinedTranslationTask(taskId);
-    const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId);
-    if (!task || !chapter || task.status !== 'needs_attention') return;
-    if (this.#repository.listRefinedTranslationReviews(taskId, chapterId).some((review) => review.resolution === 'open')) return;
-    this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound: 0, reviewScore: null, status: 'translated' });
-    this.#repository.updateRefinedTranslationTask(taskId, { stage: 'checking', status: 'running' });
-    this.#checkpoint(taskId, 'checking', { event: 'manual_review_resolved', chapterId, transitionCondition: '本章待处理审核意见均已人工处理，重新执行遗漏检查与审核' });
-    this.#repository.appendRefinedTranslationTransition({ taskId, fromStage: task.stage, toStage: 'checking', condition: '本章待处理审核意见均已人工处理，重新执行遗漏检查与审核', chapterId, reviewRound: 0 });
-    this.#touch(taskId, `第 ${chapter.chapterIndex} 章待处理审核意见已清空，正在重新检查并审核。`);
-    void this.#run(taskId);
-  }
-
   async #suggestGlossary(taskId: string, signal: AbortSignal): Promise<void> {
     const task = this.#repository.getRefinedTranslationTask(taskId); if (!task) return;
     const route = task.modelConfig.termExtractionModel ?? this.#resolveRoute(task, 'translationModels');

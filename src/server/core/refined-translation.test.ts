@@ -187,7 +187,7 @@ test('reprocessing a needs-attention chapter keeps an unprocessed review open wh
   }
 });
 
-test('resolving the final manual review restarts checking instead of leaving the task at a stale review node', async () => {
+test('resolving a final manual review never restarts automatic checking or review', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-manual-review-'));
   const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
   try {
@@ -200,11 +200,18 @@ test('resolving the final manual review restarts checking instead of leaving the
     repository.updateRefinedTranslationChapterReview('task-manual-review', 'c1', { reviewRound: 5, reviewScore: 65, status: 'needs_attention' });
     repository.updateRefinedTranslationTask('task-manual-review', { stage: 'reviewing', status: 'needs_attention' });
     const issue = repository.createRefinedTranslationReview({ taskId: 'task-manual-review', chapterId: 'c1', reviewRound: 5, severity: 'high', paragraphIndices: [0], scores: { fluency: 65 }, suggestion: '修正语气', replacementText: null, forceChange: true, resolved: false, resolution: 'open', resolutionNote: null });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system) => system.includes('审核文学翻译') ? '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}' : '译文');
+    let automaticModelCalls = 0;
+    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
+      automaticModelCalls += 1;
+      return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
+    });
     assert.equal(service.resolveReview('task-manual-review', issue.id, 'accepted', '已手动修正。'), true);
-    await waitFor(() => repository.getRefinedTranslationTask('task-manual-review')?.status === 'completed');
-    assert.equal(repository.getRefinedTranslationChapter('task-manual-review', 'c1')?.reviewRound, 1);
-    assert.ok(repository.listRefinedTranslationTransitions('task-manual-review').some((transition) => transition.toStage === 'checking' && transition.condition.includes('均已人工处理')));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(automaticModelCalls, 0);
+    assert.equal(repository.getRefinedTranslationTask('task-manual-review')?.status, 'needs_attention');
+    assert.equal(repository.getRefinedTranslationTask('task-manual-review')?.stage, 'reviewing');
+    assert.equal(repository.getRefinedTranslationChapter('task-manual-review', 'c1')?.reviewRound, 5);
+    assert.equal(repository.listRefinedTranslationTransitions('task-manual-review').some((transition) => transition.toStage === 'checking' && transition.condition.includes('均已人工处理')), false);
   } finally {
     repository.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
