@@ -20,6 +20,7 @@
 | 前端 | React 19, Mantine v7, `@emotion/react`, `@emotion/styled`, `@tabler/icons-react`, Vite 6, TypeScript strict 模式 |
 | AI / 图谱 / 翻译 | `ai` (Vercel AI SDK), `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `ai-sdk-ollama`, `@langchain/core`, `@langchain/langgraph`, `neo4j-driver`, `zod`, `jsonrepair` |
 | 导出 | `jszip`（EPUB 打包） |
+| Markdown | `react-markdown` + `remark-gfm` + `rehype-sanitize`（渲染）、`@uiw/react-md-editor`（正文编辑）、`marked`（EPUB/TXT 转换） |
 | 工程化 | `tsx` (watch + test runner), `concurrently`, Docker multi-stage build |
 
 **禁止降级**：不得将 Express 5 降回 v4；不得关闭 TypeScript strict 模式；不得将 Mantine 降回 v6 或更早版本。
@@ -57,6 +58,8 @@
 │   │   └── index.ts               # HTTP 监听入口
 │   └── web/                       # 前端 React 工程（Mantine v7 + Vite 构建）
 │       ├── components/            # UI 组件：控制台、书库列表/详情/阅读器、监控大盘、系统偏好面板、翻译面板、精翻工作区、Cron 编辑器、定时更新面板、OPDS 面板
+│       │   ├── library-history-panel.tsx  # 元数据版本历史面板（查看/还原）
+│       │   ├── manual-novel-manager.tsx   # 手动小说卷/章管理面板
 │       │   ├── refined-translation-workspace.tsx  # 精翻工作区面板
 │       │   ├── refined-translation-task-panel.tsx  # 精翻任务详情与状态机流程图
 │       │   ├── opds-dashboard.tsx       # OPDS 书源管理面板
@@ -76,6 +79,7 @@
 ├── docs/                          # UX 设计规范与开发备忘
 ├── data/
 │   ├── exports/                   # 导出文件输出目录
+│   ├── manual-assets/             # 手动小说上传素材（{novelId}/ 目录）
 │   ├── offline-assets/            # 离线图片缓存
 │   └── opds-artifacts/            # OPDS EPUB 制品目录
 ├── .data/                         # 运行时数据（SQLite、代理配置、系统偏好）— 不提交 Git
@@ -244,6 +248,27 @@
 - `SystemPreferencesService` 中的 `OpdsConfig` 定义在 `src/server/core/system-preferences.ts`，含 `enabled`、`scanCronExpression`、`updatedAt` 字段。
 - OPDS 相关测试在 `src/server/core/opds-compilation.test.ts`、`src/server/core/opds-feed.test.ts`、`src/server/routes/opds.test.ts`，应使用 SQLite 内存数据库。
 
+### 4.13 手动小说与书库管理增强：Manual Novel & Library Lifecycle
+
+- **手动小说（Manual Novel）**：`source_id = 'manual'` + `novel_id = UUIDv4`，复用现有 novels/chapters 数据表；章节 `url` 与信息页 `info_page_url` 存空字符串 `''`。无 SpiderAdapter，天然不可达于采集工作台；定时更新书单加载时过滤 `source_id = 'manual'`。
+  - API 集中在 `src/server/routes/library.ts` 的 `/api/library/novels/manual/:novelId` 前缀（元数据编辑、章节增删改、卷管理），核心逻辑在 `ControlCenterService`（`createManualLibraryNovel`、`saveManualLibraryChapterWithAssets`、`listManualLibraryVolumes` 等）。
+  - 卷表为 `manual_volumes`（novel_id + volume_title + sort_index）；未分卷章节归入隐式根卷。
+  - 正文编辑器为 `@uiw/react-md-editor`（`library-reader-view.tsx`），图片先本地预览（ObjectURL），保存时统一上传至 `data/manual-assets/{novelId}/`，正文以 `manual://{assetId}` 引用（assetId 必须匹配 36 位 UUID）。任一图片上传失败则整体不保存（保留草稿）。
+  - 手动章节 JSON 请求体可能携带 Base64 图片，`express.json({ limit: '64mb' })` 已放大（`src/server/app.ts`），不得回退。
+- **书库回收站**：软删除标记为 `novels.deleted_at`，删除时快照调度与 OPDS 状态（`deleted_scheduling_json`、`deleted_opds_visible` 列），还原时按快照恢复。自 `deleted_at` 起 15 天后可 `purge` 真删，清理章节、书签、进度、别名、图谱、翻译引用、OPDS 制品、offline-assets/manual-assets 对应目录与版本历史；精翻任务因自包含快照而保留。`GET /api/library/trash` 列出回收站。回收站独立于精翻回收站。
+- **版本历史**：`novel_metadata_versions` 与 `chapter_versions` 表（快照式、不可变，v0 起，版本号 = 变更次数）；每次「保存成功且内容不同」产生新版本；还原操作本身产生新版本。迁移时对既有数据补插 v0 快照（`INSERT OR IGNORE`，仅 `source_id <> 'manual'` 的旧数据）。
+- **元数据同步（仅抓取小说）**：`POST .../metadata-sync` 抓取远端对比（`MetadataSyncPreview`），`PUT` 提交逐字段选择结果；采纳字段写入版本历史并给对应翻译单元打「待重译」标记。
+- **章节更新（仅抓取小说）**：`POST .../chapters/:chapterId/refetch` 单章重新抓取，远端为权威：变化则替换正文与标题、写新版本、标待重译；无变化不写库；失败保持现有内容。
+- **待重译（Stale Translation）**：`TranslationService.buildTranslationUnits` 的 continue 逻辑改为比较 `sourceContentHash`——已完成但内容哈希变化的单元重新纳入翻译目标，未变化的跳过。
+- **Markdown 全局升级**：
+  - 全库章节正文统一按 Markdown 处理（抓取正文为纯文本，是合法 MD 子集）。
+  - 阅读器渲染：`react-markdown` + `remark-gfm` + `rehype-sanitize`（防 XSS），不得移除 sanitize。
+  - 导出：Markdown 原样透传；EPUB 用 `marked` 转 HTML（`renderEpubMarkdown`）；TXT 用 `markdownToPlainText` 剥标签。
+  - 翻译切分：`splitChapterParagraphs`（`segment-node.ts`）先按 `splitMarkdownBlocks` 识别 GFM 表格块，整个表格作为单个段落单元（`isTable`），不拆行；普通段仍按 2000 字符阈值二次切分。
+  - 图片提取：`MARKDOWN_IMAGE_PATTERN` 与 `normalizeMediaUrl`（`offline-library.ts`）识别 `manual://` 引用，渲染/导出/缓存管线复用现有逻辑。
+  - RAG 检索与图谱抽取保持文本层处理（不解析 MD AST），仅图片提取感知 `manual://`。
+- 相关测试：`src/server/routes/library.test.ts`、`src/server/core/export-engine.test.ts`、`src/server/core/translation.test.ts`、`src/web/services/library-view.test.ts`，应使用 SQLite 内存数据库。
+
 ## 5. API 路由速查 (API Routes)
 
 | 方法 | 路径 | 说明 |
@@ -267,6 +292,27 @@
 | GET | `/api/control/scheduling/runs` | 查询定时更新运行记录（支持 `?limit=&offset=`） |
 | GET | `/api/library/novels` | 书库列表（支持 `?q=` 搜索） |
 | GET | `/api/library/novels/:sourceId/:novelId` | 书库单本详情（含知识图谱状态） |
+| GET | `/api/library/trash` | 回收站小说列表 |
+| POST | `/api/library/manual-novels` | 创建手动小说 |
+| PUT | `/api/library/novels/manual/:novelId/metadata` | 更新手动小说元数据 |
+| POST | `/api/library/novels/manual/:novelId/chapters` | 新建手动章节（可携带 Base64 图片） |
+| PUT | `/api/library/novels/manual/:novelId/chapters/:chapterId` | 保存手动章节（可携带 Base64 图片） |
+| DELETE | `/api/library/novels/manual/:novelId/chapters/:chapterId` | 删除手动章节 |
+| PUT | `/api/library/novels/manual/:novelId/chapters/order` | 重排手动章节顺序 |
+| GET/POST | `/api/library/novels/manual/:novelId/volumes` | 手动卷列表 / 新建卷 |
+| PUT | `/api/library/novels/manual/:novelId/volumes/:title` | 重命名手动卷 |
+| DELETE | `/api/library/novels/manual/:novelId/volumes/:title` | 删除手动卷（连带删除其章节） |
+| GET | `/api/library/manual-assets/:novelId/:assetId` | 获取手动小说素材文件 |
+| POST/PUT | `/api/library/novels/:sourceId/:novelId/metadata-sync` | 预览 / 应用元数据同步（逐字段选择） |
+| POST | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId/refetch` | 单章重新抓取（远端为权威） |
+| GET | `/api/library/novels/:sourceId/:novelId/versions/metadata` | 元数据版本历史 |
+| GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId/versions` | 章节版本历史 |
+| POST | `/api/library/novels/:sourceId/:novelId/versions/metadata/:version/restore` | 还原元数据版本（产生新版本） |
+| POST | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId/versions/:version/restore` | 还原章节版本（产生新版本） |
+| POST | `/api/library/novels/:sourceId/:novelId/trash` | 移入书库回收站（软删除） |
+| POST | `/api/library/novels/:sourceId/:novelId/restore` | 从回收站还原 |
+| GET | `/api/library/novels/:sourceId/:novelId/purge-status` | 查询彻底删除状态（剩余天数） |
+| DELETE | `/api/library/novels/:sourceId/:novelId/purge` | 彻底删除（清理全部关联数据） |
 | GET | `/api/library/novels/:sourceId/:novelId/chapters/:chapterId` | 章节内容 |
 | GET | `/api/library/novels/:sourceId/:novelId/exports/:format/download` | 下载导出文件（markdown/txt/epub） |
 | GET | `/api/library/novels/:sourceId/:novelId/graph` | 获取知识图谱状态 |
@@ -379,6 +425,7 @@
 - **定时更新调度**：新增调度相关代码需同步更新 `novel-repository.ts` 中的 `scheduled_novels`、`scheduled_check_runs` 表结构与迁移逻辑。调度测试使用 `scheduling.test.ts`，应使用 SQLite 内存数据库。前端 `CronEditor` 组件（`cron-editor.tsx`）使用 `cron-parser` 做表达式校验与实时预览。定时更新书单管理入口收敛至系统偏好设置页面的一个操作按钮，唤起 Modal 浮窗勾选。定时更新支持自动翻译联动（`auto_translate`）和自动总结（`auto_summarize`）。
 - **OPDS 书源服务**：新增 OPDS 相关代码需同步更新 `novel-repository.ts` 中的 `opds_visible`、`content_updated_at`、`epub_compiled_at` 列以及 `opds_compilation_runs` 表结构与迁移逻辑。OPDS 测试使用 `opds-compilation.test.ts`、`opds-feed.test.ts`、`opds.test.ts`，应使用 SQLite 内存数据库。前端 OPDS 管理面板位于 `opds-dashboard.tsx`，视图模型位于 `opds-dashboard-model.ts`。OPDS 路由挂载在 `/opds` 路径下，注意与 `/api` 路由区分。
 - **精翻工作区**：新增精翻相关代码需同步更新 `novel-repository.ts` 中的精翻表结构与迁移逻辑。精翻测试使用 `refined-translation.test.ts`，应使用 SQLite 内存数据库，不得依赖真实 LLM 调用。工具表面（`refined-translation-tools.ts`）必须通过 `scope` 绑定任务与章节作用域，不得让 Agent 自行传入 `taskId`/`chapterId`。工具代理接入点必须保留 `#generateText` 确定性回退路径。章节 Agent 编辑产出的修改必须经用户确认后才写入任务。精翻路由挂载在 `/api/refined-translations` 路径下。前端精翻工作区面板位于 `refined-translation-workspace.tsx`，任务详情与状态机流程图位于 `refined-translation-task-panel.tsx`（使用 `@xyflow/react` 渲染状态机）。
+- **手动小说与书库生命周期**：新增手动小说/回收站/版本历史相关代码需同步更新 `novel-repository.ts` 中的表结构（`novel_metadata_versions`、`chapter_versions`、`manual_volumes`、`novels.deleted_at` 等列与迁移逻辑）。手动小说标识为 `source_id = 'manual'`，路由集中在 `/api/library/novels/manual/:novelId` 前缀；回收站独立于精翻回收站，purge 真删前必须二次确认。正文一律按 Markdown 处理：阅读器渲染必须保留 `rehype-sanitize` 防 XSS；翻译切分必须保持 GFM 表格为单个单元；EPUB 导出用 `marked` 转换。手动小说图片引用协议为 `manual://{assetId}`（36 位 UUID 校验），素材存储于 `data/manual-assets/{novelId}/`。
 - **移动端布局**：采集页底部操作浮窗（`control-console.tsx`）的移动端版本必须单独渲染，使用紧凑布局（`p="xs"`、`compact-xs` 按钮、`wrap="nowrap"`），不得复用桌面端大卡片。移动端浮窗只需保留「解析目录」和「下发采集」两个按钮，「全局设置」按钮仅在桌面端出现。浮窗位置使用常量公式：`MOBILE_FOOTER_HEIGHT + MOBILE_AFFIX_GAP`，与 AppShell 的 `footer={{ height: isMobile ? 56 : 0 }}` 对齐。
 - **键盘检测**：`control-console.tsx` 中的移动端键盘检测必须使用基准高度差值模型（记录 `visualViewport.height` 初始值，差值超过 140px 则判定键盘打开），并配合 `focusin`/`focusout` 事件兜底（输入框获焦点即判定键盘打开）。不得使用比例判断（如 `viewport.height < window.innerHeight * 0.78`），因为安卓浏览器中两个值可能同时变化导致检测失效。检测阈值应提取为模块级常量。
 - *原 Python 参考项目地址：`C:\Users\silev\Documents\GitHub\PyNovelSpider`*
