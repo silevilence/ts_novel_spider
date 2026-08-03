@@ -67,6 +67,42 @@ test('LocalExportEngine preserves chapter section dividers across export formats
   }
 });
 
+test('LocalExportEngine preserves line breaks in the EPUB introduction', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-export-intro-'));
+
+  try {
+    const engine = new LocalExportEngine({
+      outputRoot: path.join(tempDir, 'exports'),
+      assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }),
+    });
+    const snapshot: StoredNovelSnapshot = {
+      sourceId: 'manual',
+      metadata: {
+        novelId: 'manual-intro',
+        title: '换行测试',
+        author: '作者',
+        description: '第一行简介\n第二行简介',
+        tags: [],
+        chapterCount: 1,
+        infoPageUrl: '',
+      },
+      updatedAt: '2026-08-03T00:00:00.000Z',
+      chapters: [{
+        id: 'chapter-1', index: 1, title: '第一章', volumeTitle: null, url: '', content: '正文',
+        status: 'downloaded', errorMessage: null, downloadedAt: '2026-08-03T00:00:00.000Z', updatedAt: '2026-08-03T00:00:00.000Z',
+      }],
+    };
+
+    const artifact = await engine.generate(snapshot, 'epub');
+    const zip = await JSZip.loadAsync(fs.readFileSync(artifact.filePath));
+    const intro = zip.file('OEBPS/intro.xhtml');
+    assert.ok(intro);
+    assert.match(await intro.async('string'), /<p>第一行简介<br\/>第二行简介<\/p>/u);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('LocalExportEngine strips number prefix from translated paragraphs in translated and bilingual mode', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-export-prefix-'));
 

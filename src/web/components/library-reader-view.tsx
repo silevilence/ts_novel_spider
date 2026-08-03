@@ -1,10 +1,16 @@
+import { useEffect, useRef, useState } from 'react';
 import { Badge, Button, Drawer, Group, Modal, NumberInput, Paper, Progress, SegmentedControl, Slider, Stack, Text, TextInput, Title } from '@mantine/core';
+import MDEditor from '@uiw/react-md-editor';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeSanitize from 'rehype-sanitize';
 import { ChapterDirectory } from './chapter-directory';
 import { FontFamilyPicker } from './font-family-picker';
 import { ReaderFabBar } from './reader-fab-bar';
 import { TranslationProfilePanel } from './translation-profile-panel';
 import type { LibraryModel } from '../services/library-model';
-import { parseReaderContent, toLibraryDirectoryChapters } from '../services/library-view';
+import { resolveManualAssetUrls, toLibraryDirectoryChapters } from '../services/library-view';
+import { fetchLibraryChapterVersions, refetchLibraryChapter, restoreLibraryChapterVersion, saveManualLibraryChapter, type LibraryVersion } from '../services/api';
 
 interface LibraryReaderViewProps {
   model: LibraryModel;
@@ -37,13 +43,51 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
     readerTypographyDirty, setReaderTypographyDirty, isTranslationPanelOpen, setIsTranslationPanelOpen } = props;
 
   const detail = model.detail?.novel;
-  if (!detail) return null;
   const chapter = model.chapter?.chapter;
   const readerChapter = model.chapter?.chapter.chapter;
+  const [editingContent, setEditingContent] = useState(false);
+  const [contentDraft, setContentDraft] = useState('');
+  const [pendingAssets, setPendingAssets] = useState<PendingManualAsset[]>([]);
+  const [chapterHistoryOpen, setChapterHistoryOpen] = useState(false);
+  const [chapterVersions, setChapterVersions] = useState<LibraryVersion[]>([]);
+  const pendingAssetsRef = useRef<PendingManualAsset[]>([]);
+
+  const discardPendingAssets = () => {
+    setPendingAssets((current) => {
+      current.forEach((asset) => URL.revokeObjectURL(asset.objectUrl));
+      return [];
+    });
+  };
+  const closeContentEditor = () => {
+    if (readerChapter && contentDraft !== readerChapter.content && !window.confirm('有未保存的修改，确定放弃吗？')) return;
+    discardPendingAssets();
+    setEditingContent(false);
+    setContentDraft(readerChapter?.content ?? '');
+  };
+
+  useEffect(() => { pendingAssetsRef.current = pendingAssets; }, [pendingAssets]);
+  useEffect(() => () => { pendingAssetsRef.current.forEach((asset) => URL.revokeObjectURL(asset.objectUrl)); }, []);
+  useEffect(() => {
+    if (!readerChapter) return;
+    discardPendingAssets();
+    setEditingContent(false);
+    setContentDraft(readerChapter.content);
+  }, [readerChapter?.id, readerChapter?.content]);
+  useEffect(() => {
+    if (chapterHistoryOpen && detail && readerChapter) {
+      void fetchLibraryChapterVersions(detail.sourceId, detail.metadata.novelId, readerChapter.id).then(setChapterVersions).catch(() => setChapterVersions([]));
+    }
+  }, [chapterHistoryOpen, detail?.sourceId, detail?.metadata.novelId, readerChapter?.id]);
+
+  if (!detail) return null;
   if (!chapter || !readerChapter) {
     return <Paper p="lg" radius="lg"><Text c="dimmed">{model.loading ? '加载中...' : model.errorMessage ?? '章节未下载。'}</Text></Paper>;
   }
   const currentChapterBookmarks = detail.bookmarks.filter((b) => b.chapterId === model.location.chapterId);
+  const isManual = detail.sourceId === 'manual';
+  const renderedChapterContent = isManual
+    ? resolveManualAssetUrls(readerChapter.content, detail.metadata.novelId)
+    : readerChapter.content;
 
   return (
     <Stack gap="md">
@@ -58,6 +102,9 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
           {chapter.previousChapterId ? <Button variant="default" size="compact-sm" onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, chapter.previousChapterId!)}>上一章</Button> : null}
           {chapter.nextChapterId ? <Button variant="default" size="compact-sm" onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, chapter.nextChapterId!)}>下一章</Button> : null}
           <Button variant="subtle" size="compact-sm" onClick={() => setIsReaderDirectoryOpen(true)}>打开目录</Button>
+          {isManual ? <Button variant="default" size="compact-sm" onClick={() => setEditingContent(true)}>编辑正文</Button> : null}
+          {!isManual ? <Button variant="default" size="compact-sm" onClick={() => void refetchLibraryChapter(detail.sourceId, detail.metadata.novelId, readerChapter.id).then((result) => model.refresh().then(() => onNotify({ tone: result.changed ? 'success' : 'info', title: result.changed ? '章节已更新' : '章节内容无变化', message: result.changed ? '远端内容已保存为新版本，翻译会在下次继续时更新。' : '未写入新版本。' }))).catch((error: unknown) => onNotify({ tone: 'error', title: '更新失败', message: error instanceof Error ? error.message : '现有内容保持不变。' }))}>重新抓取本章</Button> : null}
+          <Button variant="subtle" size="compact-sm" onClick={() => setChapterHistoryOpen(true)}>章节历史</Button>
           <Button color="brand" size="compact-sm" onClick={() => { void model.addBookmark(readerChapter.id, readerBookmarkNote); setReaderBookmarkNote(''); }}
             loading={model.mutationBusyKey === 'bookmark-create'}>加入书签</Button>
         </Group>
@@ -110,16 +157,7 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
         <Group mb="md"><Badge variant="light" color="gray">{chapter.mediaAssets.length} 张图片</Badge>
           <Text size="xs" c="dimmed">{chapter.mediaAssets.length === 0 ? '无图片。' : `已缓存 ${readerChapter.media.cached} 张。`}</Text></Group>
         <div className="reader-copy" style={{ fontSize: `${model.readerTypography?.fontSize ?? 1.03}rem`, lineHeight: model.readerTypography?.lineHeight ?? 1.9, fontFamily: resolveReaderFontFamily(model.readerTypography) }}>
-          {parseReaderContent(readerChapter.content).map((block, i) => {
-            if (block.type === 'image') return (
-              <figure key={i} style={{ margin: '1.5rem 0', textAlign: 'center' }}>
-                <img src={block.sourceUrl} alt={block.alt ?? ''} style={{ maxWidth: '100%', borderRadius: 14, background: 'rgba(255,255,255,0.02)' }} />
-                {block.alt ? <figcaption style={{ marginTop: 6, fontSize: '0.85rem', opacity: 0.55 }}>{block.alt}</figcaption> : null}
-              </figure>
-            );
-            if (block.type === 'divider') return <hr key={i} className="reader-section-divider" />;
-            return <p key={i}>{block.text}</p>;
-          })}
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={{ img: ({ src, alt }) => <img src={src} alt={alt ?? ''} style={{ maxWidth: '100%', borderRadius: 14 }} /> }}>{renderedChapterContent}</ReactMarkdown>
         </div>
         <Group justify="center" mt="lg">
           {chapter.previousChapterId ? <Button variant="default" size="compact-sm" onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, chapter.previousChapterId!)}>上一章</Button> : <div style={{ width: 80 }} />}
@@ -127,6 +165,15 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
           {chapter.nextChapterId ? <Button variant="default" size="compact-sm" onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, chapter.nextChapterId!)}>下一章</Button> : <div style={{ width: 80 }} />}
         </Group>
       </Paper>
+
+      <Modal opened={editingContent} onClose={closeContentEditor} title="编辑 Markdown 正文" size="xl" lockScroll={false}>
+        <Stack><MDEditor className="manual-markdown-editor" data-color-mode="dark" value={contentDraft} onChange={(value) => setContentDraft(value ?? '')} height={520} preview="live" />
+          <Group><Button component="label" variant="light" size="compact-sm">插入图片<input hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" multiple onChange={(event) => { void Promise.all([...event.currentTarget.files ?? []].map(readManualImage)).then((assets) => { const valid = assets.filter((asset): asset is NonNullable<typeof asset> => asset !== null); setPendingAssets((current) => [...current, ...valid]); setContentDraft((current) => `${current}${current.endsWith('\n') || !current ? '' : '\n\n'}${valid.map((asset) => `![图片](${asset.objectUrl})`).join('\n\n')}`); }); event.currentTarget.value = ''; }} /></Button><Text size="xs" c="dimmed">保存时会上传图片并替换为 manual:// 引用。</Text></Group>
+          <Group justify="flex-end"><Button variant="subtle" onClick={closeContentEditor}>取消</Button><Button onClick={() => { const content = pendingAssets.reduce((value, asset) => value.replaceAll(asset.objectUrl, `manual://${asset.id}`), contentDraft); void saveManualLibraryChapter(detail.metadata.novelId, { chapterId: readerChapter.id, title: readerChapter.title, ...(readerChapter.volumeTitle ? { volumeTitle: readerChapter.volumeTitle } : {}), content, assets: pendingAssets.map(({ id, mimeType, base64 }) => ({ id, mimeType, base64 })) }).then((result) => { if (!result.changed) { onNotify({ tone: 'info', title: '内容无变化，未保存', message: '当前草稿与已保存版本相同。' }); return; } discardPendingAssets(); setEditingContent(false); onNotify({ tone: 'success', title: '正文已保存', message: '已创建新的章节版本。' }); return model.refresh(); }).catch((error: unknown) => onNotify({ tone: 'error', title: '保存失败', message: error instanceof Error ? error.message : '草稿仍保留，可再次保存。' })); }}>保存</Button></Group>
+        </Stack>
+      </Modal>
+
+      <Modal opened={chapterHistoryOpen} onClose={() => setChapterHistoryOpen(false)} title="章节版本历史"><Stack>{chapterVersions.length ? chapterVersions.map((version) => <Paper key={version.version} p="sm"><Group justify="space-between"><div><Text fw={600}>{version.version === 0 ? '初始版本 v0' : `版本 v${version.version}`}</Text><Text size="xs" c="dimmed">{new Date(version.createdAt).toLocaleString('zh-CN')}</Text></div><Button size="compact-xs" variant="light" onClick={() => { if (!window.confirm(`还原到 v${version.version}？`)) return; void restoreLibraryChapterVersion(detail.sourceId, detail.metadata.novelId, readerChapter.id, version.version).then(() => model.refresh()).then(() => { setChapterHistoryOpen(false); onNotify({ tone: 'success', title: '章节已还原', message: '已创建新的版本。' }); }).catch((error: unknown) => onNotify({ tone: 'error', title: '还原失败', message: error instanceof Error ? error.message : '请稍后重试。' })); }}>还原</Button></Group></Paper>) : <Text c="dimmed">暂无历史版本。</Text>}</Stack></Modal>
 
       <ReaderFabBar items={[
         { key: 'typography', label: '排版', ariaLabel: '调整排版', onClick: () => {
@@ -204,4 +251,13 @@ function resolveReaderFontFamily(typography: { fontFamilyPreset: string; fontFam
     case 'custom': return typography.fontFamilyCustom || '"Noto Sans CJK SC", sans-serif';
     default: return '"Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", sans-serif';
   }
+}
+
+type PendingManualAsset = { id: string; mimeType: string; base64: string; objectUrl: string };
+
+async function readManualImage(file: File): Promise<{ id: string; mimeType: string; base64: string; objectUrl: string } | null> {
+  if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) return null;
+  const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); });
+  const base64 = dataUrl.split(',', 2)[1];
+  return base64 ? { id: crypto.randomUUID(), mimeType: file.type, base64, objectUrl: URL.createObjectURL(file) } : null;
 }

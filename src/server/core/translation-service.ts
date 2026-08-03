@@ -461,7 +461,7 @@ export class TranslationService {
    * 对于元数据，content 为 "小说标题\\n\\n小说简介"。
    */
   static buildTranslationUnits(
-    snapshot: { chapters: Array<{ id: string; index: number; title: string; content?: string | null; volumeTitle?: string | null }>; metadata: { title: string; description: string } },
+    snapshot: { chapters: Array<{ id: string; index: number; title: string; content?: string | null; volumeTitle?: string | null }>; metadata: { title: string; author?: string; description: string; tags?: string[] } },
     sourceLang: string,
     targetLang: string,
   ): TranslationUnit[] {
@@ -473,7 +473,7 @@ export class TranslationService {
       kind: 'meta',
       index: 0,
       title: snapshot.metadata.title,
-      content: `${snapshot.metadata.title}\n\n${snapshot.metadata.description || ''}`,
+      content: `${snapshot.metadata.title}\n\n${snapshot.metadata.author || ''}\n\n${snapshot.metadata.description || ''}\n\n${(snapshot.metadata.tags ?? []).join(' / ')}`,
     });
 
     // 按卷顺序构建单元
@@ -568,7 +568,7 @@ export class TranslationService {
     const remainingUnits = canResume
       ? allUnits.filter((u) => {
           const t = this.#repository.getChapterTranslation(sourceId, novelId, u.id, profile.sourceLang, profile.targetLang);
-          const skip = t && t.status === 'completed';
+          const skip = t && t.status === 'completed' && t.sourceContentHash === simpleHash(u.content);
           if (skip) console.log(`[translation] 跳过已完成的翻译单元: ${u.kind}「${u.title}」(id=${u.id})`);
           return !skip;
         })

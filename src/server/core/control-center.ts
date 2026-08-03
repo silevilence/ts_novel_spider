@@ -351,24 +351,38 @@ export class ControlCenterService {
 
   getLibraryNovel(sourceId: string, novelId: string): LibraryNovelDetail | null {
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
-    return snapshot
+    const detail = snapshot
       ? this.#offlineLibrary.buildNovelDetail(snapshot, {
           aliases: this.#repository.listNovelAliases(sourceId, novelId),
           readingProgress: this.#repository.getReadingProgress(sourceId, novelId),
           bookmarks: this.#repository.listBookmarks(sourceId, novelId),
         })
       : null;
+    return detail ? {
+      ...detail,
+      chapters: detail.chapters.map((chapter) => ({
+        ...chapter,
+        versionChangeCount: this.#repository.getChapterVersionChangeCount(sourceId, novelId, chapter.id),
+      })),
+    } : null;
   }
 
   getLibraryChapter(sourceId: string, novelId: string, chapterId: string): LibraryChapterDetail | null {
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
-    return snapshot
+    const detail = snapshot
       ? this.#offlineLibrary.buildChapterDetail(snapshot, chapterId, {
           aliases: this.#repository.listNovelAliases(sourceId, novelId),
           readingProgress: this.#repository.getReadingProgress(sourceId, novelId),
           bookmarks: this.#repository.listBookmarks(sourceId, novelId),
         })
       : null;
+    return detail ? {
+      ...detail,
+      chapter: {
+        ...detail.chapter,
+        versionChangeCount: this.#repository.getChapterVersionChangeCount(sourceId, novelId, chapterId),
+      },
+    } : null;
   }
 
   createLibraryAlias(sourceId: string, novelId: string, alias: string): LibraryNovelAlias {
@@ -596,6 +610,9 @@ export class ControlCenterService {
     autoSummarize?: boolean;
     summarizeModel?: LlmModelGatewayRoute | null;
   }>): void {
+    if (entries.some((entry) => entry.sourceId === 'manual')) {
+      throw new Error('手动小说不能加入定时更新。');
+    }
     this.#repository.bulkUpsertScheduledNovels(entries);
   }
 
@@ -693,7 +710,7 @@ export class ControlCenterService {
 
   /** 列出所有书库书籍（供调度 Modal 使用） */
   listLibraryNovelEntries(): Array<{ sourceId: string; novelId: string; title: string }> {
-    return this.#repository.listNovels().map((novel) => ({
+    return this.#repository.listNovels().filter((novel) => novel.sourceId !== 'manual').map((novel) => ({
       sourceId: novel.sourceId,
       novelId: novel.metadata.novelId,
       title: novel.metadata.title,
@@ -914,6 +931,157 @@ export class ControlCenterService {
 
   cancelLibraryTranslation(sourceId: string, novelId: string): TranslationBuild | null {
     return this.#translation.cancelTranslation(sourceId, novelId);
+  }
+
+  isLibraryNovelTrashed(sourceId: string, novelId: string): boolean {
+    return this.#repository.isNovelTrashed(sourceId, novelId);
+  }
+
+  listTrashedLibraryNovels(): LibraryNovelSummary[] {
+    return this.#repository.listTrashedNovels().map((novel) => ({
+      sourceId: novel.sourceId, metadata: novel.metadata, updatedAt: novel.updatedAt,
+      downloadedChapters: novel.downloadedChapters, failedChapters: novel.failedChapters, indexedChapters: novel.indexedChapters,
+      latestDownloadedAt: novel.latestDownloadedAt, aliases: [], readingProgress: null, bookmarkCount: 0,
+    }));
+  }
+
+  createManualLibraryNovel(title: string): LibraryNovelDetail {
+    const snapshot = this.#repository.createManualNovel(title);
+    return this.#offlineLibrary.buildNovelDetail(snapshot);
+  }
+
+  updateManualLibraryMetadata(novelId: string, input: { title: string; author: string; description: string; tags: string[] }): { changed: boolean; novel: LibraryNovelDetail } {
+    const result = this.#repository.updateManualMetadata(novelId, input);
+    return { changed: result.changed, novel: this.#offlineLibrary.buildNovelDetail(result.snapshot) };
+  }
+
+  saveManualLibraryChapter(novelId: string, input: { chapterId?: string; title: string; volumeTitle?: string | null; content: string }): { changed: boolean; chapter: LibraryChapterDetail } {
+    const result = this.#repository.saveManualChapter(novelId, input);
+    const chapter = this.getLibraryChapter('manual', novelId, result.chapter.id);
+    if (!chapter) throw new Error('章节保存后无法读取。');
+    return { changed: result.changed, chapter };
+  }
+
+  saveManualLibraryChapterWithAssets(novelId: string, input: { chapterId?: string; title: string; volumeTitle?: string | null; content: string }, assets: Array<{ id: string; mimeType: string; base64: string }>): { changed: boolean; chapter: LibraryChapterDetail } {
+    const root = path.resolve(process.cwd(), 'data', 'manual-assets', novelId);
+    const staging = path.join(root, `.staging-${crypto.randomUUID()}`);
+    const written: Array<{ id: string; extension: string }> = [];
+    const finalized: string[] = [];
+    try {
+      for (const asset of assets) {
+        if (!/^[a-f0-9-]{36}$/i.test(asset.id) || !/^image\/(png|jpe?g|gif|webp|svg\+xml)$/i.test(asset.mimeType) || asset.base64.length > 14_000_000) throw new Error('图片素材格式无效或过大。');
+        const buffer = Buffer.from(asset.base64, 'base64');
+        if (!buffer.length || buffer.length > 10 * 1024 * 1024) throw new Error('图片素材为空或超过 10MB。');
+        const extension = asset.mimeType.includes('png') ? '.png' : asset.mimeType.includes('jpeg') || asset.mimeType.includes('jpg') ? '.jpg' : asset.mimeType.includes('gif') ? '.gif' : asset.mimeType.includes('webp') ? '.webp' : '.svg';
+        fs.mkdirSync(staging, { recursive: true }); fs.writeFileSync(path.join(staging, `${asset.id}${extension}`), buffer); written.push({ id: asset.id, extension });
+      }
+      fs.mkdirSync(root, { recursive: true });
+      for (const asset of written) {
+        const target = path.join(root, `${asset.id}${asset.extension}`);
+        fs.renameSync(path.join(staging, `${asset.id}${asset.extension}`), target);
+        finalized.push(target);
+      }
+      const result = this.saveManualLibraryChapter(novelId, input);
+      if (!result.changed) finalized.forEach((filePath) => fs.rmSync(filePath, { force: true }));
+      return result;
+    } catch (error) {
+      finalized.forEach((filePath) => fs.rmSync(filePath, { force: true }));
+      throw error;
+    } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+  }
+
+  getManualLibraryAssetPath(novelId: string, assetId: string): string | null {
+    if (!/^[a-f0-9-]{36}$/i.test(assetId)) return null;
+    const root = path.resolve(process.cwd(), 'data', 'manual-assets', novelId);
+    if (!fs.existsSync(root)) return null;
+    const fileName = fs.readdirSync(root).find((entry) => entry.startsWith(`${assetId}.`));
+    return fileName ? path.join(root, fileName) : null;
+  }
+
+  deleteManualLibraryChapter(novelId: string, chapterId: string): boolean {
+    return this.#repository.deleteManualChapter(novelId, chapterId);
+  }
+
+  reorderManualLibraryChapters(novelId: string, chapterIds: string[]): void {
+    this.#repository.reorderManualChapters(novelId, chapterIds);
+  }
+
+  listManualLibraryVolumes(novelId: string) { return this.#repository.listManualVolumes(novelId); }
+  createManualLibraryVolume(novelId: string, title: string) { return this.#repository.createManualVolume(novelId, title); }
+  renameManualLibraryVolume(novelId: string, title: string, nextTitle: string): void { this.#repository.renameManualVolume(novelId, title, nextTitle); }
+  deleteManualLibraryVolume(novelId: string, title: string): number { return this.#repository.deleteManualVolume(novelId, title); }
+
+  listLibraryMetadataVersions(sourceId: string, novelId: string) {
+    return this.#repository.listMetadataVersions(sourceId, novelId);
+  }
+
+  listLibraryChapterVersions(sourceId: string, novelId: string, chapterId: string) {
+    return this.#repository.listChapterVersions(sourceId, novelId, chapterId);
+  }
+
+  restoreLibraryMetadataVersion(sourceId: string, novelId: string, version: number): LibraryNovelDetail {
+    return this.#offlineLibrary.buildNovelDetail(this.#repository.restoreMetadataVersion(sourceId, novelId, version));
+  }
+
+  restoreLibraryChapterVersion(sourceId: string, novelId: string, chapterId: string, version: number): LibraryChapterDetail {
+    this.#repository.restoreChapterVersion(sourceId, novelId, chapterId, version);
+    const result = this.getLibraryChapter(sourceId, novelId, chapterId);
+    if (!result) throw new Error('章节版本还原后无法读取。');
+    return result;
+  }
+
+  moveLibraryNovelToTrash(sourceId: string, novelId: string): boolean {
+    return this.#repository.moveNovelToTrash(sourceId, novelId);
+  }
+
+  restoreLibraryNovelFromTrash(sourceId: string, novelId: string): boolean {
+    return this.#repository.restoreNovelFromTrash(sourceId, novelId);
+  }
+
+  getLibraryNovelPurgeStatus(sourceId: string, novelId: string) {
+    return this.#repository.getNovelPurgeStatus(sourceId, novelId);
+  }
+
+  purgeLibraryNovel(sourceId: string, novelId: string): boolean {
+    const purged = this.#repository.purgeNovel(sourceId, novelId);
+    if (purged) {
+      fs.rmSync(path.resolve(process.cwd(), 'data', 'offline-assets', sourceId, novelId), { recursive: true, force: true });
+      fs.rmSync(path.resolve(process.cwd(), 'data', 'opds-artifacts', sourceId, novelId), { recursive: true, force: true });
+      if (sourceId === 'manual') fs.rmSync(path.resolve(process.cwd(), 'data', 'manual-assets', novelId), { recursive: true, force: true });
+    }
+    return purged;
+  }
+
+  async previewLibraryMetadataSync(sourceId: string, novelId: string): Promise<{ current: NovelMetadata; remote: NovelMetadata; changedFields: Array<'title' | 'author' | 'description' | 'tags'> }> {
+    if (sourceId === 'manual') throw new Error('手动小说不支持同步元数据。');
+    const current = this.#repository.getSnapshot(sourceId, novelId)?.metadata;
+    const spider = this.#registry.get(sourceId)?.spider;
+    if (!current || !spider) throw new Error('小说或爬虫来源不存在。');
+    const remote = await spider.fetchMetadata({ novelId });
+    const changedFields = (['title', 'author', 'description', 'tags'] as const).filter((field) => field === 'tags'
+      ? !areTagsEquivalent(current.tags, remote.tags)
+      : current[field] !== remote[field]);
+    return { current, remote, changedFields };
+  }
+
+  applyLibraryMetadataSync(sourceId: string, novelId: string, input: Partial<Pick<NovelMetadata, 'title' | 'author' | 'description' | 'tags'>>): LibraryNovelDetail | null {
+    if (sourceId === 'manual') throw new Error('手动小说不支持同步元数据。');
+    const current = this.#repository.getSnapshot(sourceId, novelId)?.metadata;
+    if (!current) return null;
+    this.#repository.saveMetadata(sourceId, { ...current, ...input, novelId, chapterCount: current.chapterCount, infoPageUrl: current.infoPageUrl });
+    return this.getLibraryNovel(sourceId, novelId);
+  }
+
+  async refetchLibraryChapter(sourceId: string, novelId: string, chapterId: string): Promise<{ changed: boolean; chapter: LibraryChapterDetail }> {
+    if (sourceId === 'manual') throw new Error('手动小说不支持重新抓取章节。');
+    const stored = this.#repository.getChapter(sourceId, novelId, chapterId);
+    const spider = this.#registry.get(sourceId)?.spider;
+    if (!stored || !spider) throw new Error('章节或爬虫来源不存在。');
+    const fetched = await spider.fetchChapter({ novelId }, { id: stored.id, index: stored.index, title: stored.title, ...(stored.volumeTitle ? { volumeTitle: stored.volumeTitle } : {}), url: stored.url });
+    const result = this.#repository.replaceCrawledChapterIfChanged(sourceId, novelId, fetched);
+    const chapter = this.getLibraryChapter(sourceId, novelId, chapterId);
+    if (!chapter) throw new Error('章节更新后无法读取。');
+    return { changed: result.changed, chapter };
   }
 
   // ── 精翻工作区（独立任务与快照） ──
@@ -1498,6 +1666,12 @@ function defaultSystemPreferencesPath(): string {
   const dataDir = path.resolve(process.cwd(), '.data');
   fs.mkdirSync(dataDir, { recursive: true });
   return path.join(dataDir, 'system-preferences.json');
+}
+
+function areTagsEquivalent(left: string[], right: string[]): boolean {
+  const normalize = (tags: string[]) => [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))]
+    .sort((first, second) => first.localeCompare(second, 'zh-CN'));
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
 function defaultExportStoragePath(): string {

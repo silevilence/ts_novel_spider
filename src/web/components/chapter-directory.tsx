@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useState } from 'react';
+import { useDeferredValue, useEffect, useState, type ReactNode } from 'react';
 import { Accordion, Badge, Button, Checkbox, Group, Paper, ScrollArea, Stack, Text, TextInput, Title } from '@mantine/core';
 import { IconSearch, IconChevronDown } from '@tabler/icons-react';
 import type { ChapterPersistStatus } from '../../server/core/spider';
@@ -20,6 +20,7 @@ export interface ChapterDirectoryEntry {
   isCurrentProgress?: boolean;
   isProgressWatermark?: boolean;
   bookmarkCount?: number;
+  versionChangeCount?: number;
   media?: {
     total: number;
     cached: number;
@@ -43,6 +44,8 @@ interface ChapterDirectoryProps {
   onSelectFailed?: () => void;
   onClearSelection?: () => void;
   onPickChapter?: (chapterId: string) => void;
+  onRefetchChapter?: (chapterId: string) => void;
+  management?: ReactNode;
 }
 
 export function ChapterDirectory({
@@ -61,11 +64,14 @@ export function ChapterDirectory({
   onSelectFailed,
   onClearSelection,
   onPickChapter,
+  onRefetchChapter,
+  management,
 }: ChapterDirectoryProps) {
   const selectionMode = mode === 'select';
   const selectedSet = new Set(selectedChapterIds);
   const [query, setQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [contextChapter, setContextChapter] = useState<{ id: string; title: string; x: number; y: number } | null>(null);
   const deferredQuery = useDeferredValue(query);
   const grouped = groupResolvedChapters(chapters);
   const filteredGroups = filterChapterGroups(grouped, deferredQuery);
@@ -133,6 +139,8 @@ export function ChapterDirectory({
 
         {subtitle ? <Text size="xs" c="dimmed">{subtitle}</Text> : null}
 
+        {management}
+
         {chapters.length === 0 ? (
           <Paper p="md" radius="md" style={{ background: 'rgba(38,26,20,0.4)' }}>
             <Text size="sm" c="dimmed">{loading ? '正在读取目录，请稍候。' : emptyMessage}</Text>
@@ -183,6 +191,12 @@ export function ChapterDirectory({
                                 background: isActive ? 'rgba(255,140,66,0.12)' : 'rgba(26,18,12,0.4)',
                                 border: isActive ? '1px solid rgba(255,140,66,0.3)' : '1px solid transparent',
                               }}
+                              onContextMenu={(event) => {
+                                if (!selectionMode && onRefetchChapter) {
+                                  event.preventDefault();
+                                  setContextChapter({ id: chapter.id, title: chapter.title, x: event.clientX, y: event.clientY });
+                                }
+                              }}
                             >
                               {selectionMode ? (
                                 <Stack gap={4}>
@@ -198,6 +212,7 @@ export function ChapterDirectory({
                                     {chapter.isCurrentProgress ? <Badge variant="light" color="green" size="xs">当前进度</Badge> : null}
                                     {chapter.isProgressWatermark ? <Badge variant="light" color="blue" size="xs">最高进度</Badge> : null}
                                     {(chapter.bookmarkCount ?? 0) > 0 ? <Badge variant="light" color="cyan" size="xs">书签 {chapter.bookmarkCount}</Badge> : null}
+                                    {(chapter.versionChangeCount ?? 0) > 0 ? <Badge variant="light" color="violet" size="xs">发生过 {chapter.versionChangeCount} 次变更</Badge> : null}
                                     {chapter.isNew ? <Badge variant="light" color="orange" size="xs">新增</Badge> : null}
                                     {chapter.wasDownloaded ? <Badge variant="light" color="green" size="xs">{selectionMode ? '已下载' : '可阅读'}</Badge> : null}
                                     {mediaSummary.hasMedia ? <Badge variant="light" color="gray" size="xs">{mediaSummary.presenceLabel}</Badge> : null}
@@ -217,6 +232,7 @@ export function ChapterDirectory({
                                     {chapter.isCurrentProgress ? <Badge variant="light" color="green" size="xs">当前进度</Badge> : null}
                                     {chapter.isProgressWatermark ? <Badge variant="light" color="blue" size="xs">最高进度</Badge> : null}
                                     {(chapter.bookmarkCount ?? 0) > 0 ? <Badge variant="light" color="cyan" size="xs">书签 {chapter.bookmarkCount}</Badge> : null}
+                                    {(chapter.versionChangeCount ?? 0) > 0 ? <Badge variant="light" color="violet" size="xs">发生过 {chapter.versionChangeCount} 次变更</Badge> : null}
                                     {chapter.isNew ? <Badge variant="light" color="orange" size="xs">新增</Badge> : null}
                                     {chapter.wasDownloaded ? <Badge variant="light" color="green" size="xs">可阅读</Badge> : null}
                                     {mediaSummary.hasMedia ? <Badge variant="light" color="gray" size="xs">{mediaSummary.presenceLabel}</Badge> : null}
@@ -236,6 +252,7 @@ export function ChapterDirectory({
             </Stack>
           </ScrollArea.Autosize>
         )}
+        {contextChapter ? <Paper p="xs" shadow="xl" style={{ position: 'fixed', left: contextChapter.x, top: contextChapter.y, zIndex: 300, background: 'var(--mantine-color-body)' }}><Text size="xs" mb="xs">{contextChapter.title}</Text><Button size="compact-xs" onClick={() => { onRefetchChapter?.(contextChapter.id); setContextChapter(null); }}>重新抓取本章</Button></Paper> : null}
       </Stack>
     </Paper>
   );

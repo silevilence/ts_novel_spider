@@ -29,19 +29,34 @@ export async function segmentNode(state: TranslationPipelineState): Promise<Part
 
 /** 按标准小说段落分隔符切分 */
 export function splitChapterParagraphs(text: string): string[] {
-  // 优先按双换行切分
-  const coarseParts = text.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
+  // GFM 表格必须作为一个翻译单元保留，不能按单行或长段规则拆开。
+  const coarseParts = splitMarkdownBlocks(text);
 
-  // 对过长的段进行二次切分（按单换行）
+  // 对过长的普通段进行二次切分（按单换行）。表格无论多长都保持完整。
   const result: string[] = [];
   for (const part of coarseParts) {
-    if (part.length > 2000) {
-      const subParts = part.split(/\n/).filter((p) => p.trim().length > 0);
+    if (!part.isTable && part.text.length > 2000) {
+      const subParts = part.text.split(/\n/).filter((p) => p.trim().length > 0);
       result.push(...subParts);
     } else {
-      result.push(part);
+      result.push(part.text);
     }
   }
 
   return result.length > 0 ? result : [text.trim()].filter((p) => p.length > 0);
+}
+
+function splitMarkdownBlocks(text: string): Array<{ text: string; isTable: boolean }> {
+  return text
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => ({ text: part, isTable: isGfmTable(part) }));
+}
+
+function isGfmTable(block: string): boolean {
+  const lines = block.split('\n');
+  return lines.length >= 2
+    && /\|/.test(lines[0] ?? '')
+    && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[1] ?? '');
 }

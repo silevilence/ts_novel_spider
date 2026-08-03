@@ -7,6 +7,7 @@ import {
   findPreferredReaderChapter,
   formatLibraryTaskStatus,
   parseReaderContent,
+  resolveManualAssetUrls,
   splitChapterContent,
   summarizeChapterMedia,
   toLibraryDirectoryChapters,
@@ -186,4 +187,11 @@ test('formatLibraryTaskStatus returns user-facing task labels', () => {
   assert.equal(formatLibraryTaskStatus('running'), '执行中');
   assert.equal(formatLibraryTaskStatus('completed'), '已采集');
   assert.equal(formatLibraryTaskStatus('failed'), '已失败');
+});
+
+test('resolveManualAssetUrls replaces manual asset URLs before markdown sanitization', () => {
+  assert.equal(
+    resolveManualAssetUrls('![图片](manual://asset-1)', 'novel id'),
+    '![图片](/api/library/manual-assets/novel%20id/asset-1)',
+  );
 });

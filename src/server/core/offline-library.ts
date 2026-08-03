@@ -79,6 +79,8 @@ export interface LibraryMediaCacheBatchResult {
 export interface LibraryChapterSummary extends StoredChapterRecord {
   hasContent: boolean;
   media: LibraryMediaSummary;
+  /** v0 不计入变更次数。 */
+  versionChangeCount?: number;
 }
 
 export interface LibraryNovelDetail {
@@ -125,7 +127,7 @@ interface LibraryStateExtras {
 }
 
 const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?)/gi;
-const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/gi;
+const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*\]\(((?:https?:\/\/|manual:\/\/)[^)\s]+)\)/gi;
 
 export class OfflineLibraryAssetService {
   readonly #storageRoot: string;
@@ -200,7 +202,7 @@ export class OfflineLibraryAssetService {
     }
 
     const chapter = snapshot.chapters[chapterIndex];
-    if (!chapter || !chapter.content) {
+    if (!chapter || chapter.content === null) {
       return null;
     }
 
@@ -296,6 +298,13 @@ export class OfflineLibraryAssetService {
     chapterId: string,
     sourceUrl: string,
   ): string | null {
+    if (sourceId === 'manual' && sourceUrl.startsWith('manual://')) {
+      const assetId = sourceUrl.slice('manual://'.length);
+      const directory = path.resolve(process.cwd(), 'data', 'manual-assets', novelId);
+      if (!/^[a-f0-9-]{36}$/i.test(assetId) || !fs.existsSync(directory)) return null;
+      const fileName = fs.readdirSync(directory).find((entry) => entry.startsWith(`${assetId}.`));
+      return fileName ? path.join(directory, fileName) : null;
+    }
     const directory = path.join(this.#storageRoot, sourceId, novelId, chapterId);
     const mediaId = hashMediaUrl(sourceUrl);
 
@@ -332,6 +341,7 @@ export class OfflineLibraryAssetService {
     chapterId: string,
     sourceUrl: string,
   ): Promise<boolean> {
+    if (sourceId === 'manual' && sourceUrl.startsWith('manual://')) return this.findCachedAssetFile(sourceId, novelId, chapterId, sourceUrl) !== null;
     const cachedFilePath = this.findCachedAssetFile(sourceId, novelId, chapterId, sourceUrl);
 
     if (cachedFilePath) {
@@ -416,6 +426,8 @@ function extractMediaUrls(content: string | null): string[] {
 
 function normalizeMediaUrl(sourceUrl: string): string | null {
   const trimmed = sourceUrl.trim().replace(/[),.!?]+$/g, '');
+
+  if (/^manual:\/\/[a-f0-9-]{36}$/i.test(trimmed)) return trimmed;
 
   try {
     const url = new URL(trimmed);

@@ -5,6 +5,7 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
   Group,
   Modal,
   Paper,
@@ -15,11 +16,15 @@ import {
   Tabs,
   Text,
   TextInput,
+  Textarea,
+  TagsInput,
   Title,
 } from '@mantine/core';
 import { IconArrowDown, IconArrowUp, IconBookmark, IconFileDownload, IconPhoto, IconTag } from '@tabler/icons-react';
 
 import { ChapterDirectory } from './chapter-directory';
+import { ManualNovelManager } from './manual-novel-manager';
+import { LibraryHistoryPanel } from './library-history-panel';
 import { LibraryIntelligencePanel } from './library-intelligence-panel';
 import { TranslationLaunchPanel } from './translation-launch-panel';
 import { ScrollspyProvider, useScrollspy, type ScrollspySection } from './scrollspy-nav';
@@ -30,6 +35,11 @@ import {
   fetchNovelOpdsStatus,
   updateNovelScheduling,
   updateNovelOpdsVisible,
+  updateManualLibraryMetadata,
+  applyLibraryMetadataSync,
+  previewLibraryMetadataSync,
+  refetchLibraryChapter,
+  type MetadataSyncPreview,
   type LibraryExportFormat,
   type NovelOpdsStatus,
   type SchedulingNovelDetail,
@@ -95,6 +105,11 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
   const [exportTranslationMode, setExportTranslationMode] = useState<TranslationExportMode>('original');
   const [schedulingDetail, setSchedulingDetail] = useState<SchedulingNovelDetail | null>(null);
   const [opdsStatus, setOpdsStatus] = useState<NovelOpdsStatus | null>(null);
+  const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
+  const [metadataDraft, setMetadataDraft] = useState({ title: '', author: '', description: '', tags: [] as string[] });
+  const [syncPreview, setSyncPreview] = useState<MetadataSyncPreview | null>(null);
+  const [syncChoice, setSyncChoice] = useState<Record<'title' | 'author' | 'description' | 'tags', 'old' | 'new' | 'merge'>>({ title: 'new', author: 'new', description: 'new', tags: 'new' });
+  const [selectedMergedTags, setSelectedMergedTags] = useState<string[]>([]);
   const chapterDirectoryRef = useRef<HTMLDivElement | null>(null);
 
   const detail = model.detail?.novel;
@@ -119,6 +134,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
   const latestTaskEvent = task?.events[task.events.length - 1] ?? null;
   const taskHeading = task?.status === 'completed' || task?.status === 'failed' ? '最近一次同步' : '当前同步任务';
   const remainingTaskChapters = calculateRemainingTaskChapters(task?.progress);
+  const isManual = detail.sourceId === 'manual';
 
   // 重置状态（路径切换时）
   useEffect(() => {
@@ -152,9 +168,13 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
   // 加载定时更新状态与 OPDS 可见性
   useEffect(() => {
     if (!detail) return;
-    fetchNovelScheduling(detail.sourceId, detail.metadata.novelId)
-      .then(setSchedulingDetail)
-      .catch(() => {});
+    if (detail.sourceId === 'manual') {
+      setSchedulingDetail(null);
+    } else {
+      fetchNovelScheduling(detail.sourceId, detail.metadata.novelId)
+        .then(setSchedulingDetail)
+        .catch(() => {});
+    }
     fetchNovelOpdsStatus(detail.sourceId, detail.metadata.novelId)
       .then(setOpdsStatus)
       .catch(() => {});
@@ -185,20 +205,36 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
           </Stack>
           <Group mt="md" wrap="wrap">
             <Button variant="subtle" size="compact-sm" onClick={() => model.refresh()} loading={model.loading}>刷新详情</Button>
+            <LibraryHistoryPanel sourceId={detail.sourceId} novelId={detail.metadata.novelId} onRefresh={() => model.refresh()} onNotify={onNotify} />
+            {isManual ? <Button variant="default" size="compact-sm" onClick={() => { setMetadataDraft({ title: detail.metadata.title, author: detail.metadata.author, description: detail.metadata.description, tags: detail.metadata.tags }); setMetadataDialogOpen(true); }}>编辑元数据</Button> : <>
+            <Button variant="default" size="compact-sm" onClick={() => void previewLibraryMetadataSync(detail.sourceId, detail.metadata.novelId).then((preview) => { if (!preview.changedFields.length) { onNotify({ tone: 'info', title: '元数据无变化', message: '远端内容与当前版本相同。' }); return; } setSyncPreview(preview); setSelectedMergedTags([...new Set([...preview.current.tags, ...preview.remote.tags])]); }).catch((error: unknown) => onNotify({ tone: 'error', title: '同步失败', message: error instanceof Error ? error.message : '请稍后重试。' }))}>同步元数据</Button>
             <Button variant="default" size="compact-sm" onClick={() => void model.runIncrementalSync()} loading={model.syncBusy}>增量同步</Button>
             <Button variant="default" size="compact-sm" onClick={() => void model.syncMissingChapters()} loading={model.syncBusy}>补录缺失</Button>
             <Button variant="default" size="compact-sm" onClick={() => void model.redownloadAllDownloadedChapters()}
               loading={model.syncBusy} disabled={detail.stats.downloaded === 0}>全部重下</Button>
+            </>}
             {resumeChapterId ? (
               <Button color="brand" size="compact-sm" onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, resumeChapterId)}>
                 {detail.readingProgress ? '继续阅读' : '开始阅读'}
               </Button>
             ) : null}
           </Group>
-        </Paper>
+      </Paper>
+
+      <Modal opened={metadataDialogOpen} onClose={() => setMetadataDialogOpen(false)} title="编辑元数据">
+        <Stack>
+          <TextInput label="标题" value={metadataDraft.title} onChange={(event) => setMetadataDraft({ ...metadataDraft, title: event.currentTarget.value })} />
+          <TextInput label="作者" value={metadataDraft.author} onChange={(event) => setMetadataDraft({ ...metadataDraft, author: event.currentTarget.value })} />
+          <TagsInput label="标签" value={metadataDraft.tags} onChange={(tags) => setMetadataDraft({ ...metadataDraft, tags })} splitChars={[]} placeholder="输入标签后按 Enter 添加" />
+          <Textarea label="简介" minRows={5} value={metadataDraft.description} onChange={(event) => setMetadataDraft({ ...metadataDraft, description: event.currentTarget.value })} />
+          <Group justify="flex-end"><Button variant="subtle" onClick={() => setMetadataDialogOpen(false)}>取消</Button><Button onClick={() => void updateManualLibraryMetadata(detail.metadata.novelId, { title: metadataDraft.title, author: metadataDraft.author, description: metadataDraft.description, tags: metadataDraft.tags }).then((result) => { setMetadataDialogOpen(false); onNotify({ tone: result.changed ? 'success' : 'info', title: result.changed ? '元数据已保存' : '内容无变化，未保存', message: result.changed ? '已创建新的元数据版本。' : '当前内容与保存版本相同。' }); return model.refresh(); }).catch((error: unknown) => onNotify({ tone: 'error', title: '保存失败', message: error instanceof Error ? error.message : '草稿仍保留，可再次保存。' }))}>保存</Button></Group>
+        </Stack>
+      </Modal>
+
+      <Modal opened={syncPreview !== null} onClose={() => setSyncPreview(null)} title="同步元数据 · 选择要采用的内容" size="lg">{syncPreview ? <Stack>{(['title', 'author', 'description'] as const).map((field) => <Paper key={field} p="sm"><Text fw={600}>{field === 'title' ? '标题' : field === 'author' ? '作者' : '简介'}</Text>{syncPreview.changedFields.includes(field) ? <><Text size="xs" c="dimmed" mt="xs">当前：{syncPreview.current[field] || '（空）'}</Text><Text size="xs" c="dimmed">远端：{syncPreview.remote[field] || '（空）'}</Text><SegmentedControl mt="xs" size="xs" value={syncChoice[field]} onChange={(value) => setSyncChoice({ ...syncChoice, [field]: value as 'old' | 'new' })} data={[{ value: 'old', label: '保留旧版' }, { value: 'new', label: '采用新版' }]} /></> : <Text size="sm" c="dimmed">未发生变化</Text>}</Paper>)}<Paper p="sm"><Text fw={600}>标签</Text>{syncPreview.changedFields.includes('tags') ? <><SegmentedControl mt="xs" size="xs" value={syncChoice.tags} onChange={(value) => setSyncChoice({ ...syncChoice, tags: value as 'old' | 'new' | 'merge' })} data={[{ value: 'old', label: '保留旧' }, { value: 'new', label: '采用新' }, { value: 'merge', label: '合并' }]} />{syncChoice.tags === 'merge' ? <Checkbox.Group mt="xs" value={selectedMergedTags} onChange={setSelectedMergedTags}>{[...new Set([...syncPreview.current.tags, ...syncPreview.remote.tags])].map((tag) => <Checkbox key={tag} value={tag} label={tag} />)}</Checkbox.Group> : null}</> : <Text size="sm" c="dimmed">未发生变化</Text>}</Paper><Group justify="flex-end"><Button variant="subtle" onClick={() => setSyncPreview(null)}>取消</Button><Button onClick={() => { const input: Partial<MetadataSyncPreview['remote']> = {}; for (const field of ['title', 'author', 'description'] as const) if (syncPreview.changedFields.includes(field) && syncChoice[field] === 'new') input[field] = syncPreview.remote[field]; if (syncPreview.changedFields.includes('tags')) input.tags = syncChoice.tags === 'old' ? syncPreview.current.tags : syncChoice.tags === 'merge' ? selectedMergedTags : syncPreview.remote.tags; void applyLibraryMetadataSync(detail.sourceId, detail.metadata.novelId, input).then(() => model.refresh()).then(() => { setSyncPreview(null); onNotify({ tone: 'success', title: '元数据已应用', message: '已写入版本历史；受影响的翻译会在下次继续翻译时重新处理。' }); }).catch((error: unknown) => onNotify({ tone: 'error', title: '应用失败', message: error instanceof Error ? error.message : '请稍后重试。' })); }}>确认应用</Button></Group></Stack> : null}</Modal>
 
         {/* ====== 定时更新开关 ====== */}
-        <Paper
+        {!isManual ? <Paper
           p="sm"
           radius="md"
           style={{
@@ -277,7 +313,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
               </Text>
             )}
           </Stack>
-        </Paper>
+        </Paper> : null}
 
         {/* ====== OPDS 公开分发 ====== */}
         <Paper
@@ -351,7 +387,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
           <Card padding="sm" radius="md" style={{ gridColumn: 'span 2' }}>
             <Text size="xs" c="dimmed">简介</Text>
             <Text size="sm" fw={600} lineClamp={2} mb={4}>{detail.metadata.title}</Text>
-            <Text size="xs" lineClamp={3}>{detailDescriptionPreview.text}</Text>
+            <Text size="xs" lineClamp={3} style={{ whiteSpace: 'pre-wrap' }}>{detailDescriptionPreview.fullText}</Text>
             {detailDescriptionPreview.isTruncated ? (
               <Button variant="subtle" size="compact-xs" mt="xs"
                 onClick={() => setDescriptionDialog({ title: detail.metadata.title, text: detailDescriptionPreview.fullText })}>
@@ -673,6 +709,8 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
             subtitle="已下载和未下载的章节都在这里；有图章节会直接标出图片数量和本地缓存情况。"
             emptyMessage="当前作品还没有已知章节目录。"
             onPickChapter={(chapterId) => model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId)}
+            management={isManual ? <ManualNovelManager novel={detail} onRefresh={() => model.refresh()} onOpenChapter={(chapterId) => model.openChapter(detail.sourceId, detail.metadata.novelId, chapterId)} onNotify={onNotify} /> : null}
+            {...(!isManual ? { onRefetchChapter: (chapterId: string) => { void refetchLibraryChapter(detail.sourceId, detail.metadata.novelId, chapterId).then((result) => model.refresh().then(() => onNotify({ tone: result.changed ? 'success' : 'info', title: result.changed ? '章节已更新' : '章节内容无变化', message: result.changed ? '已写入新版本。' : '未写入新版本。' }))).catch((error: unknown) => onNotify({ tone: 'error', title: '更新失败', message: error instanceof Error ? error.message : '现有内容保持不变。' })); } } : {})}
           />
         </div>
 

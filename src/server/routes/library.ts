@@ -147,6 +147,15 @@ function validateFontFamilyPreset(value: unknown): 'sans' | 'serif' | 'monospace
 export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   const router = Router();
 
+  router.use('/novels/:sourceId/:novelId', (request, response, next) => {
+    const allowedTrashActions = /\/(restore|purge)(?:\/|$)/.test(request.path);
+    if (request.method !== 'GET' && !allowedTrashActions && service.isLibraryNovelTrashed(request.params.sourceId, request.params.novelId)) {
+      response.status(409).json({ message: '小说在回收站中，仅可查看或还原。' });
+      return;
+    }
+    next();
+  });
+
   router.get('/novels', (request, response) => {
     try {
       const query = typeof request.query.q === 'string' ? request.query.q : undefined;
@@ -180,6 +189,133 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     };
 
     response.json(payload);
+  });
+
+  router.get('/trash', (_request, response) => {
+    response.json({ novels: service.listTrashedLibraryNovels() });
+  });
+
+  router.post('/manual-novels', (request, response) => {
+    try {
+      const title = readStringField(request.body, 'title');
+      response.status(201).json({ novel: service.createManualLibraryNovel(title) });
+    } catch (error) {
+      response.status(422).json({ message: error instanceof Error ? error.message : '无法新建手动小说。' });
+    }
+  });
+
+  router.get('/manual-assets/:novelId/:assetId', (request, response) => {
+    const filePath = service.getManualLibraryAssetPath(request.params.novelId, request.params.assetId);
+    if (!filePath) return response.status(404).end();
+    response.sendFile(filePath);
+  });
+
+  router.put('/novels/manual/:novelId/metadata', (request, response) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+      const tags = Array.isArray(body.tags) ? body.tags.filter((tag): tag is string => typeof tag === 'string') : [];
+      const result = service.updateManualLibraryMetadata(request.params.novelId, {
+        title: readStringField(body, 'title'), author: readOptionalStringField(body, 'author'), description: readOptionalStringField(body, 'description'), tags,
+      });
+      response.json(result);
+    } catch (error) {
+      response.status(422).json({ message: error instanceof Error ? error.message : '无法保存元数据。' });
+    }
+  });
+
+  router.post('/novels/:sourceId/:novelId/metadata-sync', async (request, response) => {
+    try { response.json(await service.previewLibraryMetadataSync(request.params.sourceId, request.params.novelId)); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '元数据同步失败。' }); }
+  });
+  router.put('/novels/:sourceId/:novelId/metadata-sync', (request, response) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+      const input = Object.fromEntries(Object.entries(body).filter(([key, value]) => ['title', 'author', 'description'].includes(key) ? typeof value === 'string' : key === 'tags' && Array.isArray(value))) as { title?: string; author?: string; description?: string; tags?: string[] };
+      const novel = service.applyLibraryMetadataSync(request.params.sourceId, request.params.novelId, input);
+      if (!novel) return response.status(404).json({ message: '小说不存在。' }); response.json({ novel });
+    } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '元数据保存失败。' }); }
+  });
+  router.post('/novels/:sourceId/:novelId/chapters/:chapterId/refetch', async (request, response) => {
+    try { response.json(await service.refetchLibraryChapter(request.params.sourceId, request.params.novelId, request.params.chapterId)); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '章节更新失败。' }); }
+  });
+
+  router.post('/novels/manual/:novelId/chapters', (request, response) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+      const input = {
+        title: readStringField(body, 'title'), content: readOptionalStringField(body, 'content'),
+        ...(typeof body.volumeTitle === 'string' ? { volumeTitle: body.volumeTitle } : {}),
+      };
+      const assets = parseManualAssets(body.assets);
+      const result = service.saveManualLibraryChapterWithAssets(request.params.novelId, input, assets);
+      response.status(201).json(result);
+    } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法创建章节。' }); }
+  });
+
+  router.put('/novels/manual/:novelId/chapters/:chapterId', (request, response) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+      const input = {
+        chapterId: request.params.chapterId, title: readStringField(body, 'title'), content: readOptionalStringField(body, 'content'),
+        ...(typeof body.volumeTitle === 'string' ? { volumeTitle: body.volumeTitle } : {}),
+      };
+      const assets = parseManualAssets(body.assets);
+      const result = service.saveManualLibraryChapterWithAssets(request.params.novelId, input, assets);
+      response.json(result);
+    } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法保存章节。' }); }
+  });
+
+  router.delete('/novels/manual/:novelId/chapters/:chapterId', (request, response) => {
+    if (!service.deleteManualLibraryChapter(request.params.novelId, request.params.chapterId)) return response.status(404).json({ message: '章节不存在。' });
+    response.status(204).end();
+  });
+
+  router.put('/novels/manual/:novelId/chapters/order', (request, response) => {
+    try {
+      const chapterIds = Array.isArray((request.body as { chapterIds?: unknown }).chapterIds) ? (request.body as { chapterIds: unknown[] }).chapterIds.filter((id): id is string => typeof id === 'string') : [];
+      service.reorderManualLibraryChapters(request.params.novelId, chapterIds); response.status(204).end();
+    } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法调整章节顺序。' }); }
+  });
+
+  router.get('/novels/manual/:novelId/volumes', (request, response) => response.json({ volumes: service.listManualLibraryVolumes(request.params.novelId) }));
+  router.post('/novels/manual/:novelId/volumes', (request, response) => {
+    try { response.status(201).json({ volume: service.createManualLibraryVolume(request.params.novelId, readStringField(request.body, 'title')) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法创建卷。' }); }
+  });
+  router.put('/novels/manual/:novelId/volumes/:title', (request, response) => {
+    try { service.renameManualLibraryVolume(request.params.novelId, request.params.title, readStringField(request.body, 'title')); response.status(204).end(); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法重命名卷。' }); }
+  });
+  router.delete('/novels/manual/:novelId/volumes/:title', (request, response) => {
+    try { response.json({ deletedChapters: service.deleteManualLibraryVolume(request.params.novelId, request.params.title) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法删除卷。' }); }
+  });
+
+  router.get('/novels/:sourceId/:novelId/versions/metadata', (request, response) => response.json({ versions: service.listLibraryMetadataVersions(request.params.sourceId, request.params.novelId) }));
+  router.get('/novels/:sourceId/:novelId/chapters/:chapterId/versions', (request, response) => response.json({ versions: service.listLibraryChapterVersions(request.params.sourceId, request.params.novelId, request.params.chapterId) }));
+  router.post('/novels/:sourceId/:novelId/versions/metadata/:version/restore', (request, response) => {
+    try { response.json({ novel: service.restoreLibraryMetadataVersion(request.params.sourceId, request.params.novelId, Number(request.params.version)) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法还原元数据版本。' }); }
+  });
+  router.post('/novels/:sourceId/:novelId/chapters/:chapterId/versions/:version/restore', (request, response) => {
+    try { response.json({ chapter: service.restoreLibraryChapterVersion(request.params.sourceId, request.params.novelId, request.params.chapterId, Number(request.params.version)) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法还原章节版本。' }); }
+  });
+
+  router.post('/novels/:sourceId/:novelId/trash', (request, response) => {
+    if (!service.moveLibraryNovelToTrash(request.params.sourceId, request.params.novelId)) return response.status(404).json({ message: '小说不存在或已在回收站。' });
+    response.status(204).end();
+  });
+  router.post('/novels/:sourceId/:novelId/restore', (request, response) => {
+    if (!service.restoreLibraryNovelFromTrash(request.params.sourceId, request.params.novelId)) return response.status(404).json({ message: '回收站中未找到小说。' });
+    response.status(204).end();
+  });
+  router.get('/novels/:sourceId/:novelId/purge-status', (request, response) => {
+    const status = service.getLibraryNovelPurgeStatus(request.params.sourceId, request.params.novelId); if (!status) return response.status(404).json({ message: '小说不存在。' }); response.json(status);
+  });
+  router.delete('/novels/:sourceId/:novelId/purge', (request, response) => {
+    if (!service.purgeLibraryNovel(request.params.sourceId, request.params.novelId)) return response.status(409).json({ message: '小说尚未满足永久删除条件。' }); response.status(204).end();
   });
 
   router.get('/novels/:sourceId/:novelId/graph', (request, response) => {
@@ -1206,4 +1342,15 @@ function parseNeo4jRoute(value: unknown): {
     ...(typeof record.password === 'string' ? { password: record.password } : {}),
     ...(typeof record.database === 'string' ? { database: record.database } : {}),
   };
+}
+
+function parseManualAssets(value: unknown): Array<{ id: string; mimeType: string; base64: string }> {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('图片素材格式无效。');
+  return value.map((asset) => {
+    if (!asset || typeof asset !== 'object') throw new Error('图片素材格式无效。');
+    const raw = asset as Record<string, unknown>;
+    if (typeof raw.id !== 'string' || typeof raw.mimeType !== 'string' || typeof raw.base64 !== 'string') throw new Error('图片素材格式无效。');
+    return { id: raw.id, mimeType: raw.mimeType, base64: raw.base64 };
+  });
 }

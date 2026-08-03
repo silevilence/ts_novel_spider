@@ -20,7 +20,8 @@ export function createServerApp(options: ServerAppOptions = {}): Express {
   const webIndexPath = path.join(webDistPath, 'index.html');
   const controlCenter = options.controlCenter ?? new ControlCenterService();
 
-  app.use(express.json());
+  // 手动章节会在 JSON 中携带 Base64 图片；单张 10MB 图片编码后约为 13.4MB。
+  app.use(express.json({ limit: '64mb' }));
   app.use('/api/health', healthRouter);
   app.use('/api/control', createControlCenterRouter({ service: controlCenter }));
   app.use('/api/library', createLibraryRouter({ service: controlCenter }));

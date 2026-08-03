@@ -22,6 +22,9 @@ interface NovelRow {
   chapter_count: number;
   info_page_url: string;
   updated_at: string;
+  deleted_at?: string | null;
+  deleted_scheduling_json?: string | null;
+  deleted_opds_visible?: number | null;
 }
 
 export interface StoredNovelLibraryRow {
@@ -586,6 +589,28 @@ interface KnowledgeGraphChunkRow {
   updated_at: string;
 }
 
+export interface StoredNovelVersionRow {
+  version: number;
+  title: string;
+  author: string;
+  description: string;
+  tags: string[];
+  createdAt: string;
+}
+
+export interface StoredChapterVersionRow {
+  version: number;
+  title: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface StoredManualVolumeRow {
+  title: string;
+  sortIndex: number;
+  chapterCount: number;
+}
+
 // ── 精翻工作区（与小说级粗翻完全隔离） ──
 
 export type RefinedTranslationTaskStatus = 'draft' | 'paused' | 'running' | 'completed' | 'needs_attention' | 'deleted';
@@ -871,9 +896,10 @@ export class SqliteNovelRepository {
             MAX(c.downloaded_at) AS latest_downloaded_at
           FROM novels n
           LEFT JOIN chapters c
-            ON c.source_id = n.source_id
+           ON c.source_id = n.source_id
            AND c.novel_id = n.novel_id
            AND c.chapter_id NOT GLOB '__*'
+          WHERE n.deleted_at IS NULL
           GROUP BY
             n.source_id,
             n.novel_id,
@@ -1833,6 +1859,201 @@ export class SqliteNovelRepository {
       .map((row) => mapKnowledgeGraphChunkRow(row as KnowledgeGraphChunkRow));
   }
 
+  isNovelTrashed(sourceId: string, novelId: string): boolean {
+    const row = this.#database.prepare(`SELECT deleted_at FROM novels WHERE source_id=? AND novel_id=?`).get(sourceId, novelId) as { deleted_at: string | null } | undefined;
+    return Boolean(row?.deleted_at);
+  }
+
+  listTrashedNovels(): StoredNovelLibraryRow[] {
+    const rows = this.#database.prepare(`
+      SELECT n.source_id, n.novel_id, n.title, n.author, n.description, n.tags_json, n.chapter_count, n.info_page_url, n.updated_at,
+        0 AS downloaded_chapters, 0 AS failed_chapters, 0 AS indexed_chapters, NULL AS latest_downloaded_at
+      FROM novels n WHERE n.deleted_at IS NOT NULL ORDER BY n.deleted_at DESC
+    `).all() as Array<NovelRow & { downloaded_chapters: number; failed_chapters: number; indexed_chapters: number; latest_downloaded_at: string | null }>;
+    return rows.map((row) => ({ sourceId: row.source_id, metadata: mapNovelRow(row), updatedAt: row.updated_at,
+      downloadedChapters: row.downloaded_chapters, failedChapters: row.failed_chapters, indexedChapters: row.indexed_chapters,
+      latestDownloadedAt: row.latest_downloaded_at, aliases: [], readingProgress: null, bookmarkCount: 0 }));
+  }
+
+  createManualNovel(title: string): StoredNovelSnapshot {
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) throw new Error('手动小说标题不能为空。');
+    const novelId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    this.#database.prepare(`INSERT INTO novels (source_id, novel_id, title, author, description, tags_json, chapter_count, info_page_url, updated_at)
+      VALUES ('manual', ?, ?, '', '', '[]', 0, '', ?)`).run(novelId, normalizedTitle, timestamp);
+    return this.getSnapshot('manual', novelId)!;
+  }
+
+  updateManualMetadata(novelId: string, input: { title: string; author: string; description: string; tags: string[] }): { changed: boolean; snapshot: StoredNovelSnapshot } {
+    const previous = this.getSnapshot('manual', novelId);
+    if (!previous) throw new Error('手动小说不存在。');
+    const title = input.title.trim();
+    if (!title) throw new Error('标题不能为空。');
+    const author = input.author.trim(); const description = input.description.trim();
+    const tags = [...new Set(input.tags.map((tag) => tag.trim()).filter(Boolean))];
+    const unchanged = previous.metadata.title === title && previous.metadata.author === author && previous.metadata.description === description
+      && areTagsEquivalent(previous.metadata.tags, tags);
+    if (unchanged) return { changed: false, snapshot: previous };
+    const timestamp = new Date().toISOString();
+    this.#database.prepare(`UPDATE novels SET title = ?, author = ?, description = ?, tags_json = ?, updated_at = ? WHERE source_id = 'manual' AND novel_id = ?`)
+      .run(title, author, description, JSON.stringify(tags), timestamp, novelId);
+    const version = this.#nextMetadataVersion('manual', novelId);
+    this.#recordMetadataVersion('manual', novelId, version, title, author, description, tags, timestamp);
+    return { changed: true, snapshot: this.getSnapshot('manual', novelId)! };
+  }
+
+  /** 创建或保存手动章节；只有内容、标题或所属卷实际变化时才产生版本。 */
+  saveManualChapter(novelId: string, input: { chapterId?: string; title: string; volumeTitle?: string | null; content: string }): { changed: boolean; chapter: StoredChapterRecord } {
+    const snapshot = this.getSnapshot('manual', novelId);
+    if (!snapshot) throw new Error('手动小说不存在。');
+    const title = input.title.trim();
+    if (!title) throw new Error('章节标题不能为空。');
+    const chapterId = input.chapterId ?? crypto.randomUUID();
+    const old = input.chapterId ? this.getChapter('manual', novelId, chapterId) : null;
+    const content = input.content;
+    if (old && old.title === title && old.content === content && (old.volumeTitle ?? null) === (input.volumeTitle?.trim() || null)) return { changed: false, chapter: old };
+    const timestamp = new Date().toISOString();
+    const chapterIndex = old?.index ?? snapshot.chapters.filter((chapter) => !chapter.id.startsWith('__')).length + 1;
+    const volumeTitle = input.volumeTitle?.trim() || null;
+    if (volumeTitle) this.#ensureManualVolume(novelId, volumeTitle);
+    this.#database.prepare(`INSERT INTO chapters (source_id, novel_id, chapter_id, chapter_index, title, volume_title, url, content, status, error_message, downloaded_at, updated_at)
+      VALUES ('manual', ?, ?, ?, ?, ?, '', ?, 'downloaded', NULL, ?, ?)
+      ON CONFLICT(source_id, novel_id, chapter_id) DO UPDATE SET title=excluded.title, volume_title=excluded.volume_title, content=excluded.content, status='downloaded', downloaded_at=excluded.downloaded_at, updated_at=excluded.updated_at`)
+      .run(novelId, chapterId, chapterIndex, title, volumeTitle, content, timestamp, timestamp);
+    this.#database.prepare(`UPDATE novels SET chapter_count = (SELECT COUNT(*) FROM chapters WHERE source_id='manual' AND novel_id=? AND chapter_id NOT GLOB '__*'), updated_at=? WHERE source_id='manual' AND novel_id=?`).run(novelId, timestamp, novelId);
+    this.#reindexManualChapters(novelId);
+    const current = this.getChapter('manual', novelId, chapterId)!;
+    const nextVersion = this.#nextChapterVersion('manual', novelId, chapterId);
+    if (nextVersion > 0 || content.trim()) {
+      this.#recordChapterVersion('manual', novelId, chapterId, nextVersion, title, content, timestamp);
+    }
+    return { changed: true, chapter: current };
+  }
+
+  deleteManualChapter(novelId: string, chapterId: string): boolean {
+    const result = this.#database.prepare(`DELETE FROM chapters WHERE source_id='manual' AND novel_id=? AND chapter_id=?`).run(novelId, chapterId);
+    if (result.changes) this.#reindexManualChapters(novelId);
+    return result.changes > 0;
+  }
+
+  reorderManualChapters(novelId: string, chapterIds: string[]): void {
+    const current = this.getSnapshot('manual', novelId); if (!current) throw new Error('手动小说不存在。');
+    const realIds = current.chapters.filter((chapter) => !chapter.id.startsWith('__')).map((chapter) => chapter.id);
+    if (new Set(chapterIds).size !== realIds.length || chapterIds.some((id) => !realIds.includes(id))) throw new Error('章节排序数据不完整。');
+    const transaction = this.#database.transaction(() => chapterIds.forEach((id, index) => this.#database.prepare(`UPDATE chapters SET chapter_index=?, updated_at=? WHERE source_id='manual' AND novel_id=? AND chapter_id=?`).run(index + 1, new Date().toISOString(), novelId, id)));
+    transaction();
+  }
+
+  listManualVolumes(novelId: string): StoredManualVolumeRow[] {
+    this.assertNovelExists('manual', novelId);
+    return this.#database.prepare(`SELECT mv.volume_title, mv.sort_index, COUNT(c.chapter_id) AS chapter_count
+      FROM manual_volumes mv LEFT JOIN chapters c ON c.source_id='manual' AND c.novel_id=mv.novel_id AND c.volume_title=mv.volume_title
+      WHERE mv.novel_id=? GROUP BY mv.volume_title, mv.sort_index ORDER BY mv.sort_index, mv.volume_title`).all(novelId)
+      .map((row) => { const value = row as { volume_title: string; sort_index: number; chapter_count: number }; return { title: value.volume_title, sortIndex: value.sort_index, chapterCount: value.chapter_count }; });
+  }
+
+  createManualVolume(novelId: string, title: string): StoredManualVolumeRow {
+    const normalized = title.trim(); if (!normalized) throw new Error('卷名不能为空。');
+    this.assertNovelExists('manual', novelId); this.#ensureManualVolume(novelId, normalized);
+    return this.listManualVolumes(novelId).find((volume) => volume.title === normalized)!;
+  }
+
+  renameManualVolume(novelId: string, title: string, nextTitle: string): void {
+    const normalized = nextTitle.trim(); if (!normalized) throw new Error('卷名不能为空。');
+    const transaction = this.#database.transaction(() => {
+      const changed = this.#database.prepare(`UPDATE manual_volumes SET volume_title=? WHERE novel_id=? AND volume_title=?`).run(normalized, novelId, title).changes;
+      if (!changed) throw new Error('卷不存在。');
+      this.#database.prepare(`UPDATE chapters SET volume_title=?, updated_at=? WHERE source_id='manual' AND novel_id=? AND volume_title=?`).run(normalized, new Date().toISOString(), novelId, title);
+    }); transaction();
+  }
+
+  deleteManualVolume(novelId: string, title: string): number {
+    const transaction = this.#database.transaction(() => {
+      const deleted = this.#database.prepare(`DELETE FROM chapters WHERE source_id='manual' AND novel_id=? AND volume_title=?`).run(novelId, title).changes;
+      this.#database.prepare(`DELETE FROM manual_volumes WHERE novel_id=? AND volume_title=?`).run(novelId, title);
+      this.#reindexManualChapters(novelId); return deleted;
+    }); return transaction();
+  }
+
+  listMetadataVersions(sourceId: string, novelId: string): StoredNovelVersionRow[] {
+    return this.#database.prepare(`SELECT version, title, author, description, tags_json, created_at FROM novel_metadata_versions WHERE source_id=? AND novel_id=? ORDER BY version DESC`).all(sourceId, novelId)
+      .map((row) => { const value = row as { version: number; title: string; author: string; description: string; tags_json: string; created_at: string }; return { version: value.version, title: value.title, author: value.author, description: value.description, tags: parseTagsJson(value.tags_json), createdAt: value.created_at }; });
+  }
+
+  listChapterVersions(sourceId: string, novelId: string, chapterId: string): StoredChapterVersionRow[] {
+    return this.#database.prepare(`SELECT version, title, content, created_at FROM chapter_versions WHERE source_id=? AND novel_id=? AND chapter_id=? ORDER BY version DESC`).all(sourceId, novelId, chapterId)
+      .map((row) => { const value = row as { version: number; title: string; content: string; created_at: string }; return { version: value.version, title: value.title, content: value.content, createdAt: value.created_at }; });
+  }
+
+  getChapterVersionChangeCount(sourceId: string, novelId: string, chapterId: string): number {
+    const row = this.#database.prepare(
+      `SELECT COUNT(*) AS count FROM chapter_versions WHERE source_id=? AND novel_id=? AND chapter_id=?`,
+    ).get(sourceId, novelId, chapterId) as { count: number };
+    return Math.max(0, row.count - 1);
+  }
+
+  restoreMetadataVersion(sourceId: string, novelId: string, version: number): StoredNovelSnapshot {
+    const row = this.#database.prepare(`SELECT title, author, description, tags_json FROM novel_metadata_versions WHERE source_id=? AND novel_id=? AND version=?`).get(sourceId, novelId, version) as { title: string; author: string; description: string; tags_json: string } | undefined;
+    if (!row) throw new Error('元数据版本不存在。');
+    const snapshot = this.getSnapshot(sourceId, novelId); if (!snapshot) throw new Error('小说不存在。');
+    const timestamp = new Date().toISOString();
+    this.#database.prepare(`UPDATE novels SET title=?, author=?, description=?, tags_json=?, updated_at=? WHERE source_id=? AND novel_id=?`).run(row.title, row.author, row.description, row.tags_json, timestamp, sourceId, novelId);
+    this.#recordMetadataVersion(sourceId, novelId, this.#nextMetadataVersion(sourceId, novelId), row.title, row.author, row.description, parseTagsJson(row.tags_json), timestamp);
+    return this.getSnapshot(sourceId, novelId)!;
+  }
+
+  restoreChapterVersion(sourceId: string, novelId: string, chapterId: string, version: number): StoredChapterRecord {
+    const row = this.#database.prepare(`SELECT title, content FROM chapter_versions WHERE source_id=? AND novel_id=? AND chapter_id=? AND version=?`).get(sourceId, novelId, chapterId, version) as { title: string; content: string } | undefined;
+    if (!row) throw new Error('章节版本不存在。');
+    const current = this.getChapter(sourceId, novelId, chapterId); if (!current) throw new Error('章节不存在。');
+    const timestamp = new Date().toISOString();
+    this.#database.prepare(`UPDATE chapters SET title=?, content=?, status='downloaded', downloaded_at=?, updated_at=? WHERE source_id=? AND novel_id=? AND chapter_id=?`).run(row.title, row.content, timestamp, timestamp, sourceId, novelId, chapterId);
+    this.#recordChapterVersion(sourceId, novelId, chapterId, this.#nextChapterVersion(sourceId, novelId, chapterId), row.title, row.content, timestamp);
+    return this.getChapter(sourceId, novelId, chapterId)!;
+  }
+
+  /** 将小说移入回收站，并保存其原定时更新与 OPDS 状态。 */
+  moveNovelToTrash(sourceId: string, novelId: string): boolean {
+    const novel = this.#database.prepare(`SELECT deleted_at, opds_visible FROM novels WHERE source_id=? AND novel_id=?`).get(sourceId, novelId) as { deleted_at: string | null; opds_visible: number } | undefined;
+    if (!novel || novel.deleted_at) return false;
+    const scheduled = this.getScheduledNovel(sourceId, novelId);
+    this.#database.prepare(`UPDATE novels SET deleted_at=?, deleted_scheduling_json=?, deleted_opds_visible=?, opds_visible=0 WHERE source_id=? AND novel_id=?`)
+      .run(new Date().toISOString(), JSON.stringify(scheduled ?? null), novel.opds_visible, sourceId, novelId);
+    this.deleteScheduledNovel(sourceId, novelId);
+    return true;
+  }
+
+  /** 从回收站还原小说及其移入前的定时更新与 OPDS 状态。 */
+  restoreNovelFromTrash(sourceId: string, novelId: string): boolean {
+    const row = this.#database.prepare(`SELECT deleted_at, deleted_scheduling_json, deleted_opds_visible FROM novels WHERE source_id=? AND novel_id=?`).get(sourceId, novelId) as { deleted_at: string | null; deleted_scheduling_json: string | null; deleted_opds_visible: number | null } | undefined;
+    if (!row?.deleted_at) return false;
+    const transaction = this.#database.transaction(() => {
+      this.#database.prepare(`UPDATE novels SET deleted_at=NULL, opds_visible=?, deleted_scheduling_json=NULL, deleted_opds_visible=NULL WHERE source_id=? AND novel_id=?`).run(row.deleted_opds_visible ?? 0, sourceId, novelId);
+      if (row.deleted_scheduling_json) { try { const state = JSON.parse(row.deleted_scheduling_json) as StoredScheduledNovelRow; this.upsertScheduledNovel(sourceId, novelId, state.enabled, state.autoTranslate, state.autoSummarize, state.summarizeModel); } catch { /* old snapshot is optional */ } }
+    }); transaction(); return true;
+  }
+
+  getNovelPurgeStatus(sourceId: string, novelId: string): { canPurge: boolean; remainingDays: number; deletedAt: string | null } | null {
+    const row = this.#database.prepare(`SELECT deleted_at FROM novels WHERE source_id=? AND novel_id=?`).get(sourceId, novelId) as { deleted_at: string | null } | undefined;
+    if (!row) return null; if (!row.deleted_at) return { canPurge: false, remainingDays: 15, deletedAt: null };
+    const remainingDays = Math.max(0, Math.ceil((15 * 86400000 - Math.max(0, Date.now() - Date.parse(row.deleted_at))) / 86400000));
+    return { canPurge: remainingDays === 0, remainingDays, deletedAt: row.deleted_at };
+  }
+
+  /** 在回收站保留期结束后，永久清理小说及其关联数据。 */
+  purgeNovel(sourceId: string, novelId: string): boolean {
+    const status = this.getNovelPurgeStatus(sourceId, novelId); if (!status?.canPurge) return false;
+    const transaction = this.#database.transaction(() => {
+      if (sourceId === 'manual') this.#database.prepare(`DELETE FROM manual_volumes WHERE novel_id=?`).run(novelId);
+      for (const table of ['chapter_versions', 'novel_metadata_versions', 'chapter_translation_paragraphs', 'chapter_translations', 'chapter_translation_qa', 'novel_translation_build_checkpoints', 'novel_translation_build_logs', 'novel_translation_builds', 'novel_translation_profiles', 'novel_translation_terms', 'knowledge_graph_summaries', 'knowledge_graph_chunks', 'knowledge_graph_relations', 'knowledge_graph_entities', 'novel_graph_build_checkpoints', 'novel_graph_build_logs', 'novel_graph_builds', 'novel_graph_profiles', 'scheduled_summaries', 'scheduled_novels', 'reader_typography', 'bookmarks', 'reading_progress', 'novel_aliases', 'task_history', 'chapters']) {
+        this.#database.prepare(`DELETE FROM ${table} WHERE source_id=? AND novel_id=?`).run(sourceId, novelId);
+      }
+      return this.#database.prepare(`DELETE FROM novels WHERE source_id=? AND novel_id=? AND deleted_at IS NOT NULL`).run(sourceId, novelId).changes > 0;
+    });
+    return transaction();
+  }
+
   listKnowledgeGraphSummaries(sourceId: string, novelId: string): StoredKnowledgeGraphSummaryRow[] {
     return this.#database
       .prepare(
@@ -2067,6 +2288,7 @@ export class SqliteNovelRepository {
   }
 
   saveMetadata(sourceId: string, metadata: NovelMetadata): void {
+    const previous = this.getSnapshot(sourceId, metadata.novelId)?.metadata ?? null;
     const timestamp = new Date().toISOString();
 
     this.#database
@@ -2095,6 +2317,19 @@ export class SqliteNovelRepository {
         info_page_url: metadata.infoPageUrl,
         updated_at: timestamp,
       });
+
+    const changed = !previous || previous.title !== metadata.title || previous.author !== metadata.author
+      || previous.description !== metadata.description || !areTagsEquivalent(previous.tags, metadata.tags);
+    if (changed) this.#recordMetadataVersion(sourceId, metadata.novelId, this.#nextMetadataVersion(sourceId, metadata.novelId), metadata.title, metadata.author, metadata.description, metadata.tags, timestamp);
+  }
+
+  replaceCrawledChapterIfChanged(sourceId: string, novelId: string, chapter: ChapterContent): { changed: boolean; chapter: StoredChapterRecord } {
+    const previous = this.getChapter(sourceId, novelId, chapter.chapterId);
+    if (!previous) throw new Error(`章节 ${chapter.chapterId} 不存在。`);
+    if (previous.title === chapter.title && previous.content === chapter.content) return { changed: false, chapter: previous };
+    this.saveChapterContent(sourceId, novelId, chapter);
+    const current = this.getChapter(sourceId, novelId, chapter.chapterId)!;
+    return { changed: true, chapter: current };
   }
 
   saveChapterIndex(sourceId: string, novelId: string, chapters: ChapterIndexEntry[]): void {
@@ -2157,6 +2392,7 @@ export class SqliteNovelRepository {
   }
 
   saveChapterContent(sourceId: string, novelId: string, chapter: ChapterContent): void {
+    const previous = this.getChapter(sourceId, novelId, chapter.chapterId);
     const timestamp = new Date().toISOString();
 
     this.#database
@@ -2188,6 +2424,9 @@ export class SqliteNovelRepository {
         downloaded_at: timestamp,
         updated_at: timestamp,
       });
+    if (!previous || previous.title !== chapter.title || previous.content !== chapter.content) {
+      this.#recordChapterVersion(sourceId, novelId, chapter.chapterId, this.#nextChapterVersion(sourceId, novelId, chapter.chapterId), chapter.title, chapter.content, timestamp);
+    }
   }
 
   markChapterFailure(sourceId: string, novelId: string, chapterId: string, error: Error): void {
@@ -3114,6 +3353,8 @@ export class SqliteNovelRepository {
                   WHERE ss.source_id = sn.source_id AND ss.novel_id = sn.novel_id
                 ) AS has_summary
          FROM scheduled_novels sn
+         JOIN novels n ON n.source_id = sn.source_id AND n.novel_id = sn.novel_id
+         WHERE n.source_id <> 'manual' AND n.deleted_at IS NULL
          ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
@@ -3149,7 +3390,8 @@ export class SqliteNovelRepository {
                   WHERE ss.source_id = sn.source_id AND ss.novel_id = sn.novel_id
                 ) AS has_summary
          FROM scheduled_novels sn
-         WHERE enabled = 1
+         JOIN novels n ON n.source_id = sn.source_id AND n.novel_id = sn.novel_id
+         WHERE enabled = 1 AND n.source_id <> 'manual' AND n.deleted_at IS NULL
          ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
@@ -3219,6 +3461,7 @@ export class SqliteNovelRepository {
     autoSummarize?: boolean,
     summarizeModel?: LlmModelGatewayRoute | null,
   ): void {
+    if (sourceId === 'manual') throw new Error('手动小说不能加入定时更新。');
     const now = new Date().toISOString();
     const existing = this.getScheduledNovel(sourceId, novelId);
     const resolvedAutoTranslate = autoTranslate ?? existing?.autoTranslate ?? false;
@@ -3270,6 +3513,9 @@ export class SqliteNovelRepository {
     autoSummarize?: boolean;
     summarizeModel?: LlmModelGatewayRoute | null;
   }>): void {
+    if (entries.some((entry) => entry.sourceId === 'manual')) {
+      throw new Error('手动小说不能加入定时更新。');
+    }
     const now = new Date().toISOString();
     const upsert = this.#database.prepare(
       `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, auto_summarize, summarize_model_json, updated_at)
@@ -3555,7 +3801,7 @@ export class SqliteNovelRepository {
       .prepare(
         `SELECT source_id, novel_id, content_updated_at, epub_compiled_at
          FROM novels
-         WHERE opds_visible = 1
+         WHERE opds_visible = 1 AND deleted_at IS NULL
          ORDER BY source_id, novel_id`,
       )
       .all() as Array<{
@@ -3594,7 +3840,7 @@ export class SqliteNovelRepository {
                     AND ct.status = 'completed'
                 ) AS has_translation
          FROM novels n
-         WHERE n.opds_visible = 1
+         WHERE n.opds_visible = 1 AND n.deleted_at IS NULL
          ORDER BY n.title COLLATE NOCASE ASC`,
       )
       .all() as Array<{
@@ -4541,6 +4787,39 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novels', 'opds_visible', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novels', 'content_updated_at', 'TEXT');
     this.ensureColumnExists('novels', 'epub_compiled_at', 'TEXT');
+    this.ensureColumnExists('novels', 'deleted_at', 'TEXT');
+    this.ensureColumnExists('novels', 'deleted_scheduling_json', 'TEXT');
+    this.ensureColumnExists('novels', 'deleted_opds_visible', 'INTEGER');
+
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS novel_metadata_versions (
+        source_id TEXT NOT NULL, novel_id TEXT NOT NULL, version INTEGER NOT NULL,
+        title TEXT NOT NULL, author TEXT NOT NULL, description TEXT NOT NULL, tags_json TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id, version),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS chapter_versions (
+        source_id TEXT NOT NULL, novel_id TEXT NOT NULL, chapter_id TEXT NOT NULL, version INTEGER NOT NULL,
+        title TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id, chapter_id, version),
+        FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_novels_trash ON novels(deleted_at);
+      CREATE TABLE IF NOT EXISTS manual_volumes (
+        novel_id TEXT NOT NULL, volume_title TEXT NOT NULL, sort_index INTEGER NOT NULL,
+        PRIMARY KEY (novel_id, volume_title)
+      );
+      INSERT OR IGNORE INTO novel_metadata_versions (source_id, novel_id, version, title, author, description, tags_json, created_at)
+        SELECT source_id, novel_id, 0, title, author, description, tags_json, updated_at
+        FROM novels WHERE source_id <> 'manual';
+      INSERT OR IGNORE INTO chapter_versions (source_id, novel_id, chapter_id, version, title, content, created_at)
+        SELECT source_id, novel_id, chapter_id, 0, title, content, COALESCE(downloaded_at, updated_at)
+        FROM chapters WHERE content IS NOT NULL;
+      INSERT OR IGNORE INTO manual_volumes (novel_id, volume_title, sort_index)
+        SELECT novel_id, volume_title, MIN(chapter_index)
+        FROM chapters WHERE source_id='manual' AND volume_title IS NOT NULL AND TRIM(volume_title) <> ''
+        GROUP BY novel_id, volume_title;
+    `);
 
     // 首次迁移时回填 content_updated_at = MAX(chapters.updated_at)
     this.#database.exec(`
@@ -4600,6 +4879,42 @@ export class SqliteNovelRepository {
     if (!row) {
       throw new Error(`Library novel ${sourceId}/${novelId} was not found.`);
     }
+  }
+
+  #nextMetadataVersion(sourceId: string, novelId: string): number {
+    const row = this.#database.prepare(`SELECT COALESCE(MAX(version), -1) AS version FROM novel_metadata_versions WHERE source_id=? AND novel_id=?`).get(sourceId, novelId) as { version: number };
+    return row.version + 1;
+  }
+
+  #nextChapterVersion(sourceId: string, novelId: string, chapterId: string): number {
+    const row = this.#database.prepare(`SELECT COALESCE(MAX(version), -1) AS version FROM chapter_versions WHERE source_id=? AND novel_id=? AND chapter_id=?`).get(sourceId, novelId, chapterId) as { version: number };
+    return row.version + 1;
+  }
+
+  #recordMetadataVersion(sourceId: string, novelId: string, version: number, title: string, author: string, description: string, tags: string[], createdAt: string): void {
+    this.#database.prepare(`INSERT INTO novel_metadata_versions (source_id, novel_id, version, title, author, description, tags_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(sourceId, novelId, version, title, author, description, JSON.stringify(tags), createdAt);
+  }
+
+  #recordChapterVersion(sourceId: string, novelId: string, chapterId: string, version: number, title: string, content: string, createdAt: string): void {
+    this.#database.prepare(`INSERT INTO chapter_versions (source_id, novel_id, chapter_id, version, title, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(sourceId, novelId, chapterId, version, title, content, createdAt);
+  }
+
+  #reindexManualChapters(novelId: string): void {
+    const rows = this.#database.prepare(`SELECT chapter_id FROM chapters WHERE source_id='manual' AND novel_id=? AND chapter_id NOT GLOB '__*' ORDER BY chapter_index, chapter_id`).all(novelId) as Array<{ chapter_id: string }>;
+    const transaction = this.#database.transaction(() => {
+      rows.forEach((row, index) => this.#database.prepare(`UPDATE chapters SET chapter_index=? WHERE source_id='manual' AND novel_id=? AND chapter_id=?`).run(index + 1, novelId, row.chapter_id));
+      this.#database.prepare(`UPDATE novels SET chapter_count=?, updated_at=? WHERE source_id='manual' AND novel_id=?`).run(rows.length, new Date().toISOString(), novelId);
+    });
+    transaction();
+  }
+
+  #ensureManualVolume(novelId: string, title: string): void {
+    const existing = this.#database.prepare(`SELECT 1 FROM manual_volumes WHERE novel_id=? AND volume_title=?`).get(novelId, title);
+    if (existing) return;
+    const row = this.#database.prepare(`SELECT COALESCE(MAX(sort_index), 0) + 1 AS sort_index FROM manual_volumes WHERE novel_id=?`).get(novelId) as { sort_index: number };
+    this.#database.prepare(`INSERT INTO manual_volumes (novel_id, volume_title, sort_index) VALUES (?, ?, ?)`).run(novelId, title, row.sort_index);
   }
 
   private buildAliasMap(): Map<string, StoredNovelAliasRow[]> {
@@ -4895,6 +5210,21 @@ function mapKnowledgeGraphChunkRow(row: KnowledgeGraphChunkRow): StoredKnowledge
     embedding: row.embedding_json ? JSON.parse(row.embedding_json) as number[] : null,
     updatedAt: row.updated_at,
   };
+}
+
+function parseTagsJson(raw: string): string[] {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function areTagsEquivalent(left: string[], right: string[]): boolean {
+  const normalize = (tags: string[]) => [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))]
+    .sort((first, second) => first.localeCompare(second, 'zh-CN'));
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
 interface RefinedTaskRow { task_id: string; source_id: string | null; novel_id: string | null; task_name: string; novel_title: string; author: string; source_metadata_json: string | null; translated_metadata_json: string | null; source_lang: string; target_lang: string; status: RefinedTranslationTaskStatus; stage: RefinedTranslationStage; model_config_json: string; deleted_at: string | null; created_at: string; updated_at: string; }

@@ -1270,3 +1270,49 @@ async function buildRequestError(response: Response, fallbackMessage: string): P
     return new Error(fallbackMessage);
   }
 }
+
+export async function createManualLibraryNovel(title: string): Promise<LibraryNovelDetailPayload['novel']> {
+  const payload = await requestJson<{ novel: LibraryNovelDetailPayload['novel'] }>('/api/library/manual-novels', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }),
+  });
+  return payload.novel;
+}
+
+export async function updateManualLibraryMetadata(novelId: string, input: { title: string; author: string; description: string; tags: string[] }): Promise<{ changed: boolean; novel: LibraryNovelDetailPayload['novel'] }> {
+  return requestJson(`/api/library/novels/manual/${encodeURIComponent(novelId)}/metadata`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+
+export async function saveManualLibraryChapter(novelId: string, input: { chapterId?: string; title: string; volumeTitle?: string | null; content: string; assets?: Array<{ id: string; mimeType: string; base64: string }> }): Promise<{ changed: boolean; chapter: LibraryChapterDetailPayload }> {
+  const chapterId = input.chapterId;
+  return requestJson(`/api/library/novels/manual/${encodeURIComponent(novelId)}/chapters${chapterId ? `/${encodeURIComponent(chapterId)}` : ''}`, {
+    method: chapterId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  });
+}
+
+export async function deleteManualLibraryChapter(novelId: string, chapterId: string): Promise<void> {
+  await requestVoid(`/api/library/novels/manual/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}`, { method: 'DELETE' });
+}
+
+export async function reorderManualLibraryChapters(novelId: string, chapterIds: string[]): Promise<void> {
+  await requestVoid(`/api/library/novels/manual/${encodeURIComponent(novelId)}/chapters/order`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chapterIds }) });
+}
+
+export async function moveLibraryNovelToTrash(sourceId: string, novelId: string): Promise<void> { await requestVoid(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/trash`, { method: 'POST' }); }
+export async function restoreLibraryNovelFromTrash(sourceId: string, novelId: string): Promise<void> { await requestVoid(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/restore`, { method: 'POST' }); }
+export async function fetchTrashedLibraryNovels(): Promise<LibraryNovelSummaryPayload> { return requestJson('/api/library/trash'); }
+export async function fetchLibraryNovelPurgeStatus(sourceId: string, novelId: string): Promise<{ canPurge: boolean; remainingDays: number; deletedAt: string | null }> { return requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/purge-status`); }
+export async function purgeLibraryNovel(sourceId: string, novelId: string): Promise<void> { await requestVoid(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/purge`, { method: 'DELETE' }); }
+export interface ManualVolume { title: string; sortIndex: number; chapterCount: number; }
+export async function fetchManualLibraryVolumes(novelId: string): Promise<ManualVolume[]> { return (await requestJson<{ volumes: ManualVolume[] }>(`/api/library/novels/manual/${encodeURIComponent(novelId)}/volumes`)).volumes; }
+export async function createManualLibraryVolume(novelId: string, title: string): Promise<ManualVolume> { return (await requestJson<{ volume: ManualVolume }>(`/api/library/novels/manual/${encodeURIComponent(novelId)}/volumes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) })).volume; }
+export async function renameManualLibraryVolume(novelId: string, title: string, nextTitle: string): Promise<void> { await requestVoid(`/api/library/novels/manual/${encodeURIComponent(novelId)}/volumes/${encodeURIComponent(title)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: nextTitle }) }); }
+export async function deleteManualLibraryVolume(novelId: string, title: string): Promise<number> { return (await requestJson<{ deletedChapters: number }>(`/api/library/novels/manual/${encodeURIComponent(novelId)}/volumes/${encodeURIComponent(title)}`, { method: 'DELETE' })).deletedChapters; }
+export interface LibraryVersion { version: number; title: string; author?: string; description?: string; tags?: string[]; content?: string; createdAt: string; }
+export async function fetchLibraryMetadataVersions(sourceId: string, novelId: string): Promise<LibraryVersion[]> { return (await requestJson<{ versions: LibraryVersion[] }>(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/versions/metadata`)).versions; }
+export async function fetchLibraryChapterVersions(sourceId: string, novelId: string, chapterId: string): Promise<LibraryVersion[]> { return (await requestJson<{ versions: LibraryVersion[] }>(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}/versions`)).versions; }
+export async function restoreLibraryMetadataVersion(sourceId: string, novelId: string, version: number): Promise<void> { await requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/versions/metadata/${version}/restore`, { method: 'POST' }); }
+export async function restoreLibraryChapterVersion(sourceId: string, novelId: string, chapterId: string, version: number): Promise<void> { await requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}/versions/${version}/restore`, { method: 'POST' }); }
+export interface MetadataSyncPreview { current: { title: string; author: string; description: string; tags: string[] }; remote: { title: string; author: string; description: string; tags: string[] }; changedFields: Array<'title' | 'author' | 'description' | 'tags'>; }
+export async function previewLibraryMetadataSync(sourceId: string, novelId: string): Promise<MetadataSyncPreview> { return requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/metadata-sync`, { method: 'POST' }); }
+export async function applyLibraryMetadataSync(sourceId: string, novelId: string, input: Partial<Pick<MetadataSyncPreview['remote'], 'title' | 'author' | 'description' | 'tags'>>): Promise<void> { await requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/metadata-sync`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); }
+export async function refetchLibraryChapter(sourceId: string, novelId: string, chapterId: string): Promise<{ changed: boolean }> { return requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}/refetch`, { method: 'POST' }); }

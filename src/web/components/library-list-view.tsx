@@ -2,11 +2,12 @@ import { useState } from 'react';
 import {
   Badge, Button, Card, Group, Menu, Modal, Paper, ScrollArea, SimpleGrid, Stack, Text, TextInput, Title, UnstyledButton,
 } from '@mantine/core';
-import { IconBook, IconSearch, IconArrowRight, IconDots, IconFileDownload, IconBook2 } from '@tabler/icons-react';
+import { IconBook, IconSearch, IconArrowRight, IconDots, IconFileDownload, IconBook2, IconPlus } from '@tabler/icons-react';
 
 import { buildTextPreview } from '../services/library-view';
 import type { LibraryModel } from '../services/library-model';
 import { DescriptionDialogState } from './library-shared';
+import { createManualLibraryNovel, fetchLibraryNovelPurgeStatus, fetchTrashedLibraryNovels, moveLibraryNovelToTrash, purgeLibraryNovel, restoreLibraryNovelFromTrash } from '../services/api';
 
 interface LibraryListViewProps {
   model: LibraryModel;
@@ -25,6 +26,10 @@ const LIBRARY_SEARCH_EXAMPLES = [
 export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListViewProps) {
   const [isSearchGuideOpen, setIsSearchGuideOpen] = useState(false);
   const [descriptionDialog, setDescriptionDialog] = useState<DescriptionDialogState | null>(null);
+  const [manualTitle, setManualTitle] = useState('');
+  const [manualDialogOpen, setManualDialogOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [trashedNovels, setTrashedNovels] = useState<LibraryModel['novels']>([]);
 
   const totalNovels = model.libraryOverview.totalNovels;
   const downloadedChapters = model.libraryOverview.downloadedChapters;
@@ -84,6 +89,8 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
 
       <Group>
         <Button variant="light" size="compact-sm" onClick={onOpenControl}>去采集新作品</Button>
+        <Button color="brand" size="compact-sm" leftSection={<IconPlus size={15} />} onClick={() => setManualDialogOpen(true)}>新建手动小说</Button>
+        <Button variant="subtle" size="compact-sm" onClick={() => { setTrashOpen(true); void fetchTrashedLibraryNovels().then((payload) => setTrashedNovels(payload.novels)); }}>回收站</Button>
         <Button variant="subtle" size="compact-sm" onClick={() => void model.refresh()} loading={model.loading}>刷新书库</Button>
       </Group>
 
@@ -120,6 +127,10 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
                             继续阅读
                           </Menu.Item>
                         ) : null}
+                        <Menu.Item color="red" onClick={() => {
+                          if (!window.confirm(`将《${novel.metadata.title}》移入回收站？15 天后才能永久删除。`)) return;
+                          void moveLibraryNovelToTrash(novel.sourceId, novel.metadata.novelId).then(() => model.refresh()).then(() => onNotify({ tone: 'success', title: '已移入回收站', message: '可在回收站恢复。' })).catch((error: unknown) => onNotify({ tone: 'error', title: '删除失败', message: error instanceof Error ? error.message : '请稍后重试。' }));
+                        }}>移入回收站</Menu.Item>
                       </Menu.Dropdown>
                     </Menu>
                   </Group>
@@ -175,6 +186,18 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
           <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{descriptionDialog.text}</Text>
         ) : null}
       </Modal>
+
+      <Modal opened={manualDialogOpen} onClose={() => setManualDialogOpen(false)} title="新建手动小说" size="sm">
+        <Stack>
+          <Text size="sm" c="dimmed">只需标题；后续可在详情页维护作者、简介、标签和 Markdown 正文。</Text>
+          <TextInput label="标题" value={manualTitle} onChange={(event) => setManualTitle(event.currentTarget.value)} autoFocus />
+          <Group justify="flex-end"><Button variant="subtle" onClick={() => setManualDialogOpen(false)}>取消</Button><Button disabled={!manualTitle.trim()} onClick={() => {
+            void createManualLibraryNovel(manualTitle).then((novel) => { setManualDialogOpen(false); setManualTitle(''); model.openNovel('manual', novel.metadata.novelId); }).catch((error: unknown) => onNotify({ tone: 'error', title: '创建失败', message: error instanceof Error ? error.message : '请稍后重试。' }));
+          }}>创建</Button></Group>
+        </Stack>
+      </Modal>
+
+      <Modal opened={trashOpen} onClose={() => setTrashOpen(false)} title="书库回收站" size="lg"><Stack>{trashedNovels.length ? trashedNovels.map((novel) => <Paper key={`${novel.sourceId}-${novel.metadata.novelId}`} p="sm"><Group justify="space-between"><div><Text fw={600}>{novel.metadata.title}</Text><Text size="xs" c="dimmed">{novel.sourceId} · 已移入回收站（只读）</Text></div><Group gap="xs"><Button size="compact-xs" variant="subtle" onClick={() => { setTrashOpen(false); model.openNovel(novel.sourceId, novel.metadata.novelId); }}>查看</Button><Button size="compact-xs" onClick={() => void restoreLibraryNovelFromTrash(novel.sourceId, novel.metadata.novelId).then(() => fetchTrashedLibraryNovels()).then((payload) => { setTrashedNovels(payload.novels); return model.refresh(); }).then(() => onNotify({ tone: 'success', title: '已恢复小说', message: '已恢复原有定时更新与 OPDS 状态。' }))}>恢复</Button><Button size="compact-xs" color="red" variant="light" onClick={() => void fetchLibraryNovelPurgeStatus(novel.sourceId, novel.metadata.novelId).then((status) => { if (!status.canPurge) { onNotify({ tone: 'info', title: '暂不可永久删除', message: `还需保留 ${status.remainingDays} 天。` }); return; } if (!window.confirm(`永久删除《${novel.metadata.title}》及所有关联数据？`)) return; return purgeLibraryNovel(novel.sourceId, novel.metadata.novelId).then(() => fetchTrashedLibraryNovels()).then((payload) => setTrashedNovels(payload.novels)).then(() => onNotify({ tone: 'success', title: '已永久删除', message: '关联素材与导出制品已清理。' })); })}>永久删除</Button></Group></Group></Paper>) : <Text c="dimmed">回收站为空。</Text>}</Stack></Modal>
     </Stack>
   );
 }

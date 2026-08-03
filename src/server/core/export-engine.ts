@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import JSZip from 'jszip';
+import { marked } from 'marked';
 
 import type { OfflineLibraryAssetService } from './offline-library';
 import type { StoredChapterRecord, StoredNovelSnapshot } from './spider';
@@ -91,7 +92,7 @@ interface LibraryExportStrategy {
 }
 
 const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?)/gi;
-const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
+const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\(((?:https?:\/\/|manual:\/\/)[^)\s]+)\)/gi;
 const CHAPTER_SECTION_DIVIDER = '---';
 
 export interface ExportTranslationOptions {
@@ -506,14 +507,14 @@ function renderPlainTextDocument(context: ExportRenderContext): string {
     novelTitle,
     `作者：${localizedText(context.snapshot.metadata.author || '未知作者', context.translatedAuthor, translationMode)}`,
     '',
-    normalizePlainParagraph(descriptionText),
+    normalizePlainParagraph(markdownToPlainText(descriptionText)),
     '',
   ];
 
   context.chapters.forEach((chapter, index) => {
     const chHeading = localizedText(formatChapterHeading(chapter), context.translatedChapterTitles?.get(chapter.id), translationMode);
     const content = resolveChapterExportContent(context, chapter);
-    const paragraphs = splitParagraphs(content).map(normalizePlainParagraph);
+    const paragraphs = splitParagraphs(markdownToPlainText(content)).map(normalizePlainParagraph);
     lines.push(chHeading);
     lines.push(...paragraphs);
 
@@ -529,11 +530,11 @@ function renderEpubIntro(context: ExportRenderContext): string {
   const { translationMode } = context;
   const novelTitle = localizedText(context.snapshot.metadata.title, context.translatedNovelTitle, translationMode);
 
-  let descriptionHtml = escapeXml(context.snapshot.metadata.description || '暂无简介。');
+  let descriptionHtml = escapeXmlWithLineBreaks(context.snapshot.metadata.description || '暂无简介。');
   if (translationMode !== 'original' && context.translatedDescriptionParagraphs && context.translatedDescriptionParagraphs.length > 0) {
     if (translationMode === 'translated') {
       descriptionHtml = context.translatedDescriptionParagraphs
-        .map((p) => escapeXml(stripTranslationNumberPrefix(p.sourceText, p.translatedText ?? p.sourceText)))
+        .map((p) => escapeXmlWithLineBreaks(stripTranslationNumberPrefix(p.sourceText, p.translatedText ?? p.sourceText)))
         .join('<br/>');
     } else {
       const td = context.translatedDescriptionParagraphs
@@ -541,10 +542,12 @@ function renderEpubIntro(context: ExportRenderContext): string {
           const safe = p.translatedText
             ? stripTranslationNumberPrefix(p.sourceText, p.translatedText)
             : null;
-          return safe ? `${escapeXml(p.sourceText)}<br/>${escapeXml(safe)}` : escapeXml(p.sourceText);
+          return safe
+            ? `${escapeXmlWithLineBreaks(p.sourceText)}<br/>${escapeXmlWithLineBreaks(safe)}`
+            : escapeXmlWithLineBreaks(p.sourceText);
         })
         .join('<br/>');
-      descriptionHtml = `${escapeXml(context.snapshot.metadata.description || '暂无简介。')}<br/><br/>${td}`;
+      descriptionHtml = `${escapeXmlWithLineBreaks(context.snapshot.metadata.description || '暂无简介。')}<br/><br/>${td}`;
     }
   }
 
@@ -575,9 +578,7 @@ function renderEpubChapter(
 ): string {
   const assets = context.assetsByChapterId.get(chapter.id) ?? [];
   const content = resolveChapterExportContent(context, chapter);
-  const body = splitParagraphs(content)
-    .map((paragraph) => renderEpubParagraph(paragraph, assets))
-    .join('\n      ');
+  const body = renderEpubMarkdown(content, assets);
   const modeNote = context.translationMode === 'bilingual'
     ? '<p class="meta">双语对照 · 原文<span style="opacity:0.55"> / 译文</span></p>'
     : context.translationMode === 'translated'
@@ -760,6 +761,12 @@ function rewriteMarkdownContent(content: string, assets: PreparedMediaAsset[]): 
   return withMarkdownImages.replace(IMAGE_URL_PATTERN, (match) => replacements.get(match) ?? match);
 }
 
+function renderEpubMarkdown(content: string, assets: PreparedMediaAsset[]): string {
+  const rewritten = rewriteMarkdownContent(content, assets)
+    .replace(/<\/?[a-z][^>]*>/gi, (tag) => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+  return String(marked.parse(rewritten, { async: false, gfm: true, breaks: false })).replace(/<hr>/g, '<hr class="section-divider"/>');
+}
+
 function splitParagraphs(content: string): string[] {
   return content
     .split(/\n{2,}/)
@@ -773,6 +780,29 @@ function normalizePlainParagraph(paragraph: string): string {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .join('\n');
+}
+
+function stripHtmlTags(value: string): string {
+  return value.replace(/<[^>]*>/g, ' ');
+}
+
+function markdownToPlainText(markdown: string): string {
+  const html = String(marked.parse(markdown, { async: false, gfm: true, breaks: false }))
+    .replace(/<hr\s*\/?>/gi, '\n---\n');
+  return decodeHtmlEntities(stripHtmlTags(html))
+    .replace(/\u00a0/g, ' ')
+    .replace(/\n[ \t]+\n/g, '\n\n')
+    .trim();
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
 }
 
 function buildBaseName(snapshot: StoredNovelSnapshot): string {
@@ -859,6 +889,10 @@ function formatVolumeHeading(index: number, rawTitle: string): string {
   }
 
   return `第${index}卷 ${normalizedTitle}`;
+}
+
+function escapeXmlWithLineBreaks(value: string): string {
+  return escapeXml(value).replace(/\r?\n/g, '<br/>');
 }
 
 function localizedTags(original: string[], translated: string[] | undefined, mode: LibraryExportTranslationMode): string[] {

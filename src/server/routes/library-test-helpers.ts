@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createServerApp } from '../app';
-import { ControlCenterService } from '../core/control-center';
+import { ControlCenterService, type SpiderRegistryEntry } from '../core/control-center';
 import type { Neo4jGraphQueryResult, Neo4jGraphStore, Neo4jGraphStoreConfig } from '../core/library-intelligence';
 import type {
   StoredKnowledgeGraphEntityRow,
@@ -132,6 +132,7 @@ export class InMemoryNeo4jGraphStore implements Neo4jGraphStore {
 export function createLibraryServer(options: {
   systemPreferences?: SystemPreferencesService;
   neo4jGraphStore?: Neo4jGraphStore;
+  spiders?: SpiderRegistryEntry[];
   beforeControlCenter?: (repository: SqliteNovelRepository) => void;
 } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-spider-library-'));
@@ -190,7 +191,7 @@ export function createLibraryServer(options: {
 
   const controlCenter = new ControlCenterService({
     repository,
-    spiders: [],
+    spiders: options.spiders ?? [],
     systemPreferences: options.systemPreferences ?? new SystemPreferencesService(),
     ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     offlineAssetStoragePath: path.join(tempDir, 'assets'),

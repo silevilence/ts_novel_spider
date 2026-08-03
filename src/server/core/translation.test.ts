@@ -18,7 +18,14 @@ import {
 import { createTranslationPipelineGraph } from '../core/translation-pipeline';
 import { TranslationService } from '../core/translation-service';
 import { TranslationHistoryManager } from '../core/translation/nodes/history-manager';
+import { splitChapterParagraphs } from '../core/translation/nodes/segment-node';
 import { stripTranslationNumberPrefix } from '../core/translation/nodes/translate-node';
+
+test('translation segmentation keeps an arbitrarily long GFM table in one unit', () => {
+  const table = `| 原文 | 译文 |\n| --- | --- |\n${Array.from({ length: 260 }, (_, index) => `| 内容 ${index} | 翻译 ${index} |`).join('\n')}`;
+  assert.ok(table.length > 2000);
+  assert.deepEqual(splitChapterParagraphs(table), [table]);
+});
 
 // ── SQLite 迁移 + CRUD ──
 

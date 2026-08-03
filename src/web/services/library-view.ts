@@ -35,6 +35,7 @@ export type ReaderContentBlock =
 
 const CHAPTER_SECTION_DIVIDER = '---';
 const MARKDOWN_IMAGE_PATTERN = /^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/i;
+const MANUAL_ASSET_URL_PATTERN = /manual:\/\/([^\s)]+)/g;
 
 export function toLibraryDirectoryChapters(
   chapters: LibraryNovelDetailPayload['novel']['chapters'],
@@ -63,6 +64,7 @@ export function toLibraryDirectoryChapters(
     isCurrentProgress: options.readingProgress?.currentChapterId === chapter.id,
     isProgressWatermark: options.readingProgress?.highestChapterId === chapter.id,
     bookmarkCount: bookmarkCountByChapterId.get(chapter.id) ?? 0,
+    versionChangeCount: chapter.versionChangeCount ?? 0,
     ...(chapter.volumeTitle ? { volumeTitle: chapter.volumeTitle } : {}),
     media: chapter.media,
   }));
@@ -200,4 +202,15 @@ function collapsePreviewText(content: string): string {
     .trim();
 
   return collapsed || '暂无简介。';
+}
+
+/**
+ * Converts the private manual-asset scheme to the same-origin URL before
+ * rehype-sanitize processes the Markdown.  The sanitizer intentionally drops
+ * non-web protocols, so resolving it later in a React image renderer is too late.
+ */
+export function resolveManualAssetUrls(content: string, novelId: string): string {
+  return content.replace(MANUAL_ASSET_URL_PATTERN, (_match, assetId: string) => (
+    `/api/library/manual-assets/${encodeURIComponent(novelId)}/${encodeURIComponent(assetId)}`
+  ));
 }
