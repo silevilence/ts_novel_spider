@@ -279,14 +279,11 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
           onCreateTerm={async (sourceTerm) => { if (!selectedId) return; const result = await createRefinedTerm(selectedId, { sourceTerm }); setTerms((current) => [...current, result.term]); }}
           onDeleteTerm={async (termId) => { if (!selectedId) return; await deleteRefinedTerm(selectedId, termId); setTerms((current) => current.filter((term) => term.id !== termId)); }}
           onExtractTerms={async () => {
-            if (!selectedId) return;
-            try {
-              const result = await extractRefinedTerms(selectedId);
-              setTerms(result.terms);
-              onNotify({ tone: 'success', title: '术语 AI 提取完成', message: `当前共有 ${result.terms.length} 条候选术语。` });
-            } catch (error) {
-              onNotify({ tone: 'error', title: '术语 AI 提取失败', message: error instanceof Error ? error.message : '请检查模型配置。' });
-            }
+            if (!selectedId) throw new Error('请先选择精翻任务。');
+            const result = await extractRefinedTerms(selectedId);
+            setTerms(result.terms);
+            void loadDetail(selectedId);
+            return result;
           }}
           onUpdateTask={async (input) => {
             if (!selectedId) return;

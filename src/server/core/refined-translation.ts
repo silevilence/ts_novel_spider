@@ -65,6 +65,13 @@ export interface RefinedTranslationStreamEvent {
   paragraphIndex?: number;
 }
 
+export interface RefinedGlossaryExtractionResult {
+  terms: ReturnType<SqliteNovelRepository['listRefinedTranslationTerms']>;
+  candidates: number;
+  added: number;
+  total: number;
+}
+
 export class RefinedTranslationService {
   readonly #listeners = new Map<string, Set<(event: RefinedTranslationStreamEvent) => void>>();
   readonly #repository: SqliteNovelRepository;
@@ -198,7 +205,7 @@ export class RefinedTranslationService {
     return chapter;
   }
   readGlossary(taskId: string) { return this.listTerms(taskId); }
-  async extractGlossaryCandidates(taskId: string) {
+  async extractGlossaryCandidates(taskId: string): Promise<RefinedGlossaryExtractionResult> {
     if (!this.#editable(taskId)) throw new Error('回收站任务仅可查看与导出。');
     const task = this.#repository.getRefinedTranslationTask(taskId);
     if (!task) throw new Error('精翻任务不存在。');
@@ -233,7 +240,8 @@ export class RefinedTranslationService {
     }
     this.#checkpoint(taskId, 'glossary_setup', { event: 'ai_term_extraction', candidates: candidates.length, added });
     this.#touch(taskId, added ? `术语 AI 已提取 ${added} 条新候选，请人工确认。` : '术语 AI 未发现新的候选术语。');
-    return this.listTerms(taskId);
+    const terms = this.listTerms(taskId);
+    return { terms, candidates: candidates.length, added, total: terms.length };
   }
   updateGlossaryTerm(taskId: string, termId: string, input: Parameters<RefinedTranslationService['updateTerm']>[2]) { return this.updateTerm(taskId, termId, input); }
   async suggestGlossaryRevision(taskId: string, termId: string, feedback: string): Promise<string> { const task = this.#repository.getRefinedTranslationTask(taskId); const term = this.listTerms(taskId).find((item) => item.id === termId); if (!task || !term) throw new Error('术语或任务不存在。'); const route = task.modelConfig.termTranslationModel ?? this.#resolveRoute(task, 'translationModels'); if (!route) throw new Error('未配置可用的术语翻译模型。'); return this.#generateText(this.#preferences, route, `根据用户意见修改术语译法。只输出建议译文。用户意见：${feedback}`, `原术语：${term.sourceTerm}\n当前译文：${term.targetTerm ?? '（空）'}`); }

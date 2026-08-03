@@ -42,3 +42,14 @@ test('metadata card can switch between source and translated values', () => {
   assert.match(panel, /data=\{\[\{ value: 'source', label: '原文' \}, \{ value: 'translated', label: '译文' \}\]\}/);
   assert.match(panel, /元数据译文尚未生成/);
 });
+
+test('glossary AI extraction visibly reports running, completed, and failed states', () => {
+  const panel = fs.readFileSync(panelPath, 'utf8');
+  assert.match(panel, /const \[glossaryExtraction, setGlossaryExtraction\] = useState/);
+  assert.match(panel, /const extractTerms = async \(\) =>/);
+  assert.match(panel, /title="术语 AI 正在提取"/);
+  assert.match(panel, /title="术语 AI 提取完成"/);
+  assert.match(panel, /title="术语 AI 提取失败"/);
+  assert.match(panel, /loading=\{glossaryExtraction\?\.status === 'running'\}/);
+  assert.match(panel, /本次扫描已结束，不会在后台继续新增术语/);
+});

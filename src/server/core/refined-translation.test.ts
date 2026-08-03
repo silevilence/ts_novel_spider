@@ -70,9 +70,10 @@ test('refined translation can extract glossary candidates when the copied source
       async () => '{"terms":[{"sourceTerm":"アリス","entityType":"character","priority":9,"suggestion":"主角姓名"},{"sourceTerm":"王都","entityType":"location","priority":7,"suggestion":"城市名"}]}',
     );
 
-    const terms = await service.extractGlossaryCandidates('task-empty-terms');
-    assert.deepEqual(terms.map((term) => term.sourceTerm), ['アリス', '王都']);
-    assert.equal(terms[0]?.status, 'pending');
+    const result = await service.extractGlossaryCandidates('task-empty-terms');
+    assert.deepEqual(result.terms.map((term) => term.sourceTerm), ['アリス', '王都']);
+    assert.equal(result.terms[0]?.status, 'pending');
+    assert.deepEqual({ candidates: result.candidates, added: result.added, total: result.total }, { candidates: 2, added: 2, total: 2 });
   } finally {
     repository.close();
     fs.rmSync(tempDir, { recursive: true, force: true });

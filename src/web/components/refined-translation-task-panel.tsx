@@ -59,6 +59,10 @@ interface PurgeStatus { canPurge: boolean; remainingDays: number; deletedAt: str
 type TaskAction = 'advance' | 'pause' | 'resume' | 'restore' | 'delete' | 'retry-failed' | 'purge';
 type ReviewResolution = 'open' | 'accepted' | 'partially_accepted' | 'rejected' | 'resolved' | 'ignored' | 'superseded';
 type Review = { id: string; chapterId: string; reviewRound: number; severity: string; suggestion: string; replacementText: string | null; paragraphIndices: number[]; scores: Record<string, number>; forceChange: boolean; resolved: boolean; resolution: ReviewResolution; resolutionNote: string | null; createdAt: string };
+type GlossaryExtractionState =
+  | { status: 'running' }
+  | { status: 'completed'; candidates: number; added: number; total: number }
+  | { status: 'failed'; message: string };
 
 const STAGE_LABEL: Record<string, string> = {
   glossary_setup: '确认术语候选', glossary_translation: '确认术语译文', translating: '正文初翻', checking: '遗漏检查', reviewing: '审核校对', revising: '审核修订', completed: '已完成',
@@ -96,7 +100,7 @@ interface Props {
   onBulkDeleteTerms: (termIds: string[]) => Promise<void>;
   onCreateTerm: (sourceTerm: string) => Promise<void>;
   onDeleteTerm: (termId: string) => Promise<void>;
-  onExtractTerms: () => Promise<void>;
+  onExtractTerms: () => Promise<{ candidates: number; added: number; total: number }>;
   onUpdateTask: (input: { name?: string; sourceLang?: string; targetLang?: string; modelConfig?: RefinedTask['modelConfig'] }) => Promise<void>;
   onSuggestTerm: (termId: string, feedback: string) => Promise<string>;
   onAgentChat: (input: { message: string; mode: RefinedChapterAgentMode; paragraphIndices?: number[]; history?: Array<{ role: 'user' | 'assistant'; content: string }> }) => Promise<{ reply: string; mode: RefinedChapterAgentMode; appliedParagraphIndices: number[]; proposedEdits: RefinedChapterAgentEdit[] }>;
@@ -123,6 +127,7 @@ export function RefinedTranslationTaskPanel(props: Props) {
   const [termFeedback, setTermFeedback] = useState('');
   const [termSuggestionText, setTermSuggestionText] = useState('');
   const [suggesting, setSuggesting] = useState(false);
+  const [glossaryExtraction, setGlossaryExtraction] = useState<GlossaryExtractionState | null>(null);
   const [configureOpen, setConfigureOpen] = useState(false);
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
   const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
@@ -253,6 +258,17 @@ export function RefinedTranslationTaskPanel(props: Props) {
     try { setTermSuggestionText(await props.onSuggestTerm(termSuggestion.id, termFeedback)); }
     finally { setSuggesting(false); }
   };
+  const extractTerms = async () => {
+    if (glossaryExtraction?.status === 'running') return;
+    setActiveTab('glossary');
+    setGlossaryExtraction({ status: 'running' });
+    try {
+      const result = await props.onExtractTerms();
+      setGlossaryExtraction({ status: 'completed', candidates: result.candidates, added: result.added, total: result.total });
+    } catch (error) {
+      setGlossaryExtraction({ status: 'failed', message: error instanceof Error ? error.message : '请检查模型配置后重试。' });
+    }
+  };
   const sendAgentMessage = async () => {
     if (!agentPrompt.trim() || !chapterId) return;
     const userMessage = agentPrompt.trim();
@@ -294,7 +310,10 @@ export function RefinedTranslationTaskPanel(props: Props) {
       </Group>
     </Group>
     <Paper p="sm" radius="md" style={{ border: '1px solid rgba(255,140,105,.3)', background: 'rgba(63,30,17,.25)' }}><Group justify="space-between" align="flex-end"><Stack gap={2}><Text size="xs" fw={700} c="orange.3" tt="uppercase">导出当前结果</Text><Text size="xs" c="dimmed">导出不会改变任务内容；“全部章节”会将未完成段落保留为原文。</Text></Stack><Button component="a" href={refinedExportUrl(task.id, exportFormat, exportMode, exportScope === 'all')} leftSection={<IconFileDownload size={15} />}>下载</Button></Group><SimpleGrid cols={{ base: 1, sm: 3 }} mt="sm"><Select label="格式" value={exportFormat} onChange={(value) => setExportFormat((value ?? 'epub') as LibraryExportFormat)} data={[{ value: 'epub', label: 'EPUB' }, { value: 'markdown', label: 'Markdown' }, { value: 'txt', label: 'TXT' }]} /><Select label="内容" value={exportMode} onChange={(value) => setExportMode((value ?? 'bilingual') as TranslationExportMode)} data={[{ value: 'bilingual', label: '双语对照' }, { value: 'translated', label: '仅译文' }, { value: 'original', label: '仅原文' }]} /><Select label="范围" value={exportScope} onChange={(value) => setExportScope(value === 'completed' ? 'completed' : 'all')} data={[{ value: 'all', label: '全部章节（未完成用原文）' }, { value: 'completed', label: '仅已完成章节' }]} /></SimpleGrid></Paper>
-    <TaskActionGuidance task={task} termCount={terms.length} reviewCount={reviews.filter((review) => !review.resolved).length} hasRemainingAutomaticWork={detail.chapters.some((chapter) => chapter.status !== 'reviewed' && chapter.status !== 'failed' && chapter.status !== 'needs_attention')} recycleBin={recycleBin} onExtractTerms={props.onExtractTerms} onRetry={() => props.onAction('retry-failed')} onShowReviews={() => setActiveTab('review')} />
+    <TaskActionGuidance task={task} termCount={terms.length} reviewCount={reviews.filter((review) => !review.resolved).length} hasRemainingAutomaticWork={detail.chapters.some((chapter) => chapter.status !== 'reviewed' && chapter.status !== 'failed' && chapter.status !== 'needs_attention')} recycleBin={recycleBin} extracting={glossaryExtraction?.status === 'running'} onExtractTerms={extractTerms} onRetry={() => props.onAction('retry-failed')} onShowReviews={() => setActiveTab('review')} />
+    {glossaryExtraction?.status === 'running' ? <Alert color="blue" title="术语 AI 正在提取"><Text size="sm">已开始扫描任务原文；请保持此页面打开。候选术语会在本次扫描结束后加入术语表。</Text></Alert> : null}
+    {glossaryExtraction?.status === 'completed' ? <Alert color={glossaryExtraction.added ? 'green' : 'yellow'} title="术语 AI 提取完成"><Text size="sm">本次识别 {glossaryExtraction.candidates} 条候选，新增 {glossaryExtraction.added} 条；术语表现有 {glossaryExtraction.total} 条。 本次扫描已结束，不会在后台继续新增术语；如需补充，请再次发起一次独立扫描。</Text></Alert> : null}
+    {glossaryExtraction?.status === 'failed' ? <Alert color="red" title="术语 AI 提取失败"><Text size="sm">{glossaryExtraction.message}</Text></Alert> : null}
     <Progress value={detail.progress.total ? completedSegments / detail.progress.total * 100 : 0} color="brand" />
     <Text size="xs" c="dimmed">当前：{STAGE_LABEL[task.stage]} · 已完成 {completedSegments}/{detail.progress.total} 段 · 失败 {detail.progress.failed} · 已审核章节 {detail.progress.reviewedChapters}/{detail.stepProgress.chapters.total} · 当前章审核轮次 {detail.progress.currentRound}/{task.modelConfig.maxReviewRounds}{currentChapter ? ` · 正在处理第 ${currentChapter.chapterIndex} 章` : ''}</Text>
     <Button variant="subtle" size="compact-sm" onClick={() => setWorkflowOpen((value) => !value)}>{workflowOpen ? '收起' : '展开'} 状态机流程</Button>
@@ -344,7 +363,7 @@ export function RefinedTranslationTaskPanel(props: Props) {
       </Stack></Tabs.Panel>
       <Tabs.Panel value="glossary" pt="md"><Stack gap="sm">
         <SimpleGrid cols={{ base: 1, sm: 3 }}><TextInput label="搜索" value={termQuery} onChange={(event) => setTermQuery(event.currentTarget.value)} placeholder="术语、译文或 AI 建议" /><Select label="状态" value={termStatus} onChange={(value) => setTermStatus((value ?? 'all') as typeof termStatus)} data={[{ value: 'all', label: '全部状态' }, { value: 'pending', label: '待确认' }, { value: 'confirmed', label: '已确认' }, { value: 'excluded', label: '已排除' }]} /><Select label="实体类型" value={termType} onChange={(value) => setTermType(value ?? 'all')} data={[{ value: 'all', label: '全部类型' }, ...termTypes.map((type) => ({ value: type, label: type }))]} /></SimpleGrid>
-        <Group><Button size="compact-sm" color="yellow" variant="light" leftSection={<IconSparkles size={14} />} disabled={recycleBin} onClick={() => void props.onExtractTerms()}>术语 AI 提取</Button><TextInput size="xs" value={newTerm} onChange={(event) => setNewTerm(event.currentTarget.value)} placeholder="新增源术语" disabled={recycleBin} /><Button size="compact-sm" disabled={recycleBin || !newTerm.trim()} onClick={() => { void props.onCreateTerm(newTerm.trim()); setNewTerm(''); }}>新增术语</Button><Button size="compact-sm" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'confirmed')}>批量确认</Button><Button size="compact-sm" variant="default" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'excluded')}>批量排除</Button><Button size="compact-sm" color="red" variant="light" leftSection={<IconTrash size={14} />} disabled={recycleBin || !selectedTerms.length} onClick={() => setBulkDeleteConfirmOpen(true)}>批量删除</Button></Group>
+        <Group><Button size="compact-sm" color="yellow" variant="light" leftSection={<IconSparkles size={14} />} loading={glossaryExtraction?.status === 'running'} disabled={recycleBin || glossaryExtraction?.status === 'running'} onClick={() => void extractTerms()}>{glossaryExtraction?.status === 'running' ? '术语 AI 提取中' : '术语 AI 提取'}</Button><TextInput size="xs" value={newTerm} onChange={(event) => setNewTerm(event.currentTarget.value)} placeholder="新增源术语" disabled={recycleBin} /><Button size="compact-sm" disabled={recycleBin || !newTerm.trim()} onClick={() => { void props.onCreateTerm(newTerm.trim()); setNewTerm(''); }}>新增术语</Button><Button size="compact-sm" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'confirmed')}>批量确认</Button><Button size="compact-sm" variant="default" disabled={recycleBin || !selectedTerms.length} onClick={() => void props.onBulkUpdateTerms(selectedTerms, 'excluded')}>批量排除</Button><Button size="compact-sm" color="red" variant="light" leftSection={<IconTrash size={14} />} disabled={recycleBin || !selectedTerms.length} onClick={() => setBulkDeleteConfirmOpen(true)}>批量删除</Button></Group>
         <Text size="xs" c="dimmed">已选 {selectedTerms.length} 条 · 已确认 {detail.stepProgress.glossary.confirmed}/{detail.stepProgress.glossary.total} 条。表头固定在滚动区域顶部。</Text>
         <ScrollArea h={430}><Table stickyHeader striped highlightOnHover style={{ minWidth: 1050 }}><Table.Thead style={{ background: 'var(--mantine-color-body)' }}><Table.Tr><Table.Th w={46}><input type="checkbox" checked={filteredTerms.length > 0 && filteredTerms.every((term) => selectedTerms.includes(term.id))} onChange={(event) => setSelectedTerms(event.currentTarget.checked ? [...new Set([...selectedTerms, ...filteredTerms.map((term) => term.id)])] : selectedTerms.filter((id) => !filteredTerms.some((term) => term.id === id)))} /></Table.Th><Table.Th w={180}>原术语</Table.Th><Table.Th w={200}>译文</Table.Th><Table.Th w={150}>类型 / 优先级</Table.Th><Table.Th>AI 建议</Table.Th><Table.Th w={92}>状态</Table.Th><Table.Th w={150}>操作</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{filteredTerms.map((term) => <Table.Tr key={term.id}><Table.Td><input type="checkbox" checked={selectedTerms.includes(term.id)} onChange={(event) => setSelectedTerms((items) => event.currentTarget.checked ? [...items, term.id] : items.filter((id) => id !== term.id))} /></Table.Td><Table.Td>{term.sourceTerm}</Table.Td><Table.Td><TextInput key={`${term.id}:${term.targetTerm ?? ''}`} size="xs" defaultValue={term.targetTerm ?? ''} disabled={recycleBin} onBlur={(event) => void props.onUpdateTerm(term.id, { targetTerm: event.currentTarget.value, status: 'confirmed' })} /></Table.Td><Table.Td>{term.entityType ?? '—'} / {term.priority}</Table.Td><Table.Td><Text size="xs">{term.suggestion ?? '—'}</Text></Table.Td><Table.Td><Badge size="sm" style={{ minWidth: 64, whiteSpace: 'nowrap' }} color={term.status === 'confirmed' ? 'green' : term.status === 'excluded' ? 'gray' : 'yellow'}>{term.status === 'confirmed' ? '已确认' : term.status === 'excluded' ? '已排除' : '待确认'}</Badge></Table.Td><Table.Td><Group gap="xs" wrap="nowrap"><Button size="compact-xs" variant="subtle" leftSection={<IconSparkles size={13} />} disabled={recycleBin} onClick={() => { setTermSuggestion(term); setTermFeedback(''); setTermSuggestionText(''); }}>提意见</Button><ActionIcon color="red" variant="subtle" disabled={recycleBin} onClick={() => void props.onDeleteTerm(term.id)}><IconTrash size={14} /></ActionIcon></Group></Table.Td></Table.Tr>)}</Table.Tbody></Table></ScrollArea>
       </Stack></Tabs.Panel>
@@ -378,12 +397,12 @@ export function RefinedTranslationTaskPanel(props: Props) {
   </Stack>;
 }
 
-function TaskActionGuidance({ task, termCount, reviewCount, hasRemainingAutomaticWork, recycleBin, onExtractTerms, onRetry, onShowReviews }: { task: RefinedTask; termCount: number; reviewCount: number; hasRemainingAutomaticWork: boolean; recycleBin: boolean; onExtractTerms: () => Promise<void>; onRetry: () => Promise<void>; onShowReviews: () => void }) {
+function TaskActionGuidance({ task, termCount, reviewCount, hasRemainingAutomaticWork, recycleBin, extracting, onExtractTerms, onRetry, onShowReviews }: { task: RefinedTask; termCount: number; reviewCount: number; hasRemainingAutomaticWork: boolean; recycleBin: boolean; extracting: boolean; onExtractTerms: () => Promise<void>; onRetry: () => Promise<void>; onShowReviews: () => void }) {
   if (recycleBin) return <Alert color="gray" title="回收站只读模式">可以查看和导出任务；恢复后才能修改或运行流程。</Alert>;
   if (task.status === 'needs_attention' && hasRemainingAutomaticWork) return <Alert color="blue" title="正在自动恢复后续章节"><Text size="sm">当前章节的问题会保留至全部章节完成后的最终复核；后续章节仍会继续自动翻译、检查与审核。</Text></Alert>;
   if (task.status === 'needs_attention') return <Alert color="orange" icon={<IconAlertTriangle size={16} />} title="自动流程已结束，存在待人工复核项"><Text size="sm">翻译与审核已自动跑完；达到审核轮次上限或发生不可自动恢复的失败时，相关意见会保留到最终复核。你可以查看意见后微调，也可让 Agent 再次按全部意见修订。</Text><Group mt="sm"><Button size="compact-sm" variant="light" onClick={onShowReviews}>查看待处理审核{reviewCount ? `（${reviewCount}）` : ''}</Button><Button size="compact-sm" color="orange" leftSection={<IconRefresh size={14} />} onClick={() => void onRetry()}>让 Agent 按意见自动修订</Button></Group></Alert>;
   if (task.status === 'running') return <Alert color="blue" title={task.stage === 'glossary_setup' && !termCount ? '术语 AI 正在从原文提取候选' : '正在自动处理'}>{task.stage === 'glossary_setup' && !termCount ? '已开始术语 AI 提取；提取完成后会显示候选术语并暂停等待你的确认。' : '当前步骤会自行推进；如需人工改稿，请先暂停任务。'}</Alert>;
-  if (task.stage === 'glossary_setup') return <Alert color="yellow" title={termCount ? '当前需要你处理：确认术语候选' : '当前需要你处理：生成术语候选'}><Text size="sm">{termCount ? '检查术语表后，点击“确认并进入下一步”。' : '现有粗翻术语与图谱实体均为空。请使用术语 AI 从任务原文中提取候选，然后确认。'}</Text>{!termCount ? <Button mt="sm" size="compact-sm" color="yellow" onClick={() => void onExtractTerms()}>术语 AI 提取</Button> : null}</Alert>;
+  if (task.stage === 'glossary_setup') return <Alert color="yellow" title={termCount ? '当前需要你处理：确认术语候选' : '当前需要你处理：生成术语候选'}><Text size="sm">{termCount ? '检查术语表后，点击“确认并进入下一步”。' : '现有粗翻术语与图谱实体均为空。请使用术语 AI 从任务原文中提取候选，然后确认。'}</Text>{!termCount ? <Button mt="sm" size="compact-sm" color="yellow" loading={extracting} disabled={extracting} onClick={() => void onExtractTerms()}>{extracting ? '术语 AI 提取中' : '术语 AI 提取'}</Button> : null}</Alert>;
   if (task.stage === 'glossary_translation') return <Alert color="yellow" title="当前需要你处理：确认术语译文"><Text size="sm">检查并确认或排除全部术语译文后，点击“确认术语，开始自动流程”。</Text></Alert>;
   if (task.stage === 'completed') return reviewCount ? <Alert color="yellow" title="自动流程已完成，等待最终复核"><Text size="sm">正文、检查与审核已自动跑完；仍有 {reviewCount} 条意见保留给最终人工复核。你可以在完成后集中处理、让章节 Agent 协助，或直接导出当前结果。</Text><Button size="compact-sm" mt="sm" variant="light" onClick={onShowReviews}>查看最终复核意见</Button></Alert> : <Alert color="green" title="任务已完成">全部章节已通过审核。你仍可手动微调、使用章节 Agent 或导出当前结果。</Alert>;
   return <Alert color="blue" title="任务已暂停">点击“继续”会从当前 checkpoint 恢复。</Alert>;

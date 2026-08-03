@@ -37,7 +37,7 @@ export function createRefinedTranslationRouter({ service }: { service: ControlCe
   });
   router.get('/tasks/:taskId/terms', (request, response) => response.json({ terms: service.listRefinedTranslationTerms(request.params.taskId) }));
   router.post('/tasks/:taskId/terms/extract', async (request, response) => {
-    try { return response.json({ terms: await service.extractRefinedTranslationTerms(request.params.taskId) }); }
+    try { return response.json(await service.extractRefinedTranslationTerms(request.params.taskId)); }
     catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '术语 AI 提取失败。' }); }
   });
   router.post('/tasks/:taskId/terms', (request, response) => { try { const body = objectBody(request.body); const term = service.createRefinedTranslationTerm(request.params.taskId, { sourceTerm: requiredString(body, 'sourceTerm'), ...((typeof body.targetTerm === 'string' || body.targetTerm === null) ? { targetTerm: body.targetTerm } : {}), ...((typeof body.entityType === 'string' || body.entityType === null) ? { entityType: body.entityType } : {}), ...(typeof body.priority === 'number' ? { priority: body.priority } : {}) }); return term ? response.status(201).json({ term }) : response.status(404).json({ message: '精翻任务不存在或已在回收站。' }); } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '无法创建术语。' }); } });
