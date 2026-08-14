@@ -47,3 +47,14 @@
 **Version** (版本) — A saved snapshot of a novel's metadata or of a single chapter's content. Version numbering starts at 0 (the initial content, shown without any change count); each subsequent successful save that differs from the current version produces the next version. Versions are immutable snapshots, not diffs, and support viewing and restoring.
 
 **Manual Chapter Management** (章节管理) — For manual novels, the ability to create, rename, delete, reorder, and move chapters and volumes from the chapter directory. Chapters may live outside any volume (an "unfiled" group). Reordering or moving recomputes the global chapter index. Deleting a volume deletes its chapters with strong confirmation.
+
+## Capture Mechanisms
+
+**Browser Transport** (浏览器传输采集) — Obtaining a site's HTML through a user-authorized browser extension instead of the server's own fetcher. The extension renders the page in a real top-level tab (letting the user complete access verification such as Cloudflare challenges), serializes the rendered DOM, and returns it to the server. Parsing stays server-side in the SpiderAdapter; the extension is only a `SpiderHtmlFetcher` implementation. Site session cookies and verification credentials never leave the browser.
+_Avoid_: Plugin capture, extension crawling
+
+**Pairing** (配对) — The trust relationship between a user-authorized browser extension and the local server, established once by exchanging a short-lived one-time token (generated in the settings page) for a persistent pairing key. The key authorizes only the browser-capture channel, and can be revoked by unpairing.
+
+**Browser Capture Task** (浏览器采集任务) — A crawl task executed through Browser Transport. It runs inside the existing task system under a browser kind marker, executes one at a time (single browser, serial queue), and fails into a resumable state if the extension disconnects mid-task.
+
+**Capture Walk** (走查) — The semi-automatic chapter-by-chapter capture driven from the extension popup: the extension opens each unsaved chapter in turn, reads the rendered DOM, and saves it, pausing on challenge pages, rate limiting, or parse failures until the user intervenes.
