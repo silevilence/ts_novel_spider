@@ -48,6 +48,11 @@
 
 **Manual Chapter Management** (章节管理) — For manual novels, the ability to create, rename, delete, reorder, and move chapters and volumes from the chapter directory. Chapters may live outside any volume (an "unfiled" group). Reordering or moving recomputes the global chapter index. Deleting a volume deletes its chapters with strong confirmation.
 
+## Sites
+
+**SyosetuOrg** (syosetu.org 站点) — An independent Japanese novel viewing/aggregation site, operated separately from the HinaProject syosetu.com group and therefore distinct from Syosetu (小説家になろう) and Syosetu18 (ノクターンノベルズ). Novel pages live at `/novel/{id}/` with numeric ids (e.g. 353455). The site sits behind Cloudflare and IP-blocks direct server fetches (HTTP 403 even with a browser UA), so its adapter is parse-only and production capture runs through Browser Transport or a Cloudflare-allowed proxy.
+_Avoid_: Syosetu18, なろう系 (confusable with the syosetu.com group)
+
 ## Capture Mechanisms
 
 **Browser Transport** (浏览器传输采集) — Obtaining a site's HTML through a user-authorized browser extension instead of the server's own fetcher. The extension renders the page in a real top-level tab (letting the user complete access verification such as Cloudflare challenges), serializes the rendered DOM, and returns it to the server. Parsing stays server-side in the SpiderAdapter; the extension is only a `SpiderHtmlFetcher` implementation. Site session cookies and verification credentials never leave the browser.
@@ -58,3 +63,5 @@ _Avoid_: Plugin capture, extension crawling
 **Browser Capture Task** (浏览器采集任务) — A crawl task executed through Browser Transport. It runs inside the existing task system under a browser kind marker, executes one at a time (single browser, serial queue), and fails into a resumable state if the extension disconnects mid-task.
 
 **Capture Walk** (走查) — The semi-automatic chapter-by-chapter capture driven from the extension popup: the extension opens each unsaved chapter in turn, reads the rendered DOM, and saves it, pausing on challenge pages, rate limiting, or parse failures until the user intervenes.
+
+**Developer Export** (开发数据导出) — A user-triggered browser-extension utility that writes the rendered page HTML to a local file and lets the developer view/copy the page's cookies. Data stays on the developer's machine and never travels to the server or the pairing channel; it exists to produce test fixtures and to investigate cookie requirements (e.g. age gates) when building a new site adapter (see ADR-0004).
