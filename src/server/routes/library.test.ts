@@ -492,6 +492,30 @@ test('OPDS visibility API — PUT bulk updates visibility', async () => {
   }
 });
 
+test('browser-captured novels keep remote media uncached in v1', async () => {
+  const { app, cleanup } = createLibraryServer({
+    beforeControlCenter: (repository) => repository.markNovelCaptureTransport('syosetu', 'n1000lib', 'browser'),
+  });
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    const baseUrl = await waitForServerListening(server);
+    const cacheResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/media/cache`, {
+      method: 'POST',
+    });
+    const payload = await cacheResponse.json() as { message: string };
+
+    assert.equal(cacheResponse.status, 502);
+    assert.match(payload.message, /浏览器采集小说.*不支持缓存远端媒体/);
+    const detailResponse = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib`);
+    const detail = await detailResponse.json() as { novel: { media: { cached: number; pending: number } } };
+    assert.deepEqual(detail.novel.media, { total: 1, cached: 0, pending: 1 });
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});
+
 test('manual novel routes create, save versioned Markdown chapters and refuse scheduling', async () => {
   const { app, cleanup } = createLibraryServer();
   const server = app.listen(0, '127.0.0.1');

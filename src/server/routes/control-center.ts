@@ -4,6 +4,7 @@ import CronExpressionParser from 'cron-parser';
 import {
   ControlCenterService,
   type CrawlTaskSnapshot,
+  type CrawlTaskKind,
   type PreviewNovelResult,
   type SpiderSourceDescriptor,
   type SnapshotSummary,
@@ -49,6 +50,7 @@ export interface ApiTaskSnapshot {
   id: string;
   sourceId: string;
   novelId: string;
+  kind: CrawlTaskKind;
   status: CrawlTaskSnapshot['status'];
   runId: string | null;
   createdAt: string;
@@ -120,6 +122,7 @@ interface CreateTaskRequestBody {
   forceRefetch?: unknown;
   chapterConcurrency?: unknown;
   chapterRetryCount?: unknown;
+  kind?: unknown;
 }
 
 interface UpdateNetworkProxyRequestBody {
@@ -324,7 +327,11 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     try {
       const sourceId = requiredQueryString(request.query.sourceId, 'sourceId');
       const novelId = requiredQueryString(request.query.novelId, 'novelId');
-      const preview = await service.previewNovel({ sourceId, novelId });
+      const preview = await service.previewNovel({
+        sourceId,
+        novelId,
+        kind: parseTaskKind(request.query.kind),
+      });
 
       response.json(serializePreview(preview));
     } catch (error) {
@@ -343,12 +350,37 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     response.json(payload);
   });
 
+  router.get('/browser/status', (_request, response) => {
+    response.json(service.getBrowserCaptureStatus());
+  });
+
+  router.post('/browser/pairing-token', (_request, response) => {
+    response.status(201).json(service.createBrowserPairingToken());
+  });
+
+  router.get('/browser/pairings', (_request, response) => {
+    response.json({ pairings: service.listBrowserPairings() });
+  });
+
+  router.delete('/browser/pairings/:pairingId', (request, response) => {
+    if (!service.revokeBrowserPairing(request.params.pairingId)) {
+      response.status(404).json({ message: 'Browser pairing was not found or was already revoked.' });
+      return;
+    }
+    response.status(204).end();
+  });
+
+  router.get('/browser/audits', (request, response) => {
+    response.json({ audits: service.listBrowserCaptureAudits(optionalPositiveInteger(request.query.limit, 100)) });
+  });
+
   router.post('/tasks', (request, response) => {
     try {
       const body = request.body as CreateTaskRequestBody;
       const task = service.createTask({
         sourceId: requiredBodyString(body.sourceId, 'sourceId'),
         novelId: requiredBodyString(body.novelId, 'novelId'),
+        kind: parseTaskKind(body.kind),
         ...(Array.isArray(body.chapterIds) ? { chapterIds: parseChapterIds(body.chapterIds) } : {}),
         ...(typeof body.forceRefetch === 'boolean' ? { forceRefetch: body.forceRefetch } : {}),
         ...(body.chapterConcurrency !== undefined
@@ -386,6 +418,20 @@ export function createControlCenterRouter({ service }: ControlCenterRouterOption
     };
 
     response.json(payload);
+  });
+
+  router.post('/tasks/:taskId/browser-control', (request, response) => {
+    try {
+      const action = parseBrowserControl((request.body as { action?: unknown } | undefined)?.action);
+      const task = service.controlBrowserTask(request.params.taskId, action);
+      if (!task) {
+        response.status(409).json({ message: 'Browser task is not active or does not exist.' });
+        return;
+      }
+      response.json({ task: serializeTaskSnapshot(task) } satisfies ControlTaskPayload);
+    } catch (error) {
+      response.status(400).json({ message: error instanceof Error ? error.message : 'Invalid browser task control.' });
+    }
   });
 
   router.get('/tasks/:taskId/events', (request, response) => {
@@ -531,6 +577,7 @@ export function serializeTaskSnapshot(task: CrawlTaskSnapshot): ApiTaskSnapshot 
     id: task.id,
     sourceId: task.sourceId,
     novelId: task.novelId,
+    kind: task.kind,
     status: task.status,
     runId: task.runId,
     createdAt: task.createdAt,
@@ -873,6 +920,17 @@ function optionalUrlString(value: unknown): string | undefined {
   }
 
   return value.trim();
+}
+
+function parseTaskKind(value: unknown): CrawlTaskKind {
+  if (value === undefined || value === null || value === '' || value === 'direct') return 'direct';
+  if (value === 'browser') return 'browser';
+  throw new Error('Task kind must be direct or browser.');
+}
+
+function parseBrowserControl(value: unknown): 'pause' | 'continue' | 'abort' {
+  if (value === 'pause' || value === 'continue' || value === 'abort') return value;
+  throw new Error('Browser task action must be pause, continue or abort.');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

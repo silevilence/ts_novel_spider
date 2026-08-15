@@ -6,7 +6,7 @@
   "description": "Chromium browser bridge extension for TS Novel Spider.",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "build": "vite build --configLoader runner",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

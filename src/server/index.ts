@@ -1,6 +1,8 @@
 import path from 'node:path';
 
 import { createServerApp } from './app';
+import { ControlCenterService } from './core/control-center';
+import { attachBrowserCaptureWebSocket } from './browser-capture-websocket';
 
 export interface ServerListenOptions {
   port: number;
@@ -11,18 +13,25 @@ export function resolveServerListenOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): ServerListenOptions {
   const port = Number(env.PORT ?? 3000);
-  const host = env.HOST?.trim() || '0.0.0.0';
+  const host = env.HOST?.trim() || '127.0.0.1';
 
   return { port, host };
 }
 
 export function startServer(env: NodeJS.ProcessEnv = process.env) {
   const { port, host } = resolveServerListenOptions(env);
-  const app = createServerApp();
+  const controlCenter = new ControlCenterService();
+  const app = createServerApp({
+    controlCenter,
+    allowRemoteBrowserCapture: host === '0.0.0.0' || host === '::',
+  });
 
-  return app.listen(port, host, () => {
+  const server = app.listen(port, host, () => {
     console.log(`Server listening on http://${host}:${port}`);
   });
+  attachBrowserCaptureWebSocket(server, controlCenter.getBrowserCaptureService());
+  server.on('close', () => controlCenter.close());
+  return server;
 }
 
 export function isServerEntrypointInvocation(

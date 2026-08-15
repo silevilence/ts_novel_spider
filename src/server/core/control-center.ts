@@ -78,6 +78,17 @@ import { SchedulingSummaryService } from './scheduling-summary';
 import { OpdsCompilationService, type OpdsCompilationServiceDependencies } from './opds-compilation';
 import { SpiderRunner } from './spider-runner';
 import {
+  BrowserCaptureService,
+  BrowserTransportError,
+  type BrowserCaptureAudit,
+  type BrowserCaptureControl,
+  type BrowserCapturePairing,
+} from './browser-capture';
+import {
+  BrowserTransportSpiderAdapter,
+  type BrowserTransportSpiderFactory,
+} from './browser-transport-spider';
+import {
   type ChapterIndexEntry,
   toError,
   type CrawlNovelOptions,
@@ -93,16 +104,19 @@ export interface SpiderSourceDescriptor {
   label: string;
   description: string;
   defaultNovelId: string;
+  transports: Array<'direct' | 'browser'>;
 }
 
 export interface SpiderRegistryEntry {
   descriptor: SpiderSourceDescriptor;
   spider: SpiderAdapter;
+  createBrowserSpider?: BrowserTransportSpiderFactory;
 }
 
 export interface PreviewNovelInput {
   sourceId: string;
   novelId: string;
+  kind?: CrawlTaskKind;
 }
 
 export interface TaskExecutionInput extends PreviewNovelInput {
@@ -112,7 +126,9 @@ export interface TaskExecutionInput extends PreviewNovelInput {
   chapterRetryCount?: number;
 }
 
-export type CrawlTaskStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type CrawlTaskKind = 'direct' | 'browser';
+export type CrawlTaskStatus = 'queued' | 'running' | 'paused' | 'waiting_user' | 'completed' | 'failed' | 'aborted';
+const ACTIVE_CRAWL_TASK_STATUSES: ReadonlySet<CrawlTaskStatus> = new Set(['queued', 'running', 'paused', 'waiting_user']);
 
 export interface CrawlTaskProgress {
   catalogChapters: number;
@@ -126,6 +142,7 @@ export interface CrawlTaskSnapshot {
   id: string;
   sourceId: string;
   novelId: string;
+  kind: CrawlTaskKind;
   status: CrawlTaskStatus;
   runId: string | null;
   createdAt: string;
@@ -168,6 +185,7 @@ interface CrawlTaskState {
   id: string;
   sourceId: string;
   novelId: string;
+  kind: CrawlTaskKind;
   status: CrawlTaskStatus;
   runId: string | null;
   createdAt: string;
@@ -206,6 +224,7 @@ export interface ControlCenterServiceOptions {
   exportStoragePath?: string;
   opdsArtifactsPath?: string;
   assetFetchImpl?: typeof fetch;
+  browserCapture?: BrowserCaptureService;
 }
 
 const MAX_STORED_EVENTS = 200;
@@ -229,6 +248,8 @@ export class ControlCenterService {
   readonly #scheduling: SchedulingService;
   readonly #opdsCompilation: OpdsCompilationService;
   readonly #opdsArtifactsRoot: string;
+  readonly #browserCapture: BrowserCaptureService;
+  #browserTaskTail: Promise<void> = Promise.resolve();
 
   constructor(options: ControlCenterServiceOptions = {}) {
     const databasePath = options.databasePath ?? defaultDatabasePath();
@@ -240,6 +261,7 @@ export class ControlCenterService {
       options.networkProxy ?? new NetworkProxyService({ storageFilePath: defaultNetworkProxyConfigPath() });
     this.#systemPreferences =
       options.systemPreferences ?? new SystemPreferencesService({ storageFilePath: defaultSystemPreferencesPath() });
+    this.#browserCapture = options.browserCapture ?? new BrowserCaptureService({ store: this.#repository });
     this.#offlineLibrary = new OfflineLibraryAssetService({
       ...(options.offlineAssetStoragePath ? { storageRoot: options.offlineAssetStoragePath } : {}),
       ...(options.assetFetchImpl ? { fetchImpl: options.assetFetchImpl } : {}),
@@ -259,6 +281,21 @@ export class ControlCenterService {
     this.#registry = new Map(
       (options.spiders ?? createDefaultSpiderRegistry(this.#networkProxy)).map((entry) => [entry.descriptor.sourceId, entry]),
     );
+
+    this.#browserCapture.onTransportState((event) => {
+      const task = this.#tasks.get(event.taskId);
+      if (!task || task.kind !== 'browser') return;
+      if (event.state === 'waiting_user') task.status = 'waiting_user';
+      if (event.state === 'paused') task.status = 'paused';
+      if (event.state === 'running' && (task.status === 'paused' || task.status === 'waiting_user')) task.status = 'running';
+      if (event.state === 'aborted') task.status = 'aborted';
+      if (event.state === 'failed') {
+        task.status = 'failed';
+        task.completedAt = new Date().toISOString();
+        task.errorMessage = `transport_disconnected: ${event.message ?? 'Browser transport disconnected.'}`;
+      }
+      this.emitTaskUpdate(task);
+    });
 
     this.restoreTaskHistory();
 
@@ -365,6 +402,46 @@ export class ControlCenterService {
         versionChangeCount: this.#repository.getChapterVersionChangeCount(sourceId, novelId, chapter.id),
       })),
     } : null;
+  }
+
+  getBrowserCaptureService(): BrowserCaptureService {
+    return this.#browserCapture;
+  }
+
+  createBrowserPairingToken(): { token: string; expiresAt: string } {
+    return this.#browserCapture.createPairingToken();
+  }
+
+  listBrowserPairings(): BrowserCapturePairing[] {
+    return this.#browserCapture.listPairings();
+  }
+
+  revokeBrowserPairing(pairingId: string): boolean {
+    return this.#browserCapture.revokePairing(pairingId);
+  }
+
+  getBrowserCaptureStatus() {
+    return this.#browserCapture.getStatus();
+  }
+
+  listBrowserCaptureAudits(limit = 100): BrowserCaptureAudit[] {
+    return this.#browserCapture.listAudits(limit);
+  }
+
+  controlBrowserTask(taskId: string, action: BrowserCaptureControl): CrawlTaskSnapshot | null {
+    const task = this.#tasks.get(taskId);
+    if (!task || task.kind !== 'browser') return null;
+    if (task.status === 'queued') {
+      if (action !== 'abort') return null;
+      task.status = 'aborted';
+      task.completedAt = new Date().toISOString();
+      task.errorMessage = 'capture_aborted: Browser capture task was aborted before it started.';
+      this.emitTaskUpdate(task);
+      return serializeTask(task);
+    }
+    if (task.status !== 'running' && task.status !== 'waiting_user' && task.status !== 'paused') return null;
+    this.#browserCapture.controlTask(taskId, action);
+    return serializeTask(task);
   }
 
   getLibraryChapter(sourceId: string, novelId: string, chapterId: string): LibraryChapterDetail | null {
@@ -525,6 +602,9 @@ export class ControlCenterService {
     if (!snapshot) {
       return null;
     }
+    if (this.#repository.isBrowserCapturedNovel(sourceId, novelId)) {
+      throw new Error('浏览器采集小说在 v1 中不支持缓存远端媒体。');
+    }
 
     return this.#offlineLibrary.cacheMediaAsset(snapshot, chapterId, mediaId);
   }
@@ -534,6 +614,9 @@ export class ControlCenterService {
 
     if (!snapshot) {
       return null;
+    }
+    if (this.#repository.isBrowserCapturedNovel(sourceId, novelId)) {
+      throw new Error('浏览器采集小说在 v1 中不支持缓存远端媒体。');
     }
 
     return this.#offlineLibrary.cacheNovelMediaAssets(snapshot);
@@ -562,7 +645,7 @@ export class ControlCenterService {
   getActiveTaskNovelKeys(): Array<{ sourceId: string; novelId: string }> {
     const keys: Array<{ sourceId: string; novelId: string }> = [];
     for (const task of this.#tasks.values()) {
-      if (task.status === 'queued' || task.status === 'running') {
+      if (isActiveCrawlTaskStatus(task.status)) {
         keys.push({ sourceId: task.sourceId, novelId: task.novelId });
       }
     }
@@ -1187,9 +1270,10 @@ export class ControlCenterService {
 
   async previewNovel(input: PreviewNovelInput): Promise<PreviewNovelResult> {
     const source = this.getSource(input.sourceId);
+    const spider = this.getSpider(source, input.kind ?? 'direct', null, input.novelId);
     const previousSnapshot = this.#repository.getSnapshot(source.descriptor.sourceId, input.novelId);
-    const metadata = await source.spider.fetchMetadata({ novelId: input.novelId });
-    const chapterIndex = await source.spider.fetchChapterIndex({ novelId: input.novelId }, metadata);
+    const metadata = await spider.fetchMetadata({ novelId: input.novelId });
+    const chapterIndex = await spider.fetchChapterIndex({ novelId: input.novelId }, metadata);
     const chapters = resolveChapterStates(chapterIndex, previousSnapshot);
 
     return {
@@ -1203,13 +1287,17 @@ export class ControlCenterService {
 
   createTask(input: TaskExecutionInput): CrawlTaskSnapshot {
     const source = this.getSource(input.sourceId);
+    const kind = input.kind ?? 'direct';
+    if (kind === 'browser' && !source.createBrowserSpider) throw new Error(`Source ${input.sourceId} does not support browser transport.`);
     const task = createTaskState(source.descriptor.sourceId, input);
     this.#tasks.set(task.id, task);
     this.emitTaskUpdate(task);
 
-    queueMicrotask(() => {
-      void this.runTask(task);
-    });
+    if (task.kind === 'browser') {
+      this.#browserTaskTail = this.#browserTaskTail.then(() => this.runTask(task), () => this.runTask(task));
+    } else {
+      queueMicrotask(() => { void this.runTask(task); });
+    }
 
     return serializeTask(task);
   }
@@ -1251,14 +1339,24 @@ export class ControlCenterService {
     const task = [...this.#tasks.values()]
       .filter((candidate) => candidate.sourceId === sourceId && candidate.novelId === novelId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .find((candidate) => candidate.status === 'queued' || candidate.status === 'running');
+      .find((candidate) => isActiveCrawlTaskStatus(candidate.status));
 
     return task ? serializeTask(task) : null;
   }
 
   private async runTask(task: CrawlTaskState): Promise<void> {
+    if (task.status === 'aborted') return;
     task.status = 'running';
     task.startedAt = new Date().toISOString();
+    if (task.kind === 'browser') {
+      this.#browserCapture.registerTaskScope(
+        task.id,
+        task.sourceId,
+        task.novelId,
+        task.options.chapterIds.length > 0 ? task.options.chapterIds : ['*'],
+      );
+      this.#repository.markNovelCaptureTransport(task.sourceId, task.novelId, 'browser');
+    }
     this.emitTaskUpdate(task);
 
     const source = this.getSource(task.sourceId);
@@ -1269,7 +1367,7 @@ export class ControlCenterService {
     };
 
     const runner = new SpiderRunner({
-      spider: source.spider,
+      spider: this.getSpider(source, task.kind, task.id, task.novelId),
       repository: this.#repository,
       logger: new SpiderLogDispatcher([logAdapter]),
     });
@@ -1277,13 +1375,14 @@ export class ControlCenterService {
     const options: CrawlNovelOptions = {
       novelId: task.novelId,
       forceRefetch: task.options.forceRefetch,
-      chapterConcurrency: task.options.chapterConcurrency,
+      chapterConcurrency: task.kind === 'browser' ? 1 : task.options.chapterConcurrency,
       chapterRetryCount: task.options.chapterRetryCount,
       ...(task.options.chapterIds.length > 0 ? { chapterIds: task.options.chapterIds } : {}),
     };
 
     try {
       const result = await runner.crawlNovel(options);
+      this.#repository.markNovelCaptureTransport(task.sourceId, task.novelId, task.kind);
       const currentSnapshot = this.#repository.getSnapshot(task.sourceId, task.novelId);
 
       task.status = 'completed';
@@ -1294,11 +1393,24 @@ export class ControlCenterService {
       task.snapshotSummary = summarizeSnapshot(currentSnapshot, result.chapters);
       task.progress.catalogChapters = result.chapters.length;
       task.progress.percent = 100;
+      if (task.kind === 'browser') this.#browserCapture.completeTaskAudit(task.id, 'succeeded', null);
       this.emitTaskUpdate(task);
     } catch (error) {
-      task.status = 'failed';
+      task.status = error instanceof BrowserTransportError && error.code === 'capture_aborted' ? 'aborted' : 'failed';
       task.completedAt = new Date().toISOString();
-      task.errorMessage = toError(error).message;
+      task.errorMessage = error instanceof BrowserTransportError
+        ? `${error.code}: ${error.message}`
+        : toError(error).message;
+      if (task.kind === 'browser') {
+        if (this.#repository.getSnapshot(task.sourceId, task.novelId)) {
+          this.#repository.markNovelCaptureTransport(task.sourceId, task.novelId, 'browser');
+        }
+        this.#browserCapture.completeTaskAudit(
+          task.id,
+          task.status === 'aborted' ? 'aborted' : 'failed',
+          task.errorMessage,
+        );
+      }
       this.emitTaskUpdate(task);
     }
   }
@@ -1347,6 +1459,9 @@ export class ControlCenterService {
     const snapshot = serializeTask(task);
 
     this.#repository.saveTaskSnapshot(snapshot, snapshot, MAX_STORED_TASKS);
+    if (task.kind === 'browser' && task.startedAt !== null) {
+      this.#browserCapture.broadcastTaskState(task.id, task.status, task.errorMessage ?? undefined);
+    }
 
     for (const listener of task.listeners) {
       listener({
@@ -1364,6 +1479,16 @@ export class ControlCenterService {
     }
 
     return source;
+  }
+
+  private getSpider(source: SpiderRegistryEntry, kind: CrawlTaskKind, taskId: string | null, novelId: string): SpiderAdapter {
+    if (kind === 'direct') return source.spider;
+    if (!source.createBrowserSpider) throw new Error(`Source ${source.descriptor.sourceId} does not support browser transport.`);
+    return new BrowserTransportSpiderAdapter(this.#browserCapture, source.createBrowserSpider, {
+      taskId,
+      sourceId: source.descriptor.sourceId,
+      novelId,
+    });
   }
 
   private restoreTaskHistory(): void {
@@ -1405,8 +1530,10 @@ export function createDefaultSpiderRegistry(networkProxy = new NetworkProxyServi
         label: '小説家になろう（全年龄）',
         description: '日本网文主站，适合全年龄作品。请输入作品编号，例如 n9669bk。',
         defaultNovelId: 'n9669bk',
+        transports: ['direct', 'browser'],
       },
       spider: new SyosetuSpiderAdapter({ fetchHtml }),
+      createBrowserSpider: (browserFetchHtml) => new SyosetuSpiderAdapter({ fetchHtml: browserFetchHtml }),
     },
     {
       descriptor: {
@@ -1414,8 +1541,10 @@ export function createDefaultSpiderRegistry(networkProxy = new NetworkProxyServi
         label: 'ノクターンノベルズ（成人向）',
         description: '成人向分站。请输入作品编号，例如 n1557gm。',
         defaultNovelId: 'n1557gm',
+        transports: ['direct', 'browser'],
       },
       spider: new Syosetu18SpiderAdapter({ fetchHtml }),
+      createBrowserSpider: (browserFetchHtml) => new Syosetu18SpiderAdapter({ fetchHtml: browserFetchHtml }),
     },
     {
       descriptor: {
@@ -1423,8 +1552,10 @@ export function createDefaultSpiderRegistry(networkProxy = new NetworkProxyServi
         label: 'カクヨム',
         description: 'KADOKAWA 旗下的 Web 小说平台。请输入作品 ID（19 位数字），例如 822139839856110454。',
         defaultNovelId: '822139839856110454',
+        transports: ['direct', 'browser'],
       },
       spider: new KakuyomuSpiderAdapter({ fetchHtml }),
+      createBrowserSpider: (browserFetchHtml) => new KakuyomuSpiderAdapter({ fetchHtml: browserFetchHtml }),
     },
   ];
 }
@@ -1436,6 +1567,7 @@ function createTaskState(sourceId: string, input: TaskExecutionInput): CrawlTask
     id: crypto.randomUUID(),
     sourceId,
     novelId: input.novelId,
+    kind: input.kind ?? 'direct',
     status: 'queued',
     runId: null,
     createdAt: now,
@@ -1471,6 +1603,7 @@ function createHistoricalTaskState(novel: StoredNovelLibraryRow): CrawlTaskState
     id: createHistoricalTaskId(novel),
     sourceId: novel.sourceId,
     novelId: novel.metadata.novelId,
+    kind: 'direct',
     status: novel.failedChapters > 0 ? 'failed' : 'completed',
     runId: null,
     createdAt: timestamp,
@@ -1593,6 +1726,7 @@ function serializeTask(task: CrawlTaskState): CrawlTaskSnapshot {
     id: task.id,
     sourceId: task.sourceId,
     novelId: task.novelId,
+    kind: task.kind,
     status: task.status,
     runId: task.runId,
     createdAt: task.createdAt,
@@ -1617,13 +1751,14 @@ function serializeTask(task: CrawlTaskState): CrawlTaskSnapshot {
 }
 
 function restoreTaskState(snapshot: CrawlTaskSnapshot): CrawlTaskState {
-  const wasInterrupted = snapshot.status === 'queued' || snapshot.status === 'running';
+  const wasInterrupted = isActiveCrawlTaskStatus(snapshot.status);
   const completedAt = wasInterrupted ? snapshot.completedAt ?? new Date().toISOString() : snapshot.completedAt;
 
   return {
     id: snapshot.id,
     sourceId: snapshot.sourceId,
     novelId: snapshot.novelId,
+    kind: snapshot.kind ?? 'direct',
     status: wasInterrupted ? 'failed' : snapshot.status,
     runId: snapshot.runId,
     createdAt: snapshot.createdAt,
@@ -1666,6 +1801,10 @@ function defaultSystemPreferencesPath(): string {
   const dataDir = path.resolve(process.cwd(), '.data');
   fs.mkdirSync(dataDir, { recursive: true });
   return path.join(dataDir, 'system-preferences.json');
+}
+
+function isActiveCrawlTaskStatus(status: CrawlTaskStatus): boolean {
+  return ACTIVE_CRAWL_TASK_STATUSES.has(status);
 }
 
 function areTagsEquivalent(left: string[], right: string[]): boolean {

@@ -6,6 +6,7 @@ import {
   Group,
   Paper,
   Select,
+  SegmentedControl,
   Skeleton,
   Stack,
   Text,
@@ -32,6 +33,7 @@ const KEYBOARD_THRESHOLD_PX = 140;
 
 export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
   const pendingCount = model.preview?.chapters.filter((chapter) => chapter.status !== 'downloaded').length ?? 0;
+  const previewActionLabel = model.captureKind === 'browser' ? '浏览器预览' : '解析目录';
   const isMobile = useMediaQuery('(max-width: 768px)');
   const [keyboardOpen, setKeyboardOpen] = useState(false);
 
@@ -96,7 +98,9 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
           <Group gap="sm" mt="xs">
             <Badge variant="light" color="gray" size="lg">{model.selectedSource?.label ?? '加载中'}</Badge>
             <Badge variant="light" color="gray" size="lg">{pendingCount} 章待采集</Badge>
-            <Badge variant="light" color="gray" size="lg">{model.chapterConcurrency} 并发 / {model.chapterRetryCount} 次重试</Badge>
+            <Badge variant="light" color={model.captureKind === 'browser' ? 'orange' : 'gray'} size="lg">
+              {model.captureKind === 'browser' ? '浏览器传输 · 串行' : `${model.chapterConcurrency} 并发 / ${model.chapterRetryCount} 次重试`}
+            </Badge>
           </Group>
         </Stack>
       </Paper>
@@ -124,6 +128,23 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                 placeholder={model.selectedSource?.defaultNovelId ?? '输入作品编号'}
               />
             </Group>
+            <div>
+              <Text size="sm" fw={500} mb={6}>采集传输</Text>
+              <SegmentedControl
+                fullWidth
+                value={model.captureKind}
+                onChange={(value) => model.setCaptureKind(value as 'direct' | 'browser')}
+                data={[
+                  { value: 'direct', label: '服务端直连' },
+                  { value: 'browser', label: '浏览器扩展', disabled: !model.selectedSource?.transports.includes('browser') },
+                ]}
+              />
+              <Text size="xs" c="dimmed" mt={6}>
+                {model.captureKind === 'browser'
+                  ? '扩展会依次打开作品信息页 → 目录页；请按弹窗的“下一步”提示完成授权或验证。Cookie 不会离开浏览器。'
+                  : '由服务端通过当前网络代理直接请求目标站点。'}
+              </Text>
+            </div>
             {model.selectedSource ? <Text size="xs" c="dimmed">{model.selectedSource.description}</Text> : null}
             <Group>
               <Button variant="subtle" size="compact-sm" leftSection={<IconSettings size={16} />} onClick={onOpenSettings}>
@@ -189,7 +210,7 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                     disabled={model.isBusy || model.novelId.trim().length === 0}
                     loading={model.previewBusy}
                   >
-                    解析目录
+                    {previewActionLabel}
                   </Button>
                   <Button
                     color="brand"
@@ -243,7 +264,7 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                     disabled={model.isBusy || model.novelId.trim().length === 0}
                     loading={model.previewBusy}
                   >
-                    解析目录
+                    {previewActionLabel}
                   </Button>
                   <Button
                     color="brand"

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { MockHtmlSpiderAdapter } from '../adapters/spider/mock-html-spider-adapter';
+import { SyosetuSpiderAdapter } from '../adapters/spider/syosetu-spider-adapter';
 import { SqliteNovelRepository } from './novel-repository';
 import { ControlCenterService, createDefaultSpiderRegistry, type ControlCenterStreamEvent } from './control-center';
 import { NetworkProxyService } from './network-proxy';
@@ -18,6 +19,7 @@ function createMockSpiderRegistry() {
         label: 'Mock HTML Demo',
         description: 'Test-only mock source',
         defaultNovelId: 'demo',
+        transports: ['direct', 'browser'] as const,
       },
       spider: new MockHtmlSpiderAdapter({
         metadataHtml: `
@@ -47,6 +49,7 @@ function createMockSpiderRegistry() {
           'chapter-3': 1,
         },
       }),
+      createBrowserSpider: (fetchHtml) => new SyosetuSpiderAdapter({ fetchHtml }),
     },
   ];
 }
@@ -238,3 +241,20 @@ function waitForTask(service: ControlCenterService, taskId: string): Promise<Ret
     }
   });
 }
+
+test('queued browser tasks can be aborted before their serialized run starts', async () => {
+  const { service, cleanup } = createService();
+  try {
+    const first = service.createTask({ sourceId: 'mock-html', novelId: 'first', kind: 'browser' });
+    const queued = service.createTask({ sourceId: 'mock-html', novelId: 'queued', kind: 'browser' });
+
+    const aborted = service.controlBrowserTask(queued.id, 'abort');
+
+    assert.equal(aborted?.status, 'aborted');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(service.getTask(queued.id)?.status, 'aborted');
+    assert.equal(service.getTask(first.id)?.status, 'failed');
+  } finally {
+    cleanup();
+  }
+});

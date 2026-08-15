@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useEffectEvent, useRef, useState } from 'react';
 
 import {
+  controlBrowserTask,
   createControlTask,
   fetchControlSources,
   fetchHealth,
@@ -9,6 +10,7 @@ import {
   fetchTask,
 } from './api';
 import { SseTaskLogBridge } from './task-log-bridge';
+import { formatTaskStatus, isActiveTaskStatus } from './task-status';
 import type { HealthPayload } from '../../server/routes/health';
 import type {
   ApiTaskSnapshot,
@@ -23,10 +25,10 @@ export interface NoticeInput {
   title: string;
   message: string;
 }
-
 interface TaskSubmissionTarget {
   sourceId: string;
   novelId: string;
+  kind?: 'direct' | 'browser';
 }
 
 interface TaskSubmissionOptions {
@@ -55,16 +57,19 @@ export interface ControlCenterModel {
   forceRefetch: boolean;
   chapterConcurrency: number;
   chapterRetryCount: number;
+  captureKind: 'direct' | 'browser';
   getSourceLabel: (sourceId: string) => string;
   setNovelId: (value: string) => void;
   setForceRefetch: (value: boolean) => void;
   setChapterConcurrency: (value: number) => void;
   setChapterRetryCount: (value: number) => void;
+  setCaptureKind: (value: 'direct' | 'browser') => void;
   handleSourceChange: (sourceId: string) => void;
   handlePreviewSubmit: () => Promise<void>;
   handleCreateTask: (chapterIds?: string[]) => Promise<void>;
   handlePickTask: (taskId: string) => Promise<void>;
   handleRetryFailed: () => Promise<void>;
+  handleBrowserTaskControl: (action: 'pause' | 'continue' | 'abort') => Promise<void>;
   toggleChapterSelection: (chapterId: string) => void;
   selectAllChapters: () => void;
   selectPendingChapters: () => void;
@@ -89,6 +94,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
   const [forceRefetch, setForceRefetch] = useState(false);
   const [chapterConcurrency, setChapterConcurrencyState] = useState(4);
   const [chapterRetryCount, setChapterRetryCountState] = useState(1);
+  const [captureKind, setCaptureKindState] = useState<'direct' | 'browser'>('direct');
   const lastObservedTaskRef = useRef<{ id: string; status: ApiTaskSnapshot['status'] } | null>(null);
   const publishNotice = useEffectEvent(onNotice);
 
@@ -116,7 +122,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     setPreviewError(null);
 
     try {
-      const payload = await fetchNovelPreview(sourceId, targetNovelId);
+      const payload = await fetchNovelPreview(sourceId, targetNovelId, captureKind);
       hydratePreview(payload);
       publishNotice({
         tone: 'success',
@@ -137,7 +143,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
       setCurrentTask(task);
     });
 
-    if (task.status === 'completed' || task.status === 'failed') {
+    if (task.status === 'completed' || task.status === 'failed' || task.status === 'aborted') {
       void refreshRecentTasks();
 
       if (task.sourceId === selectedSourceId && task.novelId === novelId) {
@@ -165,9 +171,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
           setNovelId(defaultSource.defaultNovelId);
         }
 
-        const activeTask = tasksPayload.tasks.find(
-          (task) => task.status === 'queued' || task.status === 'running',
-        );
+        const activeTask = tasksPayload.tasks.find((task) => isActiveTaskStatus(task.status));
 
         if (activeTask) {
           setCurrentTask(activeTask);
@@ -186,7 +190,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
   }, []);
 
   useEffect(() => {
-    if (!currentTask || (currentTask.status !== 'queued' && currentTask.status !== 'running')) {
+    if (!currentTask || !isActiveTaskStatus(currentTask.status)) {
       setStreamState('idle');
       return;
     }
@@ -231,7 +235,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
       previous &&
       previous.id === currentTask.id &&
       previous.status !== currentTask.status &&
-      (currentTask.status === 'completed' || currentTask.status === 'failed')
+      (currentTask.status === 'completed' || currentTask.status === 'failed' || currentTask.status === 'aborted')
     ) {
       publishNotice({
         tone: currentTask.status === 'completed' ? 'success' : 'error',
@@ -295,6 +299,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     await submitTask({
       sourceId: selectedSourceId,
       novelId: trimmedNovelId,
+      kind: captureKind,
     }, chapterIds);
   }
 
@@ -319,8 +324,23 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     await submitTask(retryTarget, retryTarget.chapterIds);
   }
 
+  async function handleBrowserTaskControl(action: 'pause' | 'continue' | 'abort') {
+    if (!currentTask || currentTask.kind !== 'browser') return;
+    try {
+      const payload = await controlBrowserTask(currentTask.id, action);
+      hydrateTask(payload.task);
+    } catch (error) {
+      publishNotice({
+        tone: 'error',
+        title: '浏览器采集控制失败',
+        message: error instanceof Error ? error.message : 'Browser task control failed.',
+      });
+    }
+  }
+
   function handleSourceChange(nextSourceId: string) {
     const nextSource = sources.find((source) => source.sourceId === nextSourceId);
+    if (captureKind === 'browser' && !nextSource?.transports.includes('browser')) setCaptureKindState('direct');
     setSelectedSourceId(nextSourceId);
     setNovelId(nextSource?.defaultNovelId ?? '');
     setPreview(null);
@@ -386,16 +406,23 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     forceRefetch,
     chapterConcurrency,
     chapterRetryCount,
+    captureKind,
     getSourceLabel,
     setNovelId,
     setForceRefetch,
     setChapterConcurrency,
     setChapterRetryCount,
+    setCaptureKind: (value) => {
+      setCaptureKindState(value);
+      setPreview(null);
+      setSelectedChapterIds([]);
+    },
     handleSourceChange,
     handlePreviewSubmit,
     handleCreateTask,
     handlePickTask,
     handleRetryFailed,
+    handleBrowserTaskControl,
     toggleChapterSelection,
     selectAllChapters,
     selectPendingChapters,
@@ -417,6 +444,7 @@ export function buildTaskSubmissionInput(
   return {
     sourceId: target.sourceId,
     novelId: target.novelId,
+    ...(target.kind ? { kind: target.kind } : {}),
     ...(options.chapterIds && options.chapterIds.length > 0 ? { chapterIds: options.chapterIds } : {}),
     forceRefetch: options.forceRefetch,
     chapterConcurrency: options.chapterConcurrency,
@@ -432,28 +460,14 @@ export function resolveRetryTaskTarget(
   }
 
   const chapterIds = currentTask.failures.map((failure) => failure.chapterId);
-  if (chapterIds.length === 0) {
+  if (chapterIds.length === 0 && currentTask.kind !== 'browser') {
     return null;
   }
 
   return {
     sourceId: currentTask.sourceId,
     novelId: currentTask.novelId,
-    chapterIds,
+    kind: currentTask.kind,
+    chapterIds: chapterIds.length > 0 ? chapterIds : currentTask.options.chapterIds,
   };
-}
-
-function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
-  switch (status) {
-    case 'queued':
-      return '排队中';
-    case 'running':
-      return '执行中';
-    case 'completed':
-      return '已采集';
-    case 'failed':
-      return '已失败';
-    default:
-      return status;
-  }
 }

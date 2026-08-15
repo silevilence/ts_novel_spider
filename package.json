@@ -10,12 +10,13 @@
     "build": "npm run build:web && npm run build:server",
     "build:server": "tsc -p tsconfig.server.json",
     "build:web": "vite build --config src/web/vite.config.ts",
-    "test": "npm run test:server && npm run test:web && npm run test:ci",
+    "test": "npm run test:server && npm run test:web && npm run test:extension && npm run test:ci",
     "test:ci": "node --test scripts/ci/prepare-release.test.mjs",
     "test:server:library": "tsx --test src/server/routes/library.test.ts",
     "test:server:library:graph": "tsx --test src/server/routes/library-graph.test.ts",
     "test:server": "tsx --test src/server/**/*.test.ts",
     "test:web": "tsx --test src/web/**/*.test.ts",
+    "test:extension": "tsx --test browser-extension/src/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p src/web/tsconfig.json --noEmit",
     "start": "node dist/server/index.js"
   },
@@ -51,6 +52,7 @@
     "react-markdown": "^10.1.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -59,6 +61,7 @@
     "@types/node": "^22.15.21",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.4.1",
     "concurrently": "^9.1.2",
     "tsx": "^4.19.4",

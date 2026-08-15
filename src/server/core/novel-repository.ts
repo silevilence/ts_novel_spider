@@ -3,6 +3,11 @@ import Database from 'better-sqlite3';
 
 import type { KnowledgeGraphBuildModelStat } from './library-intelligence-rag';
 import type { LlmModelGatewayRoute } from './system-preferences';
+import type {
+  BrowserCaptureAudit,
+  BrowserCapturePairing,
+  BrowserCaptureStore,
+} from './browser-capture';
 
 import type {
   ChapterContent,
@@ -25,6 +30,30 @@ interface NovelRow {
   deleted_at?: string | null;
   deleted_scheduling_json?: string | null;
   deleted_opds_visible?: number | null;
+}
+
+interface BrowserCapturePairingRow {
+  pairing_id: string;
+  pairing_name: string;
+  key_hash: string;
+  created_at: string;
+  last_connected_at: string | null;
+  revoked_at: string | null;
+}
+
+interface BrowserCaptureAuditRow {
+  audit_id: string;
+  task_id: string | null;
+  source_id: string;
+  novel_id: string;
+  phase: BrowserCaptureAudit['phase'];
+  target_url: string;
+  origin: string;
+  status: BrowserCaptureAudit['status'];
+  failure_reason: string | null;
+  started_at: string;
+  completed_at: string;
+  chapter_ids_json: string;
 }
 
 export interface StoredNovelLibraryRow {
@@ -800,7 +829,7 @@ interface ChapterTranslationQaRow {
   created_at: string;
 }
 
-export class SqliteNovelRepository {
+export class SqliteNovelRepository implements BrowserCaptureStore {
   readonly #database: Database.Database;
 
   constructor(databasePath: string) {
@@ -812,6 +841,74 @@ export class SqliteNovelRepository {
 
   close(): void {
     this.#database.close();
+  }
+
+  savePairing(pairing: BrowserCapturePairing): void {
+    this.#database.prepare(`
+      INSERT INTO browser_capture_pairings (
+        pairing_id, pairing_name, key_hash, created_at, last_connected_at, revoked_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(pairing_id) DO UPDATE SET
+        pairing_name = excluded.pairing_name,
+        key_hash = excluded.key_hash,
+        last_connected_at = excluded.last_connected_at,
+        revoked_at = excluded.revoked_at
+    `).run(pairing.id, pairing.name, pairing.keyHash, pairing.createdAt, pairing.lastConnectedAt, pairing.revokedAt);
+  }
+
+  findActivePairingByKeyHash(keyHash: string): BrowserCapturePairing | null {
+    const row = this.#database.prepare(`
+      SELECT pairing_id, pairing_name, key_hash, created_at, last_connected_at, revoked_at
+      FROM browser_capture_pairings
+      WHERE key_hash = ? AND revoked_at IS NULL
+    `).get(keyHash) as BrowserCapturePairingRow | undefined;
+    return row ? mapBrowserCapturePairing(row) : null;
+  }
+
+  listPairings(): BrowserCapturePairing[] {
+    const rows = this.#database.prepare(`
+      SELECT pairing_id, pairing_name, key_hash, created_at, last_connected_at, revoked_at
+      FROM browser_capture_pairings
+      ORDER BY created_at DESC
+    `).all() as BrowserCapturePairingRow[];
+    return rows.map(mapBrowserCapturePairing);
+  }
+
+  revokePairing(pairingId: string, revokedAt: string): boolean {
+    return this.#database.prepare(`
+      UPDATE browser_capture_pairings SET revoked_at = ?
+      WHERE pairing_id = ? AND revoked_at IS NULL
+    `).run(revokedAt, pairingId).changes > 0;
+  }
+
+  touchPairing(pairingId: string, connectedAt: string): void {
+    this.#database.prepare(`
+      UPDATE browser_capture_pairings SET last_connected_at = ? WHERE pairing_id = ?
+    `).run(connectedAt, pairingId);
+  }
+
+  saveAudit(audit: BrowserCaptureAudit): void {
+    this.#database.prepare(`
+      INSERT INTO browser_capture_audits (
+        audit_id, task_id, source_id, novel_id, phase, target_url, origin,
+        status, failure_reason, started_at, completed_at, chapter_ids_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      audit.id, audit.taskId, audit.sourceId, audit.novelId, audit.phase, audit.targetUrl,
+      audit.origin, audit.status, audit.failureReason, audit.startedAt, audit.completedAt,
+      JSON.stringify(audit.chapterIds),
+    );
+  }
+
+  listAudits(limit = 100): BrowserCaptureAudit[] {
+    const rows = this.#database.prepare(`
+      SELECT audit_id, task_id, source_id, novel_id, phase, target_url, origin,
+             status, failure_reason, started_at, completed_at, chapter_ids_json
+      FROM browser_capture_audits
+      ORDER BY started_at DESC, completed_at DESC
+      LIMIT ?
+    `).all(limit) as BrowserCaptureAuditRow[];
+    return rows.map(mapBrowserCaptureAudit);
   }
 
   getSnapshot(sourceId: string, novelId: string): StoredNovelSnapshot | null {
@@ -2323,6 +2420,22 @@ export class SqliteNovelRepository {
     if (changed) this.#recordMetadataVersion(sourceId, metadata.novelId, this.#nextMetadataVersion(sourceId, metadata.novelId), metadata.title, metadata.author, metadata.description, metadata.tags, timestamp);
   }
 
+  markNovelCaptureTransport(sourceId: string, novelId: string, transport: 'direct' | 'browser'): void {
+    this.#database.prepare(`
+      UPDATE novels SET capture_transport = ? WHERE source_id = ? AND novel_id = ?
+    `).run(transport, sourceId, novelId);
+    if (transport === 'browser') {
+      this.#database.prepare('DELETE FROM scheduled_novels WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+    }
+  }
+
+  isBrowserCapturedNovel(sourceId: string, novelId: string): boolean {
+    const row = this.#database.prepare(`
+      SELECT capture_transport FROM novels WHERE source_id = ? AND novel_id = ?
+    `).get(sourceId, novelId) as { capture_transport: string } | undefined;
+    return row?.capture_transport === 'browser';
+  }
+
   replaceCrawledChapterIfChanged(sourceId: string, novelId: string, chapter: ChapterContent): { changed: boolean; chapter: StoredChapterRecord } {
     const previous = this.getChapter(sourceId, novelId, chapter.chapterId);
     if (!previous) throw new Error(`章节 ${chapter.chapterId} 不存在。`);
@@ -3355,6 +3468,7 @@ export class SqliteNovelRepository {
          FROM scheduled_novels sn
          JOIN novels n ON n.source_id = sn.source_id AND n.novel_id = sn.novel_id
          WHERE n.source_id <> 'manual' AND n.deleted_at IS NULL
+           AND COALESCE(n.capture_transport, 'direct') <> 'browser'
          ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
@@ -3392,6 +3506,7 @@ export class SqliteNovelRepository {
          FROM scheduled_novels sn
          JOIN novels n ON n.source_id = sn.source_id AND n.novel_id = sn.novel_id
          WHERE enabled = 1 AND n.source_id <> 'manual' AND n.deleted_at IS NULL
+           AND COALESCE(n.capture_transport, 'direct') <> 'browser'
          ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
@@ -3427,7 +3542,9 @@ export class SqliteNovelRepository {
                   WHERE ss.source_id = sn.source_id AND ss.novel_id = sn.novel_id
                 ) AS has_summary
          FROM scheduled_novels sn
-         WHERE sn.source_id = ? AND sn.novel_id = ?`,
+         JOIN novels n ON n.source_id = sn.source_id AND n.novel_id = sn.novel_id
+         WHERE sn.source_id = ? AND sn.novel_id = ?
+           AND COALESCE(n.capture_transport, 'direct') <> 'browser'`,
       )
       .get(sourceId, novelId) as {
       source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number;
@@ -3462,6 +3579,7 @@ export class SqliteNovelRepository {
     summarizeModel?: LlmModelGatewayRoute | null,
   ): void {
     if (sourceId === 'manual') throw new Error('手动小说不能加入定时更新。');
+    if (this.isBrowserCapturedNovel(sourceId, novelId)) throw new Error('浏览器采集小说不能加入定时更新。');
     const now = new Date().toISOString();
     const existing = this.getScheduledNovel(sourceId, novelId);
     const resolvedAutoTranslate = autoTranslate ?? existing?.autoTranslate ?? false;
@@ -3513,8 +3631,8 @@ export class SqliteNovelRepository {
     autoSummarize?: boolean;
     summarizeModel?: LlmModelGatewayRoute | null;
   }>): void {
-    if (entries.some((entry) => entry.sourceId === 'manual')) {
-      throw new Error('手动小说不能加入定时更新。');
+    if (entries.some((entry) => entry.sourceId === 'manual' || this.isBrowserCapturedNovel(entry.sourceId, entry.novelId))) {
+      throw new Error('手动小说或浏览器采集小说不能加入定时更新。');
     }
     const now = new Date().toISOString();
     const upsert = this.#database.prepare(
@@ -4491,6 +4609,33 @@ export class SqliteNovelRepository {
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS browser_capture_pairings (
+        pairing_id TEXT NOT NULL PRIMARY KEY,
+        pairing_name TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        last_connected_at TEXT,
+        revoked_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS browser_capture_audits (
+        audit_id TEXT NOT NULL PRIMARY KEY,
+        task_id TEXT,
+        source_id TEXT NOT NULL,
+        novel_id TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        target_url TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        status TEXT NOT NULL,
+        failure_reason TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        chapter_ids_json TEXT NOT NULL DEFAULT '[]'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_browser_capture_audits_lookup
+        ON browser_capture_audits(started_at DESC, task_id);
+
       CREATE INDEX IF NOT EXISTS idx_knowledge_graph_summaries_lookup
         ON knowledge_graph_summaries(source_id, novel_id, summary_type, stable_key);
 
@@ -4790,6 +4935,8 @@ export class SqliteNovelRepository {
     this.ensureColumnExists('novels', 'deleted_at', 'TEXT');
     this.ensureColumnExists('novels', 'deleted_scheduling_json', 'TEXT');
     this.ensureColumnExists('novels', 'deleted_opds_visible', 'INTEGER');
+    this.ensureColumnExists('novels', 'capture_transport', "TEXT NOT NULL DEFAULT 'direct'");
+    this.ensureColumnExists('browser_capture_audits', 'chapter_ids_json', "TEXT NOT NULL DEFAULT '[]'");
 
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS novel_metadata_versions (
@@ -5499,6 +5646,34 @@ function parseChapterIdsJson(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+function mapBrowserCapturePairing(row: BrowserCapturePairingRow): BrowserCapturePairing {
+  return {
+    id: row.pairing_id,
+    name: row.pairing_name,
+    keyHash: row.key_hash,
+    createdAt: row.created_at,
+    lastConnectedAt: row.last_connected_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
+function mapBrowserCaptureAudit(row: BrowserCaptureAuditRow): BrowserCaptureAudit {
+  return {
+    id: row.audit_id,
+    taskId: row.task_id,
+    sourceId: row.source_id,
+    novelId: row.novel_id,
+    phase: row.phase,
+    targetUrl: row.target_url,
+    origin: row.origin,
+    status: row.status,
+    failureReason: row.failure_reason,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    chapterIds: parseChapterIdsJson(row.chapter_ids_json),
+  };
 }
 
 function buildNovelKey(sourceId: string, novelId: string): string {

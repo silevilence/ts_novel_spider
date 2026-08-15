@@ -42,15 +42,35 @@ label {
   gap: 8px;
 }
 
-input,
-button {
+.toggle-row {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid #d9cbb9;
+  border-radius: 8px;
+  background: #fffaf2;
+}
+
+.toggle-row input {
+  min-height: auto;
+  margin-top: 4px;
+}
+
+.toggle-row small {
+  color: #776858;
+  line-height: 1.4;
+}
+
+input:not([type="checkbox"]):not([type="radio"]),
+button,
+textarea:not([type="checkbox"]):not([type="radio"]) {
   min-height: 40px;
   border: 1px solid #c9b9a4;
   border-radius: 8px;
   font: inherit;
 }
 
-input {
+input:not([type="checkbox"]):not([type="radio"]) {
   padding: 8px 12px;
   color: inherit;
   background: #fffdf8;
@@ -65,4 +85,89 @@ button {
 
 button:hover {
   background: #654a32;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+button.secondary {
+  color: #5f4a37;
+  background: #efe4d4;
+}
+
+button.danger {
+  background: #9c3f36;
+}
+
+.button-row,
+.button-grid,
+.status-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.status-row {
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #eee3d3;
+}
+
+#connection-state[data-connected="true"] {
+  color: #26734d;
+}
+
+.target {
+  max-width: 360px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.next-step {
+  padding: 10px 12px;
+  border-left: 3px solid #b9834b;
+  background: #fff8ec;
+  font-size: 13px;
+}
+
+details {
+  padding-top: 12px;
+  border-top: 1px solid #d9cbb9;
+}
+
+details .button-row {
+  margin-top: 10px;
+}
+
+textarea:not([type="checkbox"]):not([type="radio"]) {
+  width: 100%;
+  min-height: 90px;
+  margin-top: 8px;
+  padding: 8px;
+  resize: vertical;
+  color: #2b241d;
+  background: #fffdf8;
+}
+
+.link-button {
+  color: #654a32;
+  background: transparent;
+}
+
+output {
+  min-height: 24px;
+}
+
+output[data-error="true"] {
+  color: #9c3f36;
 }

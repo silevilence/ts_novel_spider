@@ -37,6 +37,7 @@ test('resolveRetryTaskTarget always retries against the current task target', ()
     id: 'task-1',
     sourceId: 'syosetu18',
     novelId: 'n3057hq',
+    kind: 'direct',
     status: 'completed',
     runId: 'run-1',
     createdAt: '2026-05-10T00:00:00.000Z',
@@ -79,6 +80,7 @@ test('resolveRetryTaskTarget always retries against the current task target', ()
   assert.deepEqual(resolveRetryTaskTarget(task), {
     sourceId: 'syosetu18',
     novelId: 'n3057hq',
+    kind: 'direct',
     chapterIds: ['74', '75'],
   });
 });

@@ -8,19 +8,29 @@
   <body>
     <main>
       <h1>连接设置</h1>
-      <p>这里将用于配置本地服务地址和一次性配对令牌。</p>
+      <p>从 Web 管控台生成一次性令牌，在这里换取仅可访问采集通道的长期密钥。</p>
       <form id="bridge-settings">
         <label>
           本地服务地址
-          <input type="url" value="http://127.0.0.1:3000" disabled />
+          <input id="server-url" type="url" value="http://127.0.0.1:3000" required />
         </label>
         <label>
           一次性配对令牌
-          <input type="text" placeholder="后续实现" disabled />
+          <input id="pairing-token" type="text" autocomplete="off" required placeholder="粘贴一次性令牌" />
         </label>
-        <button type="submit">保存（占位）</button>
+        <div class="button-row">
+          <button type="submit">配对并连接</button>
+          <button id="unpair" type="button" class="secondary" disabled>解绑</button>
+        </div>
         <output id="save-status" aria-live="polite"></output>
       </form>
+      <label class="toggle-row">
+        <input id="developer-mode" type="checkbox" />
+        <span>
+          <strong>启用开发数据导出</strong><br />
+          <small>允许手动导出当前页 HTML、查看并复制 Cookie；数据不会发送到服务端。</small>
+        </span>
+      </label>
     </main>
     <script type="module" src="/src/options/main.ts"></script>
   </body>

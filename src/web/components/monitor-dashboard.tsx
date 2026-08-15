@@ -5,6 +5,7 @@ import { StatusPanel } from './status-panel';
 import type { ControlCenterModel } from '../services/control-center-model';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
 import { calculateRemainingTaskChapters } from '../services/library-view';
+import { formatTaskStatus, isActiveTaskStatus } from '../services/task-status';
 
 interface MonitorDashboardProps {
   model: ControlCenterModel;
@@ -88,6 +89,7 @@ export function MonitorDashboard({ model }: MonitorDashboardProps) {
             currentTask={model.currentTask}
             sourceLabel={model.currentTask ? model.getSourceLabel(model.currentTask.sourceId) : ''}
             onRetryFailed={() => void model.handleRetryFailed()}
+            onBrowserControl={(action) => void model.handleBrowserTaskControl(action)}
           />
         </Grid.Col>
       </Grid>
@@ -115,12 +117,12 @@ function TaskTimelineItem({ task, isActive, isLast, sourceLabel, onPick }: {
   onPick: () => void;
 }) {
   const statusIcon = task.status === 'completed' ? <IconCheck size={14} />
-    : task.status === 'failed' ? <IconX size={14} />
+    : task.status === 'failed' || task.status === 'aborted' ? <IconX size={14} />
     : task.status === 'running' ? <IconPlayerPlay size={14} />
     : <IconClock size={14} />;
 
   const statusColor = task.status === 'completed' ? 'green'
-    : task.status === 'failed' ? 'red'
+    : task.status === 'failed' || task.status === 'aborted' ? 'red'
     : task.status === 'running' ? 'blue'
     : 'yellow';
 
@@ -169,10 +171,11 @@ function TaskTimelineItem({ task, isActive, isLast, sourceLabel, onPick }: {
 }
 
 /** 右侧任务详情面板 — 进度条 + 事件日志 */
-function CurrentTaskDetail({ currentTask, sourceLabel, onRetryFailed }: {
+function CurrentTaskDetail({ currentTask, sourceLabel, onRetryFailed, onBrowserControl }: {
   currentTask: ApiTaskSnapshot | null;
   sourceLabel: string;
   onRetryFailed: () => void;
+  onBrowserControl: (action: 'pause' | 'continue' | 'abort') => void;
 }) {
   if (!currentTask) {
     return (
@@ -193,6 +196,9 @@ function CurrentTaskDetail({ currentTask, sourceLabel, onRetryFailed }: {
           <div>
             <Text size="sm" c="dimmed">当前任务</Text>
             <Text size="md" fw={600}>{sourceLabel} / {currentTask.novelId}</Text>
+            <Badge size="xs" variant="light" color={currentTask.kind === 'browser' ? 'orange' : 'gray'}>
+              {currentTask.kind === 'browser' ? '浏览器传输' : '服务端直连'}
+            </Badge>
             <Code block style={{ marginTop: 4, fontSize: 11 }}>
               {`source: ${currentTask.sourceId}  novel: ${currentTask.novelId}  chapters: ${currentTask.progress.catalogChapters}`}
             </Code>
@@ -218,9 +224,20 @@ function CurrentTaskDetail({ currentTask, sourceLabel, onRetryFailed }: {
           <Badge variant="light" size="sm" color="yellow">待处理 {remainingChapters}</Badge>
         </Group>
 
-        <Button variant="subtle" size="compact-sm" onClick={onRetryFailed} disabled={currentTask.failures.length === 0}>
+        <Button variant="subtle" size="compact-sm" onClick={onRetryFailed} disabled={currentTask.failures.length === 0 && !(currentTask.kind === 'browser' && currentTask.status === 'failed')}>
           重试失败章节
         </Button>
+
+        {currentTask.kind === 'browser' && isActiveTaskStatus(currentTask.status) ? (
+          <Group gap="xs">
+            {currentTask.status === 'running' ? (
+              <Button variant="default" size="compact-sm" onClick={() => onBrowserControl('pause')}>暂停</Button>
+            ) : currentTask.status === 'paused' || currentTask.status === 'waiting_user' ? (
+              <Button color="orange" size="compact-sm" onClick={() => onBrowserControl('continue')}>继续并重试当前页</Button>
+            ) : null}
+            <Button color="red" variant="subtle" size="compact-sm" onClick={() => onBrowserControl('abort')}>中止</Button>
+          </Group>
+        ) : null}
 
         {/* 事件日志 — 高度自适应当前视窗 */}
         <div>
@@ -247,8 +264,4 @@ function CurrentTaskDetail({ currentTask, sourceLabel, onRetryFailed }: {
 function formatTimestamp(timestamp: string): string {
   const date = new Date(timestamp);
   return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleTimeString();
-}
-
-function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
-  switch (status) { case 'queued': return '排队中'; case 'running': return '执行中'; case 'completed': return '已采集'; case 'failed': return '已失败'; default: return status; }
 }

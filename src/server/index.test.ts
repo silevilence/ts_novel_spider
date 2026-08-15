@@ -4,21 +4,21 @@ import test from 'node:test';
 
 import { isServerEntrypointInvocation, resolveServerListenOptions } from './index';
 
-test('resolveServerListenOptions defaults to a container-friendly host', () => {
+test('resolveServerListenOptions defaults to the loopback host', () => {
   const options = resolveServerListenOptions({});
 
   assert.equal(options.port, 3000);
-  assert.equal(options.host, '0.0.0.0');
+  assert.equal(options.host, '127.0.0.1');
 });
 
 test('resolveServerListenOptions respects explicit HOST and PORT values', () => {
   const options = resolveServerListenOptions({
-    HOST: '127.0.0.1',
+    HOST: '0.0.0.0',
     PORT: '4312',
   });
 
   assert.equal(options.port, 4312);
-  assert.equal(options.host, '127.0.0.1');
+  assert.equal(options.host, '0.0.0.0');
 });
 
 test('isServerEntrypointInvocation only matches the active entry file', () => {

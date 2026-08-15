@@ -26,6 +26,7 @@ import {
 import {
   IconAdjustments,
   IconBrain,
+  IconBrowser,
   IconDatabase,
   IconDeviceFloppy,
   IconLanguage,
@@ -39,6 +40,7 @@ import { ModelGatewayPanel } from './model-gateway-panel';
 import { Neo4jPanel } from './neo4j-panel';
 import { NetworkProxyPanel } from './network-proxy-panel';
 import { ReaderTypographyPanel } from './reader-typography-panel';
+import { BrowserCapturePanel } from './browser-capture-panel';
 import {
   fetchLlmProvidersPreferences,
   fetchTranslationPreferences,
@@ -123,6 +125,13 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
             </Text>
           </Stack>
         ),
+      },
+      {
+        id: 'browser-capture',
+        icon: <IconBrowser size={PANEL_ICON_SIZE} />,
+        title: '浏览器采集桥接',
+        description: '生成一次性配对令牌、查看连接状态并撤销已授权浏览器。',
+        content: <BrowserCapturePanel onNotice={onNotify} />,
       },
       {
         id: 'proxy',

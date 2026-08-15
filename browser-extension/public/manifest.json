@@ -3,11 +3,13 @@
   "name": "TS Novel Spider Browser Bridge",
   "description": "User-authorized browser transport for TS Novel Spider.",
   "version": "0.1.0",
-  "minimum_chrome_version": "109",
-  "permissions": ["storage"],
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "tabs", "scripting", "activeTab", "downloads", "cookies", "alarms"],
   "host_permissions": [
     "http://127.0.0.1/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "https://127.0.0.1/*",
+    "https://localhost/*"
   ],
   "optional_host_permissions": [
     "http://*/*",

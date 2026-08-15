@@ -327,14 +327,16 @@ export async function validateNetworkProxy(targetUrl?: string): Promise<ControlN
 export async function fetchNovelPreview(
   sourceId: string,
   novelId: string,
+  kind: 'direct' | 'browser' = 'direct',
 ): Promise<ControlPreviewPayload> {
-  const query = new URLSearchParams({ sourceId, novelId });
+  const query = new URLSearchParams({ sourceId, novelId, kind });
   return requestJson<ControlPreviewPayload>(`/api/control/preview?${query.toString()}`);
 }
 
 export async function createControlTask(input: {
   sourceId: string;
   novelId: string;
+  kind?: 'direct' | 'browser';
   chapterIds?: string[];
   forceRefetch?: boolean;
   chapterConcurrency?: number;
@@ -1269,6 +1271,57 @@ async function buildRequestError(response: Response, fallbackMessage: string): P
   } catch {
     return new Error(fallbackMessage);
   }
+}
+
+export interface BrowserCapturePairingView {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastConnectedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface BrowserCaptureAuditView {
+  id: string;
+  taskId: string | null;
+  sourceId: string;
+  novelId: string;
+  phase: 'task' | 'metadata' | 'catalog' | 'chapter';
+  targetUrl: string;
+  origin: string;
+  status: 'succeeded' | 'failed' | 'aborted';
+  failureReason: string | null;
+  startedAt: string;
+  completedAt: string;
+  chapterIds: string[];
+}
+
+export async function fetchBrowserCaptureStatus(): Promise<{ connected: boolean; pairingId: string | null; pendingRequests: number }> {
+  return requestJson('/api/control/browser/status');
+}
+
+export async function createBrowserPairingToken(): Promise<{ token: string; expiresAt: string }> {
+  return requestJson('/api/control/browser/pairing-token', { method: 'POST' });
+}
+
+export async function fetchBrowserPairings(): Promise<{ pairings: BrowserCapturePairingView[] }> {
+  return requestJson('/api/control/browser/pairings');
+}
+
+export async function fetchBrowserCaptureAudits(limit = 20): Promise<{ audits: BrowserCaptureAuditView[] }> {
+  return requestJson(`/api/control/browser/audits?limit=${limit}`);
+}
+
+export async function revokeBrowserPairing(pairingId: string): Promise<void> {
+  await requestVoid(`/api/control/browser/pairings/${encodeURIComponent(pairingId)}`, { method: 'DELETE' });
+}
+
+export async function controlBrowserTask(taskId: string, action: 'pause' | 'continue' | 'abort'): Promise<ControlTaskPayload> {
+  return requestJson(`/api/control/tasks/${encodeURIComponent(taskId)}/browser-control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
 }
 
 export async function createManualLibraryNovel(title: string): Promise<LibraryNovelDetailPayload['novel']> {

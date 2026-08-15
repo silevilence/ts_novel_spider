@@ -32,6 +32,7 @@ import {
 import type { HealthPayload } from '../../server/routes/health';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
 import type { AppRouteDefinition } from '../services/app-routes';
+import { formatTaskStatus } from '../services/task-status';
 
 interface AppShellProps {
   routes: AppRouteDefinition[];
@@ -44,7 +45,6 @@ interface AppShellProps {
   getSourceLabel: (sourceId: string) => string;
   children: React.ReactNode;
 }
-
 const ROUTE_ICONS: Record<string, React.FC<{ size?: number }>> = {
   control: IconSpider,
   library: IconBooks,
@@ -391,19 +391,4 @@ function SummaryCard({
       </Badge>
     </Paper>
   );
-}
-
-function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
-  switch (status) {
-    case 'queued':
-      return '排队中';
-    case 'running':
-      return '执行中';
-    case 'completed':
-      return '已采集';
-    case 'failed':
-      return '已失败';
-    default:
-      return status;
-  }
 }

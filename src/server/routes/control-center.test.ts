@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -925,3 +926,61 @@ async function waitForCompletedTask(baseUrl: string, taskId: string) {
 
   throw new Error(`Task ${taskId} did not finish in time.`);
 }
+
+test('browser capture pairing is one-time, scoped to its channel, and revocable', async () => {
+  const { app, cleanup } = createTestServer();
+  const server = app.listen(0, '127.0.0.1');
+  try {
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP server address.');
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const reboundStatus = await new Promise<number>((resolve, reject) => {
+      const request = http.request({
+        host: '127.0.0.1', port: address.port, path: '/api/control/browser/pairing-token',
+        method: 'POST', headers: { Host: 'attacker.example' },
+      }, (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+      request.once('error', reject);
+      request.end();
+    });
+    assert.equal(reboundStatus, 403);
+
+    const tokenResponse = await fetch(`${baseUrl}/api/control/browser/pairing-token`, { method: 'POST' });
+    assert.equal(tokenResponse.status, 201);
+    const token = await tokenResponse.json() as { token: string };
+
+    const pairResponse = await fetch(`${baseUrl}/api/browser/pair`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token.token, name: 'route test' }),
+    });
+    assert.equal(pairResponse.status, 201);
+    const paired = await pairResponse.json() as { key: string };
+
+    const replayResponse = await fetch(`${baseUrl}/api/browser/pair`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token.token, name: 'replay' }),
+    });
+    assert.equal(replayResponse.status, 401);
+
+    const scopedStatus = await fetch(`${baseUrl}/api/browser/status`, {
+      headers: { Authorization: `Bearer ${paired.key}` },
+    });
+    assert.equal(scopedStatus.status, 200);
+
+    const unpair = await fetch(`${baseUrl}/api/browser/pairing`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${paired.key}` },
+    });
+    assert.equal(unpair.status, 204);
+    const revokedStatus = await fetch(`${baseUrl}/api/browser/status`, {
+      headers: { Authorization: `Bearer ${paired.key}` },
+    });
+    assert.equal(revokedStatus.status, 401);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    cleanup();
+  }
+});

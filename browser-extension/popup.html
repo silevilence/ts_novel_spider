@@ -8,8 +8,27 @@
   <body>
     <main>
       <h1>浏览器采集桥接</h1>
-      <p>扩展工程已就绪。采集控制将在后续任务中实现。</p>
-      <button id="open-options" type="button">打开连接设置</button>
+      <div class="status-row"><span>连接</span><strong id="connection-state">读取中…</strong></div>
+      <p id="task-state">读取任务状态…</p>
+      <p id="next-step" class="next-step">等待采集步骤…</p>
+      <p class="target" id="target-url">—</p>
+      <div class="button-grid">
+        <button id="open-catalog" type="button">打开目录</button>
+        <button id="save-page" type="button">保存当前章节</button>
+        <button id="pause-task" type="button" class="secondary">暂停</button>
+        <button id="continue-task" type="button">继续</button>
+        <button id="abort-task" type="button" class="danger">中止</button>
+        <button id="grant-site" type="button" class="secondary">授权当前站点</button>
+      </div>
+      <details id="developer-tools" hidden>
+        <summary>开发数据导出（仅保存在本机）</summary>
+        <div class="button-row">
+          <button id="export-html" type="button" class="secondary">导出渲染 HTML</button>
+          <button id="read-cookies" type="button" class="secondary">查看 Cookie</button>
+        </div>
+        <textarea id="developer-output" readonly aria-label="开发数据输出"></textarea>
+      </details>
+      <button id="open-options" class="link-button" type="button">打开连接设置</button>
     </main>
     <script type="module" src="/src/popup/main.ts"></script>
   </body>

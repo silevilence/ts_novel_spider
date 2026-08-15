@@ -2,6 +2,7 @@ import { Badge, Group, Paper, Stack, Text, Title } from '@mantine/core';
 import { IconHeartbeat, IconWorld, IconPlayerPlay, IconClock } from '@tabler/icons-react';
 import type { HealthPayload } from '../../server/routes/health';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
+import { formatTaskStatus } from '../services/task-status';
 
 interface StatusPanelProps {
   health: HealthPayload | null;
@@ -10,7 +11,6 @@ interface StatusPanelProps {
   currentTask: ApiTaskSnapshot | null;
   currentTaskSourceLabel: string | null;
 }
-
 export function StatusPanel({ health, errorMessage, sourceCount, currentTask, currentTaskSourceLabel }: StatusPanelProps) {
   const taskStatus = currentTask ? formatTaskStatus(currentTask.status) : null;
   return (
@@ -44,14 +44,4 @@ function StatusItem({ icon, label, value, color }: { icon: React.ReactNode; labe
       <Badge variant="light" color={color} size="sm">{value}</Badge>
     </Group>
   );
-}
-
-function formatTaskStatus(status: ApiTaskSnapshot['status']): string {
-  switch (status) {
-    case 'queued': return '排队中';
-    case 'running': return '执行中';
-    case 'completed': return '已采集';
-    case 'failed': return '已失败';
-    default: return status;
-  }
 }

@@ -9,9 +9,11 @@ import { createControlCenterRouter } from './routes/control-center';
 import { createLibraryRouter } from './routes/library';
 import { createRefinedTranslationRouter } from './routes/refined-translation';
 import { createOpdsRouter } from './routes/opds';
+import { createBrowserCaptureRouter } from './routes/browser-capture';
 
 export interface ServerAppOptions {
   controlCenter?: ControlCenterService;
+  allowRemoteBrowserCapture?: boolean;
 }
 
 export function createServerApp(options: ServerAppOptions = {}): Express {
@@ -22,8 +24,17 @@ export function createServerApp(options: ServerAppOptions = {}): Express {
 
   // 手动章节会在 JSON 中携带 Base64 图片；单张 10MB 图片编码后约为 13.4MB。
   app.use(express.json({ limit: '64mb' }));
+  app.use((request, response, next) => {
+    const isBrowserChannel = request.path.startsWith('/api/browser') || request.path.startsWith('/api/control/browser');
+    if (isBrowserChannel && !options.allowRemoteBrowserCapture && !isLoopbackHost(request.header('host'))) {
+      response.status(403).json({ message: 'Browser capture pairing is restricted to the loopback host.' });
+      return;
+    }
+    next();
+  });
   app.use('/api/health', healthRouter);
   app.use('/api/control', createControlCenterRouter({ service: controlCenter }));
+  app.use('/api/browser', createBrowserCaptureRouter(controlCenter.getBrowserCaptureService()));
   app.use('/api/library', createLibraryRouter({ service: controlCenter }));
   app.use('/api/refined-translations', createRefinedTranslationRouter({ service: controlCenter }));
   app.use('/opds', createOpdsRouter({ service: controlCenter }));
@@ -47,4 +58,14 @@ export function createServerApp(options: ServerAppOptions = {}): Express {
   });
 
   return app;
+}
+
+function isLoopbackHost(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  try {
+    const hostname = new URL(`http://${hostHeader}`).hostname.replace(/^\[|\]$/g, '').toLocaleLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
 }
