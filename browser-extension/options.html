@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>浏览器采集桥接设置</title>
+  </head>
+  <body>
+    <main>
+      <h1>连接设置</h1>
+      <p>这里将用于配置本地服务地址和一次性配对令牌。</p>
+      <form id="bridge-settings">
+        <label>
+          本地服务地址
+          <input type="url" value="http://127.0.0.1:3000" disabled />
+        </label>
+        <label>
+          一次性配对令牌
+          <input type="text" placeholder="后续实现" disabled />
+        </label>
+        <button type="submit">保存（占位）</button>
+        <output id="save-status" aria-live="polite"></output>
+      </form>
+    </main>
+    <script type="module" src="/src/options/main.ts"></script>
+  </body>
+</html>
