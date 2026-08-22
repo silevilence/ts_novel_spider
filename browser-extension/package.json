@@ -1,6 +1,6 @@
 {
   "name": "ts-novel-spider-browser-extension",
-  "version": "0.1.0",
+  "version": "0.11.1",
   "private": true,
   "type": "module",
   "description": "Chromium browser bridge extension for TS Novel Spider.",
