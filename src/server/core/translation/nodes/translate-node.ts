@@ -46,6 +46,7 @@ export async function generateRefinedTranslationText(
   route: { providerId: string; modelId: string; thinkingEnabled?: boolean },
   system: string,
   prompt: string,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const provider = getProvider(preferences, route.providerId);
   if (!provider) {
@@ -56,6 +57,7 @@ export async function generateRefinedTranslationText(
     model: createLanguageModel(provider, route.modelId),
     system,
     prompt,
+    ...(abortSignal ? { abortSignal } : {}),
     ...(route.thinkingEnabled ? { providerOptions: refinedThinkingProviderOptions(provider) as never } : { temperature: 0.2 }),
   });
   return result.text.trim();
@@ -69,6 +71,7 @@ export async function runRefinedTranslationToolAgent(
   prompt: string,
   tools: ToolSet,
   firstToolName: string = 'read_current_translation',
+  abortSignal?: AbortSignal,
 ): Promise<{ text: string; toolCallCount: number; toolCalls: Array<{ toolName: string; input: unknown }> }> {
   const provider = getProvider(preferences, route.providerId);
   if (!provider) throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
@@ -77,6 +80,7 @@ export async function runRefinedTranslationToolAgent(
     system,
     prompt,
     tools,
+    ...(abortSignal ? { abortSignal } : {}),
     stopWhen: stepCountIs(8),
     // Do not force toolChoice here. Some reasoning/Thinking-mode providers reject
     // forced tool selection altogether ("Thinking mode does not support this

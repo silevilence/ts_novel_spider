@@ -8,6 +8,7 @@ export interface RefinedTranslationToolScope {
   taskId: string;
   chapterIds?: readonly string[];
   writable?: boolean;
+  abortSignal?: AbortSignal;
   /**
    * Chapter-chat edits use AI SDK's approval request. Background pipeline
    * agents are already authorized by the task state machine and execute writes.
@@ -25,11 +26,14 @@ const emptyInput = z.object({});
  */
 export function createRefinedTranslationTools(service: RefinedTranslationService, scope: RefinedTranslationToolScope): ToolSet {
   const allowedChapters = scope.chapterIds ? new Set(scope.chapterIds) : null;
+  const requireActive = () => scope.abortSignal?.throwIfAborted();
   const requireChapter = (chapterId: string) => {
+    requireActive();
     if (allowedChapters && !allowedChapters.has(chapterId)) throw new Error('当前 Agent 无权访问该章节。');
     return chapterId;
   };
   const requireWrite = () => {
+    requireActive();
     if (!scope.writable) throw new Error('当前 Agent 为只读模式，不能修改任务物料。');
   };
   const writeOptions = scope.requireWriteApproval ? { needsApproval: true as const } : {};
@@ -43,7 +47,7 @@ export function createRefinedTranslationTools(service: RefinedTranslationService
     read_original_chapters: tool({
       description: '读取当前任务范围内多个章节的原文快照。',
       inputSchema: z.object({ chapterIds: z.array(z.string().min(1)).optional() }),
-      execute: ({ chapterIds }) => service.readOriginalChapters(scope.taskId, chapterIds?.map(requireChapter)),
+      execute: ({ chapterIds }) => { requireActive(); return service.readOriginalChapters(scope.taskId, chapterIds?.map(requireChapter)); },
     }),
     read_current_translation: tool({
       description: '读取指定章节当前的原文、译文、段落状态和审核意见。',
@@ -67,7 +71,7 @@ export function createRefinedTranslationTools(service: RefinedTranslationService
     read_glossary: tool({
       description: '读取当前任务独立术语表。',
       inputSchema: emptyInput,
-      execute: () => service.readGlossary(scope.taskId),
+      execute: () => { requireActive(); return service.readGlossary(scope.taskId); },
     }),
     update_glossary_term: tool({
       description: '更新任务术语表中一个术语的目标语言译法。',

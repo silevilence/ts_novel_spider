@@ -519,6 +519,209 @@ test('updated task model configuration is used by the next model call', async ()
   }
 });
 
+test('pausing an automatic refined translation prevents later model calls and keeps the task paused', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-pause-cancellation-'));
+  const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  try {
+    repository.createRefinedTranslationTask({
+      id: 'task-pause-cancellation', sourceId: 'syosetu', novelId: 'n1', name: '暂停止损', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
+      modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'model' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'model' }, concurrency: 1, maxReviewRounds: 1 },
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文', paragraphs: ['原文'] }], terms: [],
+    });
+    repository.updateRefinedTranslationTask('task-pause-cancellation', { stage: 'translating', status: 'paused' });
+    repository.updateRefinedTranslationChapterTitle('task-pause-cancellation', 'c1', '第一章译文');
+    let modelCalls = 0;
+    let announceFirstCall: (() => void) | null = null;
+    let releaseFirstCall: (() => void) | null = null;
+    const firstCallStarted = new Promise<void>((resolve) => { announceFirstCall = resolve; });
+    const allowFirstCallToFinish = new Promise<void>((resolve) => { releaseFirstCall = resolve; });
+    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        announceFirstCall?.();
+        await allowFirstCallToFinish;
+        return '译文';
+      }
+      throw new Error('model call started after task was paused');
+    });
+
+    service.resume('task-pause-cancellation');
+    await firstCallStarted;
+    service.pause('task-pause-cancellation');
+    releaseFirstCall?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    if (modelCalls > 1) await waitFor(() => repository.getRefinedTranslationTask('task-pause-cancellation')?.status !== 'running');
+
+    assert.equal(modelCalls, 1);
+    assert.equal(service.getTaskDetail('task-pause-cancellation')?.task.status, 'paused');
+  } finally {
+    repository.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('automatic refined translation passes its cancellation signal to the text generator', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-generator-signal-'));
+  const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  try {
+    repository.createRefinedTranslationTask({
+      id: 'task-generator-signal', sourceId: 'syosetu', novelId: 'n1', name: '请求取消信号', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
+      modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'model' }], omissionModel: null, reviewModel: null, concurrency: 1, maxReviewRounds: 1 },
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文', paragraphs: ['原文'] }], terms: [],
+    });
+    repository.updateRefinedTranslationTask('task-generator-signal', { stage: 'translating', status: 'paused' });
+    repository.updateRefinedTranslationChapterTitle('task-generator-signal', 'c1', '第一章译文');
+    let receivedSignal: AbortSignal | undefined;
+    let announceCall: (() => void) | null = null;
+    let releaseCall: (() => void) | null = null;
+    const callStarted = new Promise<void>((resolve) => { announceCall = resolve; });
+    const allowCallToFinish = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (...args: unknown[]) => {
+      receivedSignal = args[4] instanceof AbortSignal ? args[4] : undefined;
+      announceCall?.();
+      await allowCallToFinish;
+      return '译文';
+    });
+
+    service.resume('task-generator-signal');
+    await callStarted;
+    service.pause('task-generator-signal');
+    releaseCall?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    assert.ok(receivedSignal instanceof AbortSignal);
+    assert.equal(receivedSignal.aborted, true);
+  } finally {
+    repository.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('automatic refined translation passes its cancellation signal to the tool agent', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-tool-signal-'));
+  const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  try {
+    repository.createRefinedTranslationTask({
+      id: 'task-tool-signal', sourceId: 'syosetu', novelId: 'n1', name: '工具取消信号', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
+      modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'model' }], omissionModel: null, reviewModel: null, concurrency: 1, maxReviewRounds: 1 },
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文', paragraphs: ['原文'] }], terms: [],
+    });
+    repository.updateRefinedTranslationTask('task-tool-signal', { stage: 'translating', status: 'paused' });
+    repository.updateRefinedTranslationChapterTitle('task-tool-signal', 'c1', '第一章译文');
+    let receivedSignal: AbortSignal | undefined;
+    let announceCall: (() => void) | null = null;
+    let releaseCall: (() => void) | null = null;
+    const callStarted = new Promise<void>((resolve) => { announceCall = resolve; });
+    const allowCallToFinish = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const service = new RefinedTranslationService(
+      repository,
+      new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
+      new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }),
+      async () => 'fallback should not run',
+      async (...args: unknown[]) => {
+        receivedSignal = args[6] instanceof AbortSignal ? args[6] : undefined;
+        announceCall?.();
+        await allowCallToFinish;
+        return { text: '译文', toolCallCount: 1, toolCalls: [] };
+      },
+    );
+
+    service.resume('task-tool-signal');
+    await callStarted;
+    service.pause('task-tool-signal');
+    releaseCall?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    assert.ok(receivedSignal instanceof AbortSignal);
+    assert.equal(receivedSignal.aborted, true);
+  } finally {
+    repository.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('pausing during the omission check cancels the request and preserves the paused state', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-checking-cancellation-'));
+  const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  try {
+    repository.createRefinedTranslationTask({
+      id: 'task-checking-cancellation', sourceId: 'syosetu', novelId: 'n1', name: '检查止损', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
+      modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'model' }], omissionModel: { providerId: 'fake', modelId: 'omission' }, reviewModel: null, concurrency: 1, maxReviewRounds: 1 },
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文', paragraphs: ['原文'] }], terms: [],
+    });
+    repository.updateRefinedTranslationTask('task-checking-cancellation', { stage: 'checking', status: 'paused' });
+    repository.saveRefinedTranslationCheckpoint('task-checking-cancellation', 'checking', { chapterId: 'c1' });
+    let modelCalls = 0;
+    let receivedSignal: AbortSignal | undefined;
+    let announceCall: (() => void) | null = null;
+    let releaseCall: (() => void) | null = null;
+    const callStarted = new Promise<void>((resolve) => { announceCall = resolve; });
+    const allowCallToFinish = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (...args: unknown[]) => {
+      modelCalls += 1;
+      receivedSignal = args[4] instanceof AbortSignal ? args[4] : undefined;
+      announceCall?.();
+      await allowCallToFinish;
+      return 'NO';
+    });
+
+    service.resume('task-checking-cancellation');
+    await callStarted;
+    service.pause('task-checking-cancellation');
+    releaseCall?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+    assert.equal(modelCalls, 1);
+    assert.ok(receivedSignal instanceof AbortSignal);
+    assert.equal(receivedSignal.aborted, true);
+    assert.equal(service.getTaskDetail('task-checking-cancellation')?.task.status, 'paused');
+  } finally {
+    repository.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('deleting an automatic refined translation during review prevents later model calls and keeps it deleted', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-delete-cancellation-'));
+  const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
+  try {
+    repository.createRefinedTranslationTask({
+      id: 'task-delete-cancellation', sourceId: 'syosetu', novelId: 'n1', name: '删除止损', novelTitle: '测试小说', author: '作者', sourceLang: 'ja', targetLang: 'zh-CN',
+      modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'model' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'model' }, concurrency: 1, maxReviewRounds: 2 },
+      chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '原文', paragraphs: ['原文'] }], terms: [],
+    });
+    repository.updateRefinedTranslationSegment('task-delete-cancellation', 'c1', 0, '译文', 'translated');
+    repository.updateRefinedTranslationChapterReview('task-delete-cancellation', 'c1', { reviewRound: 0, reviewScore: null, status: 'translated' });
+    repository.updateRefinedTranslationTask('task-delete-cancellation', { stage: 'reviewing', status: 'paused' });
+    repository.saveRefinedTranslationCheckpoint('task-delete-cancellation', 'reviewing', { chapterId: 'c1' });
+    let modelCalls = 0;
+    let announceReviewCall: (() => void) | null = null;
+    let releaseReviewCall: (() => void) | null = null;
+    const reviewCallStarted = new Promise<void>((resolve) => { announceReviewCall = resolve; });
+    const allowReviewCallToFinish = new Promise<void>((resolve) => { releaseReviewCall = resolve; });
+    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
+      modelCalls += 1;
+      announceReviewCall?.();
+      await allowReviewCallToFinish;
+      return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
+    });
+
+    service.resume('task-delete-cancellation');
+    await reviewCallStarted;
+    service.markDeleted('task-delete-cancellation');
+    releaseReviewCall?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+    const task = service.getTaskDetail('task-delete-cancellation')?.task;
+    assert.equal(modelCalls, 1);
+    assert.equal(task?.status, 'deleted');
+    assert.ok(task?.deletedAt);
+  } finally {
+    repository.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('refined translation continues with later chapters after a paragraph failure', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-isolation-'));
   const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
