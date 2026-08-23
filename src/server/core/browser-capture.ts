@@ -559,7 +559,6 @@ export class BrowserCaptureService {
         : new BrowserTransportError('capture_timeout', 'Browser page capture timed out.');
       this.failCapture(capture, error);
     }, this.#requestTimeoutMs);
-    capture.timeout.unref();
   }
 
   private clearCaptureTimeout(capture: PendingCapture): void {
