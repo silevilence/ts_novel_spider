@@ -1,3 +1,5 @@
+import type { StoredTermExtractionRun, TranslationTermStatus } from '../../server/core/novel-repository';
+import type { TranslationProfile, TranslationProfileInput } from '../../server/core/translation-service';
 import type { HealthPayload } from '../../server/routes/health';
 import type {
   ControlLlmProviderModelsPayload,
@@ -809,6 +811,7 @@ export async function createLibraryTranslationTerm(
 }
 
 export interface UpdateTranslationTermInput {
+  status?: TranslationTermStatus;
   targetTerm?: string | null;
   entityType?: string | null;
   note?: string | null;
@@ -1369,3 +1372,25 @@ export interface MetadataSyncPreview { current: { title: string; author: string;
 export async function previewLibraryMetadataSync(sourceId: string, novelId: string): Promise<MetadataSyncPreview> { return requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/metadata-sync`, { method: 'POST' }); }
 export async function applyLibraryMetadataSync(sourceId: string, novelId: string, input: Partial<Pick<MetadataSyncPreview['remote'], 'title' | 'author' | 'description' | 'tags'>>): Promise<void> { await requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/metadata-sync`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); }
 export async function refetchLibraryChapter(sourceId: string, novelId: string, chapterId: string): Promise<{ changed: boolean }> { return requestJson(`/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/chapters/${encodeURIComponent(chapterId)}/refetch`, { method: 'POST' }); }
+
+function libraryTranslationUrl(sourceId: string, novelId: string) {
+  return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate`;
+}
+export async function fetchLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun | null }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction`);
+}
+export async function startLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction`, { method: 'POST' });
+}
+export async function cancelLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun | null }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction/cancel`, { method: 'POST' });
+}
+export async function bulkUpdateLibraryTermStatus(sourceId: string, novelId: string, termIds: string[], status: TranslationTermStatus): Promise<LibraryTranslationTermsPayload> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/terms/bulk-status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ termIds, status }) });
+}
+export async function fetchLibraryTranslationProfile(sourceId: string, novelId: string): Promise<{ translation: TranslationProfile }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/profile`);
+}
+export async function updateLibraryTranslationProfile(sourceId: string, novelId: string, input: TranslationProfileInput): Promise<{ translation: TranslationProfile }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/profile`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}

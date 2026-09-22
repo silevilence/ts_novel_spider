@@ -1,3 +1,4 @@
+import { buildGlossaryExtractionPrompt, buildGlossarySourceWindows, parseGlossaryCandidates, GLOSSARY_EXTRACTION_SOURCE_LIMIT } from './glossary-extraction';
 import crypto from 'node:crypto';
 
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
@@ -24,7 +25,6 @@ export const REFINED_TRANSLATION_STAGES: Array<{ id: RefinedTranslationStage; la
 const DEFAULT_MAX_REVIEW_ROUNDS = 5;
 const GRAPH_ENTITY_PRIORITY_SCALE = 10;
 const TRANSLATION_CONTEXT_SEGMENTS = 3;
-const GLOSSARY_EXTRACTION_SOURCE_LIMIT = 18_000;
 
 type RefinedTextGenerator = (preferences: SystemPreferencesService, route: { providerId: string; modelId: string; thinkingEnabled?: boolean }, system: string, prompt: string, signal?: AbortSignal) => Promise<string>;
 type RefinedToolAgentRunner = (preferences: SystemPreferencesService, route: { providerId: string; modelId: string; thinkingEnabled?: boolean }, system: string, prompt: string, tools: import('ai').ToolSet, firstToolName?: string, signal?: AbortSignal) => Promise<{ text: string; toolCallCount: number; toolCalls: Array<{ toolName: string; input: unknown }> }>;
@@ -120,7 +120,7 @@ export class RefinedTranslationService {
       omissionModel: null, reviewModel: null, concurrency: preferences.translationConcurrency, maxReviewRounds: DEFAULT_MAX_REVIEW_ROUNDS, ...input.modelConfig,
     };
     const termMap = new Map<string, { sourceTerm: string; targetTerm: string | null; entityType: string | null; priority: number; suggestion: string | null }>();
-    for (const term of this.#repository.listTranslationTerms(sourceId, novelId)) termMap.set(term.sourceTerm, { sourceTerm: term.sourceTerm, targetTerm: term.targetTerm, entityType: term.entityType, priority: term.priority, suggestion: null });
+    for (const term of this.#repository.listTranslationTerms(sourceId, novelId, 'confirmed')) termMap.set(term.sourceTerm, { sourceTerm: term.sourceTerm, targetTerm: term.targetTerm, entityType: term.entityType, priority: term.priority, suggestion: null });
     for (const entity of this.#repository.listKnowledgeGraphEntities(sourceId, novelId)) if (!termMap.has(entity.name)) termMap.set(entity.name, { sourceTerm: entity.name, targetTerm: null, entityType: entity.entityType, priority: Math.round(entity.prominence * GRAPH_ENTITY_PRIORITY_SCALE), suggestion: '来自知识图谱实体，建议人工确认。' });
     const today = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short' }).format(new Date());
     const task = this.#repository.createRefinedTranslationTask({ id: crypto.randomUUID(), sourceId, novelId, name: input.name?.trim() || `${snapshot.metadata.title} 精翻任务 ${today}`, novelTitle: snapshot.metadata.title, author: snapshot.metadata.author, sourceMetadata: { title: snapshot.metadata.title, author: snapshot.metadata.author, description: snapshot.metadata.description, tags: [...snapshot.metadata.tags], infoPageUrl: snapshot.metadata.infoPageUrl }, sourceLang: input.sourceLang ?? preferences.sourceLang, targetLang: input.targetLang ?? preferences.targetLang, modelConfig, chapters, terms: [...termMap.values()] });
@@ -211,10 +211,8 @@ export class RefinedTranslationService {
     if (!task) throw new Error('精翻任务不存在。');
     const route = task.modelConfig.termExtractionModel ?? this.#resolveRoute(task, 'translationModels');
     if (!route) throw new Error('未配置术语提取模型；请先在任务配置中选择模型。');
-    const source = this.#repository.listRefinedTranslationChapters(taskId)
-      .map((chapter) => `【第 ${chapter.chapterIndex} 章 ${chapter.title}】\n${chapter.sourceContent}`)
-      .join('\n\n')
-      .slice(0, GLOSSARY_EXTRACTION_SOURCE_LIMIT);
+    const source = buildGlossarySourceWindows(this.#repository.listRefinedTranslationChapters(taskId)
+      .map((chapter) => ({ id: chapter.chapterId, index: chapter.chapterIndex, title: chapter.title, content: chapter.sourceContent })), GLOSSARY_EXTRACTION_SOURCE_LIMIT, 1)[0]?.source ?? '';
     if (!source.trim()) throw new Error('任务中没有可用于提取术语的原文快照。');
     // Extraction is one bounded prompt over a local snapshot. A tool agent may repeatedly
     // read all chapters and spend up to eight tool steps, which turns a short glossary pass
@@ -222,7 +220,7 @@ export class RefinedTranslationService {
     const response = await this.#generateText(
       this.#preferences,
       route,
-      `从${task.sourceLang}小说原文中提取需要保持一致的术语候选。只返回 JSON：{"terms":[{"sourceTerm":"...","entityType":"character|location|organization|item|concept|other","priority":0-10,"suggestion":"简短说明"}]}。不要翻译术语，也不要输出 JSON 之外的内容。`,
+      buildGlossaryExtractionPrompt(task.sourceLang),
       source,
       signal,
     );
@@ -861,22 +859,6 @@ function toMessage(error: unknown) { return error instanceof Error ? error.messa
 function parseReviewJson(text: string): { score: number; severity: string; scores: Record<string, number>; issues: Array<{ paragraphIndex: number; sourceExcerpt: string; translationExcerpt: string; suggestion: string; replacementText: string | null; forceChange: boolean }> } { try { const match = text.match(/\{[\s\S]*\}/); const parsed = JSON.parse(match?.[0] ?? '{}') as Record<string, unknown>; const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : []; return { score: typeof parsed.score === 'number' ? parsed.score : 0, severity: typeof parsed.severity === 'string' ? parsed.severity : 'medium', scores: parsed.scores && typeof parsed.scores === 'object' ? Object.fromEntries(Object.entries(parsed.scores as Record<string, unknown>).filter((entry): entry is [string, number] => typeof entry[1] === 'number')) : {}, issues: rawIssues.flatMap((item) => { if (!item || typeof item !== 'object') return []; const value = item as Record<string, unknown>; return typeof value.paragraphIndex === 'number' && typeof value.suggestion === 'string' && typeof value.sourceExcerpt === 'string' && typeof value.translationExcerpt === 'string' ? [{ paragraphIndex: value.paragraphIndex, sourceExcerpt: value.sourceExcerpt.trim(), translationExcerpt: value.translationExcerpt.trim(), suggestion: value.suggestion, replacementText: typeof value.replacementText === 'string' && value.replacementText.trim() ? value.replacementText.trim() : null, forceChange: value.forceChange === true }] : []; }) }; } catch { return { score: 0, severity: 'medium', scores: {}, issues: [] }; } }
 function resolveReviewIssueParagraphIndex(issue: { paragraphIndex: number; sourceExcerpt: string; translationExcerpt: string }, rows: Array<{ paragraphIndex: number; sourceText: string; translatedText: string | null }>): number | null { const normalize = (value: string) => value.replace(/[\s\p{P}]/gu, '').toLocaleLowerCase(); const source = normalize(issue.sourceExcerpt); const translation = normalize(issue.translationExcerpt); const matches = (row: { sourceText: string; translatedText: string | null }) => Boolean(source) && normalize(row.sourceText).includes(source) && Boolean(translation) && normalize(row.translatedText ?? '').includes(translation); const anchored = rows.filter(matches); return anchored.length === 1 ? anchored[0]!.paragraphIndex : null; }
 function parseRevisionResponse(text: string): { translatedText: string; reviewFeedback: Array<{ reviewId: string; decision: Extract<RefinedTranslationReviewResolution, 'accepted' | 'partially_accepted' | 'rejected'>; reason: string | null }> } { try { const match = text.match(/\{[\s\S]*\}/); const parsed = JSON.parse(match?.[0] ?? '{}') as Record<string, unknown>; const translatedText = typeof parsed.translatedText === 'string' ? parsed.translatedText.trim() : text.trim(); const rawFeedback = Array.isArray(parsed.reviewFeedback) ? parsed.reviewFeedback : []; return { translatedText, reviewFeedback: rawFeedback.flatMap((item) => { if (!item || typeof item !== 'object') return []; const value = item as Record<string, unknown>; const decision = value.decision === 'accepted' || value.decision === 'partially_accepted' || value.decision === 'rejected' ? value.decision : null; return typeof value.reviewId === 'string' && decision ? [{ reviewId: value.reviewId, decision, reason: typeof value.reason === 'string' && value.reason.trim() ? value.reason.trim() : null }] : []; }) }; } catch { return { translatedText: text.trim(), reviewFeedback: [] }; } }
-function parseGlossaryCandidates(text: string): Array<{ sourceTerm: string; entityType: string | null; priority: number; suggestion: string | null }> {
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    const payload = JSON.parse(match?.[0] ?? '{}') as { terms?: unknown };
-    if (!Array.isArray(payload.terms)) return [];
-    const seen = new Set<string>();
-    return payload.terms.flatMap((item) => {
-      if (!item || typeof item !== 'object') return [];
-      const value = item as Record<string, unknown>;
-      const sourceTerm = typeof value.sourceTerm === 'string' ? value.sourceTerm.trim() : '';
-      if (!sourceTerm || seen.has(sourceTerm)) return [];
-      seen.add(sourceTerm);
-      return [{ sourceTerm, entityType: typeof value.entityType === 'string' ? value.entityType : null, priority: typeof value.priority === 'number' ? Math.max(0, Math.min(10, Math.round(value.priority))) : 0, suggestion: typeof value.suggestion === 'string' ? value.suggestion : null }];
-    });
-  } catch { return []; }
-}
 function parseChapterAgentResponse(text: string): { reply: string; edits: Array<{ paragraphIndex: number; translatedText: string }> } {
   try {
     const match = text.match(/\{[\s\S]*\}/);

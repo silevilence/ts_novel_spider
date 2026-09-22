@@ -1,3 +1,4 @@
+import type { TranslationTermStatus } from './novel-repository';
 import type { SqliteNovelRepository } from './novel-repository';
 import type { StoredTranslationProfileInput } from './novel-repository';
 import type {
@@ -336,8 +337,12 @@ export class TranslationService {
   }
 
   /** 列出术语表 */
-  listTerms(sourceId: string, novelId: string): StoredTranslationTermRow[] {
-    return this.#repository.listTranslationTerms(sourceId, novelId);
+  listTerms(sourceId: string, novelId: string, status?: TranslationTermStatus): StoredTranslationTermRow[] {
+    return this.#repository.listTranslationTerms(sourceId, novelId, status);
+  }
+
+  bulkUpdateTermStatus(sourceId: string, novelId: string, termIds: string[], status: TranslationTermStatus) {
+    return this.#repository.bulkUpdateTranslationTermStatus(sourceId, novelId, termIds, status);
   }
 
   /** 创建术语 */
@@ -347,11 +352,13 @@ export class TranslationService {
     entityType?: string | null;
     note?: string | null;
     priority?: number;
+    status?: TranslationTermStatus;
   }): StoredTranslationTermRow {
     return this.#repository.createTranslationTerm({
       sourceId,
       novelId,
       sourceTerm: input.sourceTerm,
+      status: input.status ?? 'confirmed',
       ...(input.targetTerm !== undefined ? { targetTerm: input.targetTerm } : {}),
       ...(input.entityType !== undefined ? { entityType: input.entityType } : {}),
       ...(input.note !== undefined ? { note: input.note } : {}),
@@ -365,6 +372,7 @@ export class TranslationService {
     entityType?: string | null;
     note?: string | null;
     priority?: number;
+    status?: TranslationTermStatus;
   }): StoredTranslationTermRow | null {
     return this.#repository.updateTranslationTerm(sourceId, novelId, termId, updates);
   }
@@ -385,7 +393,7 @@ export class TranslationService {
       sourceId,
       novelId,
       terms.map((t) => {
-        const term: { sourceTerm: string; entityType?: string | null } = { sourceTerm: t.sourceTerm };
+        const term: { sourceTerm: string; entityType?: string | null; status: TranslationTermStatus } = { sourceTerm: t.sourceTerm, status: 'pending' };
         if (t.entityType !== undefined) term.entityType = t.entityType;
         return term;
       }),
@@ -650,7 +658,7 @@ export class TranslationService {
     startTotalParagraphs = 0,
     modelOverride?: string,
   ): Promise<void> {
-    const terms = this.#repository.listTranslationTerms(sourceId, novelId);
+    const terms = this.#repository.listTranslationTerms(sourceId, novelId, 'confirmed');
     const profile = this.getTranslationProfile(sourceId, novelId);
     const paragraphsPerBatch = profile?.translationConcurrency ?? 2;
 

@@ -556,6 +556,7 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
   const [targetLang, setTargetLang] = useState('zh-CN');
   const [translationConcurrency, setTranslationConcurrency] = useState(3);
   const [preferredModelKey, setPreferredModelKey] = useState('');
+  const [extractionModelKey, setExtractionModelKey] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [chatModelOptions, setChatModelOptions] = useState<{ group: string; items: { value: string; label: string }[] }[]>([]);
@@ -570,6 +571,8 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
         setTargetLang(transPrefs.config.targetLang);
         setTranslationConcurrency(transPrefs.config.translationConcurrency);
         setPreferredModelKey(transPrefs.config.preferredTranslationModelKey ?? '');
+        const extraction = transPrefs.config.termExtractionModel;
+        setExtractionModelKey(extraction?.providerId && extraction.modelId ? `${extraction.providerId}:${extraction.modelId}` : '');
         // Build chat-only model options
         const groups: { group: string; items: { value: string; label: string }[] }[] = [];
         for (const p of llmPrefs.providers) {
@@ -596,6 +599,7 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
         targetLang,
         translationConcurrency,
         preferredTranslationModelKey: preferredModelKey || null,
+        termExtractionModel: extractionModelKey ? { providerId: extractionModelKey.slice(0, extractionModelKey.indexOf(':')), modelId: extractionModelKey.slice(extractionModelKey.indexOf(':') + 1) } : null,
       });
       onNotice({ tone: 'success', title: '已保存', message: '翻译默认值已更新。' });
     } catch (err) {
@@ -630,6 +634,7 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
         clearable
         nothingFoundMessage="暂无可用对话模型"
       />
+      <Select label="术语提取模型" description="单本未指定时使用；留空则回退默认对话模型。" placeholder="默认对话模型" data={chatModelOptions} value={extractionModelKey || null} onChange={(value) => setExtractionModelKey(value ?? '')} searchable clearable />
       <NumberInput
         label="段落翻译并发数"
         min={1}

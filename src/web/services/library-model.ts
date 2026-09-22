@@ -44,7 +44,7 @@ import type {
   LibraryNovelSummaryPayload,
   LibraryReaderTypographyPayload,
 } from '../../server/routes/library';
-import type { StoredTranslationTermRow } from '../../server/core/novel-repository';
+import type { StoredTranslationTermRow, TranslationTermStatus } from '../../server/core/novel-repository';
 import type { NoticeInput } from './control-center-model';
 
 export interface TranslationBuildState {
@@ -131,6 +131,7 @@ export interface LibraryModel {
   translationBuild: TranslationBuildState | null;
   /** 翻译：当前书籍的术语列表 */
   translationTerms: StoredTranslationTermRow[];
+  pendingTermCount: number;
   /** 翻译构建是否忙碌 */
   translationBusy: boolean;
   /** 启动翻译任务 */
@@ -144,7 +145,7 @@ export interface LibraryModel {
   /** 创建术语条目 */
   addTranslationTerm: (input: { sourceTerm: string; targetTerm?: string | null; entityType?: string | null; note?: string | null; priority?: number }) => Promise<void>;
   /** 更新术语条目 */
-  updateTranslationTerm: (termId: string, updates: { targetTerm?: string | null; entityType?: string | null; note?: string | null; priority?: number }) => Promise<void>;
+  updateTranslationTerm: (termId: string, updates: { status?: TranslationTermStatus; targetTerm?: string | null; entityType?: string | null; note?: string | null; priority?: number }) => Promise<void>;
   /** 删除术语条目 */
   removeTranslationTerm: (termId: string) => Promise<void>;
   /** 批量删除术语条目 */
@@ -983,6 +984,9 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     if (!location.sourceId || !location.novelId) return;
     setTranslationBusy(true);
     try {
+      const { terms } = await fetchLibraryTranslationTerms(location.sourceId, location.novelId).catch(() => ({ terms: translationTerms }));
+      const pending = countPendingTranslationTerms(terms);
+      if (pending) publishNotice({ tone: 'info', title: '存在待确认术语', message: `${pending} 条候选尚未确认，本次翻译仅使用已确认术语。` });
       const payload = await startLibraryTranslation(location.sourceId, location.novelId, modelOverride, fromScratch);
       setTranslationBuild(payload.translation as TranslationBuildState);
       publishNotice({ tone: 'success', title: '翻译任务已启动', message: payload.translation.message ?? '后台正在处理翻译。' });
@@ -1052,6 +1056,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   async function handleUpdateTranslationTerm(
     termId: string,
     updates: {
+      status?: TranslationTermStatus;
       targetTerm?: string | null;
       entityType?: string | null;
       note?: string | null;
@@ -1129,7 +1134,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     try {
       const result = await importGraphEntitiesToTerms(location.sourceId, location.novelId);
       const parts: string[] = [];
-      if (result.imported > 0) parts.push(`新增 ${result.imported} 条`);
+      if (result.imported > 0) parts.push(`新增 ${result.imported} 条待确认候选`);
       if (result.updated > 0) parts.push(`补充类型 ${result.updated} 条`);
       if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 条`);
       publishNotice({
@@ -1190,6 +1195,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     translationLanguages,
     translationBuild,
     translationTerms,
+    pendingTermCount: countPendingTranslationTerms(translationTerms),
     translationBusy,
     startTranslation: handleStartTranslation,
     cancelTranslation: handleCancelTranslation,
@@ -1261,4 +1267,8 @@ function normalizeLibraryTask(task: LibraryTaskSnapshot | null): ApiTaskSnapshot
       timestamp: event.timestamp,
     })),
   };
+}
+
+function countPendingTranslationTerms(terms: StoredTranslationTermRow[]): number {
+  return terms.filter((term) => term.status === 'pending').length;
 }

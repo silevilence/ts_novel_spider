@@ -837,21 +837,43 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     response.json(detail);
   });
 
-  router.get('/novels/:sourceId/:novelId/translate/terms', (request, response) => {
-    const { sourceId, novelId } = request.params;
-    const terms = service.listLibraryTranslationTerms(sourceId, novelId);
+  router.get('/novels/:sourceId/:novelId/translate/term-extraction', (request, response) => {
+    response.json({ run: service.getLibraryTermExtraction(request.params.sourceId, request.params.novelId) });
+  });
+  router.post('/novels/:sourceId/:novelId/translate/term-extraction', (request, response) => {
+    try { response.status(202).json({ run: service.startLibraryTermExtraction(request.params.sourceId, request.params.novelId) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法启动术语提取。' }); }
+  });
+  router.post('/novels/:sourceId/:novelId/translate/term-extraction/cancel', (request, response) => {
+    response.json({ run: service.cancelLibraryTermExtraction(request.params.sourceId, request.params.novelId) });
+  });
+  router.post('/novels/:sourceId/:novelId/translate/terms/bulk-status', (request, response) => {
+    try {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const status = readTermStatus(body.status);
+      if (!status || !Array.isArray(body.termIds) || !body.termIds.length || !body.termIds.every((id) => typeof id === 'string')) throw new Error('请选择术语和有效的目标状态。');
+      response.json({ terms: service.bulkUpdateLibraryTermStatus(request.params.sourceId, request.params.novelId, body.termIds, status) });
+    } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法更新术语。' }); }
+  });
 
-    response.json({
-      terms,
-    });
+  router.get('/novels/:sourceId/:novelId/translate/terms', (request, response) => {
+    try {
+      const { sourceId, novelId } = request.params;
+      const status = readTermStatus(request.query.status);
+      response.json({ terms: service.listLibraryTranslationTerms(sourceId, novelId, status) });
+    } catch (error) {
+      response.status(422).json({ message: error instanceof Error ? error.message : '无法读取术语。' });
+    }
   });
 
   router.post('/novels/:sourceId/:novelId/translate/terms', (request, response) => {
     try {
       const { sourceId, novelId } = request.params;
-      const body = request.body as Record<string, unknown>;
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const status = readTermStatus(body.status);
       const term = service.createLibraryTranslationTerm(sourceId, novelId, {
         sourceTerm: readStringField(body, 'sourceTerm'),
+        ...(status ? { status } : {}),
         ...(body.targetTerm !== undefined ? { targetTerm: typeof body.targetTerm === 'string' ? body.targetTerm : null } : {}),
         ...(body.entityType !== undefined ? { entityType: typeof body.entityType === 'string' ? body.entityType : null } : {}),
         ...(body.note !== undefined ? { note: typeof body.note === 'string' ? body.note : null } : {}),
@@ -871,8 +893,10 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   router.put('/novels/:sourceId/:novelId/translate/terms/:termId', (request, response) => {
     try {
       const { sourceId, novelId, termId } = request.params;
-      const body = request.body as Record<string, unknown>;
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const status = readTermStatus(body.status);
       const term = service.updateLibraryTranslationTerm(sourceId, novelId, termId, {
+        ...(status ? { status } : {}),
         ...(body.targetTerm !== undefined ? { targetTerm: typeof body.targetTerm === 'string' ? body.targetTerm : null } : {}),
         ...(body.entityType !== undefined ? { entityType: typeof body.entityType === 'string' ? body.entityType : null } : {}),
         ...(body.note !== undefined ? { note: typeof body.note === 'string' ? body.note : null } : {}),
@@ -1353,4 +1377,10 @@ function parseManualAssets(value: unknown): Array<{ id: string; mimeType: string
     if (typeof raw.id !== 'string' || typeof raw.mimeType !== 'string' || typeof raw.base64 !== 'string') throw new Error('图片素材格式无效。');
     return { id: raw.id, mimeType: raw.mimeType, base64: raw.base64 };
   });
+}
+
+function readTermStatus(value: unknown): import('../core/novel-repository').TranslationTermStatus | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'pending' || value === 'confirmed' || value === 'excluded') return value;
+  throw new Error('术语状态无效。');
 }

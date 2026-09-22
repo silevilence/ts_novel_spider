@@ -157,10 +157,11 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
         {/* 术语管理入口 */}
         <Button variant="subtle" size="compact-sm" style={{ alignSelf: 'flex-start' }}
           onClick={() => setGlossaryOpened(true)}>
-          管理术语表
+          管理术语表（待确认 {model.pendingTermCount}）
         </Button>
 
         <TranslationGlossaryModal
+          key={`${detail?.sourceId}:${detail?.metadata.novelId}`}
           opened={glossaryOpened}
           onClose={() => setGlossaryOpened(false)}
           model={model}

@@ -1564,7 +1564,7 @@ function routeFromProfile(providerId: string, modelId: string): { providerId: st
   return providerId && modelId ? { providerId, modelId } : null;
 }
 
-function resolveCapabilityRoute(
+export function resolveCapabilityRoute(
   state: LlmPreferencesState,
   capability: ModelCapability,
   override: { providerId: string; modelId: string } | null,
@@ -1572,7 +1572,7 @@ function resolveCapabilityRoute(
 ): { provider: LlmProviderConfig; model: LlmModelConfig; source: 'novel' | 'global' } | null {
   if (override) {
     const provider = state.providers.find((entry) => entry.id === override.providerId && entry.enabled);
-    const model = provider?.models.find((entry) => entry.id === override.modelId && entry.enabled);
+    const model = provider?.models.find((entry) => (entry.id === override.modelId || entry.modelId === override.modelId) && entry.enabled);
     if (provider && model) {
       return { provider, model, source: 'novel' };
     }

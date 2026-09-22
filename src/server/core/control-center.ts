@@ -1,3 +1,5 @@
+import { LibraryTermExtractionService } from './library-term-extraction';
+import type { TranslationTermStatus } from './novel-repository';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -243,6 +245,7 @@ export class ControlCenterService {
   readonly #exportEngine: LocalExportEngine;
   readonly #libraryIntelligence: LibraryIntelligenceService;
   readonly #translation: TranslationService;
+  readonly #termExtraction: LibraryTermExtractionService;
   readonly #refinedTranslation: RefinedTranslationService;
   readonly #taskLogDispatcher: SpiderLogDispatcher;
   readonly #scheduling: SchedulingService;
@@ -276,6 +279,8 @@ export class ControlCenterService {
       ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     });
     this.#translation = new TranslationService(this.#repository, this.#systemPreferences);
+    this.#termExtraction = new LibraryTermExtractionService(this.#repository, this.#systemPreferences);
+    this.#termExtraction.recoverInterruptedRuns();
     this.#refinedTranslation = new RefinedTranslationService(this.#repository, this.#systemPreferences, this.#exportEngine);
     this.#refinedTranslation.recoverInterruptedTasks();
     this.#registry = new Map(
@@ -966,8 +971,13 @@ export class ControlCenterService {
     return this.#translation.getChapterTranslationDetail(sourceId, novelId, chapterId, sourceLang, targetLang);
   }
 
-  listLibraryTranslationTerms(sourceId: string, novelId: string): StoredTranslationTermRow[] {
-    return this.#translation.listTerms(sourceId, novelId);
+  getLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.getRun(sourceId, novelId); }
+  startLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.start(sourceId, novelId); }
+  cancelLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.cancel(sourceId, novelId); }
+  bulkUpdateLibraryTermStatus(sourceId: string, novelId: string, termIds: string[], status: TranslationTermStatus) { return this.#translation.bulkUpdateTermStatus(sourceId, novelId, termIds, status); }
+
+  listLibraryTranslationTerms(sourceId: string, novelId: string, status?: TranslationTermStatus): StoredTranslationTermRow[] {
+    return this.#translation.listTerms(sourceId, novelId, status);
   }
 
   createLibraryTranslationTerm(sourceId: string, novelId: string, input: {
@@ -976,6 +986,7 @@ export class ControlCenterService {
     entityType?: string | null;
     note?: string | null;
     priority?: number;
+    status?: TranslationTermStatus;
   }): StoredTranslationTermRow {
     return this.#translation.createTerm(sourceId, novelId, input);
   }
@@ -985,6 +996,7 @@ export class ControlCenterService {
     entityType?: string | null;
     note?: string | null;
     priority?: number;
+    status?: TranslationTermStatus;
   }): StoredTranslationTermRow | null {
     return this.#translation.updateTerm(sourceId, novelId, termId, updates);
   }
@@ -1114,6 +1126,7 @@ export class ControlCenterService {
   }
 
   moveLibraryNovelToTrash(sourceId: string, novelId: string): boolean {
+    this.#termExtraction.cancel(sourceId, novelId);
     return this.#repository.moveNovelToTrash(sourceId, novelId);
   }
 

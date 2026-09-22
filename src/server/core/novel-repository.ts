@@ -334,7 +334,17 @@ export interface StoredTranslationProfileRow extends StoredTranslationProfileInp
   updatedAt: string;
 }
 
+export type TranslationTermStatus = 'pending' | 'confirmed' | 'excluded';
+
+export interface StoredTermExtractionRun {
+  id: string; sourceId: string; novelId: string;
+  status: 'running' | 'completed' | 'cancelled' | 'failed';
+  totalBatches: number; completedBatches: number; candidates: number; added: number;
+  startedAt: string; updatedAt: string; errorMessage: string | null;
+}
+
 export interface StoredTranslationTermRow {
+  status: TranslationTermStatus;
   id: string;
   sourceId: string;
   novelId: string;
@@ -646,7 +656,7 @@ export type RefinedTranslationTaskStatus = 'draft' | 'paused' | 'running' | 'com
 export type RefinedTranslationStage = 'glossary_setup' | 'glossary_translation' | 'translating' | 'checking' | 'reviewing' | 'revising' | 'completed';
 export type RefinedTranslationSegmentStatus = 'pending' | 'translated' | 'skipped' | 'failed';
 export type RefinedTranslationChapterStatus = RefinedTranslationSegmentStatus | 'reviewed' | 'needs_attention';
-export type RefinedTranslationTermStatus = 'pending' | 'confirmed' | 'excluded';
+export type RefinedTranslationTermStatus = TranslationTermStatus;
 export type RefinedTranslationReviewResolution = 'open' | 'accepted' | 'partially_accepted' | 'rejected' | 'resolved' | 'ignored' | 'superseded';
 
 export interface RefinedModelRoute { providerId: string; modelId: string; /** Whether this workflow route should request the provider's native thinking mode. */ thinkingEnabled?: boolean; }
@@ -724,6 +734,7 @@ interface TranslationProfileRow {
 }
 
 interface TranslationTermRow {
+  status: TranslationTermStatus;
   term_id: string;
   source_id: string;
   novel_id: string;
@@ -2143,7 +2154,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const status = this.getNovelPurgeStatus(sourceId, novelId); if (!status?.canPurge) return false;
     const transaction = this.#database.transaction(() => {
       if (sourceId === 'manual') this.#database.prepare(`DELETE FROM manual_volumes WHERE novel_id=?`).run(novelId);
-      for (const table of ['chapter_versions', 'novel_metadata_versions', 'chapter_translation_paragraphs', 'chapter_translations', 'chapter_translation_qa', 'novel_translation_build_checkpoints', 'novel_translation_build_logs', 'novel_translation_builds', 'novel_translation_profiles', 'novel_translation_terms', 'knowledge_graph_summaries', 'knowledge_graph_chunks', 'knowledge_graph_relations', 'knowledge_graph_entities', 'novel_graph_build_checkpoints', 'novel_graph_build_logs', 'novel_graph_builds', 'novel_graph_profiles', 'scheduled_summaries', 'scheduled_novels', 'reader_typography', 'bookmarks', 'reading_progress', 'novel_aliases', 'task_history', 'chapters']) {
+      for (const table of ['chapter_versions', 'novel_metadata_versions', 'chapter_translation_paragraphs', 'chapter_translations', 'chapter_translation_qa', 'novel_translation_build_checkpoints', 'novel_translation_build_logs', 'novel_translation_builds', 'novel_translation_profiles', 'novel_translation_terms', 'novel_term_extraction_runs', 'knowledge_graph_summaries', 'knowledge_graph_chunks', 'knowledge_graph_relations', 'knowledge_graph_entities', 'novel_graph_build_checkpoints', 'novel_graph_build_logs', 'novel_graph_builds', 'novel_graph_profiles', 'scheduled_summaries', 'scheduled_novels', 'reader_typography', 'bookmarks', 'reading_progress', 'novel_aliases', 'task_history', 'chapters']) {
         this.#database.prepare(`DELETE FROM ${table} WHERE source_id=? AND novel_id=?`).run(sourceId, novelId);
       }
       return this.#database.prepare(`DELETE FROM novels WHERE source_id=? AND novel_id=? AND deleted_at IS NOT NULL`).run(sourceId, novelId).changes > 0;
@@ -2776,19 +2787,57 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     return build;
   }
 
-  listTranslationTerms(sourceId: string, novelId: string): StoredTranslationTermRow[] {
+  bulkUpdateTranslationTermStatus(sourceId: string, novelId: string, termIds: string[], status: TranslationTermStatus): StoredTranslationTermRow[] {
+    this.assertNovelExists(sourceId, novelId);
+    const ids = new Set(termIds);
+    const update = this.#database.prepare('UPDATE novel_translation_terms SET status = ?, updated_at = ? WHERE source_id = ? AND novel_id = ? AND term_id = ?');
+    this.#database.transaction(() => {
+      const now = new Date().toISOString();
+      for (const id of ids) update.run(status, now, sourceId, novelId, id);
+    })();
+    return this.listTranslationTerms(sourceId, novelId).filter((term) => ids.has(term.id));
+  }
+
+  getTermExtractionRun(sourceId: string, novelId: string): StoredTermExtractionRun | null {
+    const row = this.#database.prepare('SELECT run_json FROM novel_term_extraction_runs WHERE source_id = ? AND novel_id = ?').get(sourceId, novelId) as { run_json: string } | undefined;
+    return row ? JSON.parse(row.run_json) as StoredTermExtractionRun : null;
+  }
+
+  saveTermExtractionRun(run: StoredTermExtractionRun): void {
+    this.#database.prepare('INSERT INTO novel_term_extraction_runs (source_id, novel_id, run_json) VALUES (?, ?, ?) ON CONFLICT(source_id, novel_id) DO UPDATE SET run_json = excluded.run_json')
+      .run(run.sourceId, run.novelId, JSON.stringify(run));
+  }
+
+  recoverTermExtractionRuns(): void {
+    const rows = this.#database.prepare('SELECT run_json FROM novel_term_extraction_runs').all() as Array<{ run_json: string }>;
+    for (const row of rows) {
+      const run = JSON.parse(row.run_json) as StoredTermExtractionRun;
+      if (run.status === 'running') this.saveTermExtractionRun({ ...run, status: 'failed', errorMessage: '服务重启，术语提取已中断；可重新提取，已有候选会保留。', updatedAt: new Date().toISOString() });
+    }
+  }
+
+  saveTermExtractionBatch(run: StoredTermExtractionRun, terms: Parameters<SqliteNovelRepository['upsertTranslationTerms']>[2]): StoredTermExtractionRun {
+    return this.#database.transaction(() => {
+      const result = this.upsertTranslationTerms(run.sourceId, run.novelId, terms);
+      const next = { ...run, completedBatches: run.completedBatches + 1, candidates: run.candidates + terms.length, added: run.added + result.created, updatedAt: new Date().toISOString() };
+      this.saveTermExtractionRun(next);
+      return next;
+    })();
+  }
+
+  listTranslationTerms(sourceId: string, novelId: string, status?: TranslationTermStatus): StoredTranslationTermRow[] {
     return this.#database
       .prepare(
         `
           SELECT
             term_id, source_id, novel_id, source_term, target_term, entity_type, note,
-            extracted_from_chapter_id, priority, created_at, updated_at
+            extracted_from_chapter_id, priority, created_at, updated_at, status
           FROM novel_translation_terms
-          WHERE source_id = ? AND novel_id = ?
+          WHERE source_id = ? AND novel_id = ? AND (? IS NULL OR status = ?)
           ORDER BY priority DESC, source_term COLLATE NOCASE ASC
         `,
       )
-      .all(sourceId, novelId)
+      .all(sourceId, novelId, status ?? null, status ?? null)
       .map((row) => mapTranslationTermRow(row as TranslationTermRow));
   }
 
@@ -2801,6 +2850,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     note?: string | null;
     extractedFromChapterId?: string | null;
     priority?: number;
+    status?: TranslationTermStatus;
   }): StoredTranslationTermRow {
     this.assertNovelExists(input.sourceId, input.novelId);
 
@@ -2811,23 +2861,23 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         `
           INSERT INTO novel_translation_terms (
             term_id, source_id, novel_id, source_term, target_term, entity_type, note,
-            extracted_from_chapter_id, priority, created_at, updated_at
+            extracted_from_chapter_id, priority, created_at, updated_at, status
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
         termId, input.sourceId, input.novelId, input.sourceTerm.trim(),
         input.targetTerm?.trim() ?? null, input.entityType?.trim() ?? null,
         input.note?.trim() ?? null, input.extractedFromChapterId ?? null,
-        input.priority ?? 0, timestamp, timestamp,
+        input.priority ?? 0, timestamp, timestamp, input.status ?? 'confirmed',
       );
 
-    const createdTerm = this.listTranslationTerms(input.sourceId, input.novelId).find((t) => t.id === termId);
+    const createdTerm = this.#database.prepare('SELECT * FROM novel_translation_terms WHERE term_id = ?').get(termId) as TranslationTermRow | undefined;
     if (!createdTerm) {
       throw new Error(`Failed to load translation term ${termId} after creation.`);
     }
-    return createdTerm;
+    return mapTranslationTermRow(createdTerm);
   }
 
   updateTranslationTerm(
@@ -2839,6 +2889,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       entityType?: string | null;
       note?: string | null;
       priority?: number;
+      status?: TranslationTermStatus;
     },
   ): StoredTranslationTermRow | null {
     const timestamp = new Date().toISOString();
@@ -2853,7 +2904,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
           UPDATE novel_translation_terms
           SET
             target_term = ?, entity_type = ?, note = ?, priority = ?,
-            updated_at = ?
+            updated_at = ?, status = ?
           WHERE term_id = ? AND source_id = ? AND novel_id = ?
         `,
       )
@@ -2862,7 +2913,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         'entityType' in updates ? (updates.entityType?.trim() ?? null) : existing.entityType,
         'note' in updates ? (updates.note?.trim() ?? null) : existing.note,
         'priority' in updates ? (updates.priority ?? existing.priority) : existing.priority,
-        timestamp,
+        timestamp, updates.status ?? existing.status,
         termId, sourceId, novelId,
       );
 
@@ -2885,7 +2936,9 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     note?: string | null;
     extractedFromChapterId?: string | null;
     priority?: number;
+    status?: TranslationTermStatus;
   }>): { created: number; updated: number; skipped: number } {
+    this.assertNovelExists(sourceId, novelId);
     let created = 0;
     let updated = 0;
     let skipped = 0;
@@ -2900,25 +2953,30 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       }
 
       const found = existingMap.get(sourceTerm);
+      if (found?.status === 'excluded') { skipped++; continue; }
       if (found) {
         if (!found.targetTerm && input.targetTerm) {
-          this.updateTranslationTerm(sourceId, novelId, found.id, { targetTerm: input.targetTerm });
+          const updatedTerm = this.updateTranslationTerm(sourceId, novelId, found.id, { targetTerm: input.targetTerm });
+          if (updatedTerm) existingMap.set(sourceTerm, updatedTerm);
           updated++;
         } else if (!found.entityType && input.entityType) {
-          this.updateTranslationTerm(sourceId, novelId, found.id, { entityType: input.entityType });
+          const updatedTerm = this.updateTranslationTerm(sourceId, novelId, found.id, { entityType: input.entityType });
+          if (updatedTerm) existingMap.set(sourceTerm, updatedTerm);
           updated++;
         } else {
           skipped++;
         }
       } else {
-        this.createTranslationTerm({
-          sourceId, novelId, sourceTerm: input.sourceTerm,
+        const createdTerm = this.createTranslationTerm({
+          sourceId, novelId, sourceTerm,
+          ...(input.status ? { status: input.status } : {}),
           ...(input.targetTerm !== undefined ? { targetTerm: input.targetTerm } : {}),
           ...(input.entityType !== undefined ? { entityType: input.entityType } : {}),
           ...(input.note !== undefined ? { note: input.note } : {}),
           ...(input.extractedFromChapterId !== undefined ? { extractedFromChapterId: input.extractedFromChapterId } : {}),
           ...(input.priority !== undefined ? { priority: input.priority } : {}),
         });
+        existingMap.set(sourceTerm, createdTerm);
         created++;
       }
     }
@@ -2933,9 +2991,9 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         `
           SELECT
             term_id, source_id, novel_id, source_term, target_term, entity_type, note,
-            extracted_from_chapter_id, priority, created_at, updated_at
+            extracted_from_chapter_id, priority, created_at, updated_at, status
           FROM novel_translation_terms
-          WHERE source_id = ? AND novel_id = ? AND target_term IS NULL
+          WHERE source_id = ? AND novel_id = ? AND status = 'confirmed' AND (target_term IS NULL OR trim(target_term) = '')
           ORDER BY priority DESC, source_term COLLATE NOCASE ASC
         `,
       )
@@ -4732,10 +4790,17 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS novel_term_extraction_runs (
+        source_id TEXT NOT NULL, novel_id TEXT NOT NULL, run_json TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS novel_translation_terms (
         term_id TEXT NOT NULL PRIMARY KEY,
         source_id TEXT NOT NULL,
         novel_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'confirmed' CHECK(status IN ('pending', 'confirmed', 'excluded')),
         source_term TEXT NOT NULL,
         target_term TEXT,
         entity_type TEXT,
@@ -4866,6 +4931,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     `);
 
     // 翻译构建——段落级进度追踪（幂等迁移：仅对旧库补列）
+    this.ensureColumnExists('novel_translation_terms', 'status', "TEXT NOT NULL DEFAULT 'confirmed' CHECK(status IN ('pending', 'confirmed', 'excluded'))");
     this.ensureColumnExists('novel_translation_builds', 'current_chapter_title', 'TEXT');
     this.ensureColumnExists('novel_translation_builds', 'current_chapter_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novel_translation_builds', 'current_chapter_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
@@ -5419,6 +5485,7 @@ function mapTranslationProfileRow(row: TranslationProfileRow): StoredTranslation
 
 function mapTranslationTermRow(row: TranslationTermRow): StoredTranslationTermRow {
   return {
+    status: row.status,
     id: row.term_id,
     sourceId: row.source_id,
     novelId: row.novel_id,

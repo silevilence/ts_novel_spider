@@ -1,11 +1,16 @@
-import { useState } from 'react';
+import { useState, useEffect, useEffectEvent } from 'react';
+import type { StoredTermExtractionRun, TranslationTermStatus } from '../../server/core/novel-repository';
+import { fetchLibraryTermExtraction, startLibraryTermExtraction, cancelLibraryTermExtraction, bulkUpdateLibraryTermStatus, fetchLibraryTranslationProfile, updateLibraryTranslationProfile, fetchLlmProvidersPreferences } from '../services/api';
 import {
+  Alert,
+  Progress,
   Badge,
   Button,
   Checkbox,
   Group,
   Modal,
   Paper,
+  Pagination,
   ScrollArea,
   Select,
   Stack,
@@ -27,6 +32,8 @@ const ENTITY_TYPE_OPTIONS = [
   { value: 'location', label: '地名' },
   { value: 'organization', label: '组织' },
   { value: 'concept', label: '概念' },
+  { value: 'item', label: '物品' },
+  { value: 'other', label: '其他' },
   { value: 'author', label: '作者' },
 ];
 
@@ -45,8 +52,62 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
   // 多选
   const [selectedTermIds, setSelectedTermIds] = useState<Set<string>>(new Set());
 
-  const terms = model.translationTerms;
-  const missingTerms = terms.filter((t) => !t.targetTerm);
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [page, setPage] = useState(1);
+  const [run, setRun] = useState<StoredTermExtractionRun | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [extractionModelKey, setExtractionModelKey] = useState('');
+  const [configLocked, setConfigLocked] = useState(false);
+  const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const sourceId = model.detail?.novel.sourceId;
+  const novelId = model.detail?.novel.metadata.novelId;
+  const refreshTerms = useEffectEvent(() => model.fetchTranslationTerms());
+  useEffect(() => {
+    if (!opened || !sourceId || !novelId) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setRun(null); setSelectedTermIds(new Set()); setLoadError(''); setPage(1);
+    const poll = async () => {
+      try {
+        const payload = await fetchLibraryTermExtraction(sourceId, novelId);
+        if (!active) return;
+        setRun(payload.run); setLoadError('');
+        await refreshTerms();
+      } catch (error) { if (active) setLoadError(error instanceof Error ? error.message : '提取进度加载失败。'); }
+      if (active) timer = setTimeout(() => void poll(), 2000);
+    };
+    void poll();
+    void Promise.all([fetchLibraryTranslationProfile(sourceId, novelId), fetchLlmProvidersPreferences()]).then(([{ translation: profile }, providers]) => {
+      if (!active) return;
+      setConfigLocked(profile.configLocked);
+      const route = profile.termExtractionModel;
+      setExtractionModelKey(route?.providerId && route.modelId ? `${route.providerId}:${route.modelId}` : '');
+      setModelOptions(providers.providers.filter((p) => p.enabled).flatMap((p) => p.models.filter((m) => m.enabled && m.resolvedCapabilities.includes('chat')).map((m) => ({ value: `${p.id}:${m.modelId}`, label: `${p.label} / ${m.label || m.modelId}` }))));
+    }).catch((error) => { if (active) setLoadError(error instanceof Error ? error.message : '模型配置加载失败。'); });
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [opened, sourceId, novelId]);
+
+  async function perform(action: () => Promise<unknown>) {
+    setActionBusy(true);
+    try { await action(); await model.fetchTranslationTerms(); }
+    catch (error) { onNotify({ tone: 'error', title: '操作失败', message: error instanceof Error ? error.message : '请重试。' }); }
+    finally { setActionBusy(false); }
+  }
+  function changeStatus(ids: string[], status: TranslationTermStatus) {
+    if (!sourceId || !novelId) return;
+    void perform(async () => {
+      await bulkUpdateLibraryTermStatus(sourceId, novelId, ids, status);
+      setSelectedTermIds(new Set());
+      onNotify({ tone: 'success', title: '术语状态已更新', message: `已处理 ${ids.length} 条术语。` });
+    });
+  }
+  const statusLabels = { pending: '待确认', confirmed: '已确认', excluded: '已排除' };
+  const terms = model.translationTerms.filter((term) => statusFilter === 'all' || term.status === statusFilter);
+  const pageCount = Math.max(1, Math.ceil(terms.length / 50));
+  const currentPage = Math.min(page, pageCount);
+  const visibleTerms = terms.slice((currentPage - 1) * 50, currentPage * 50);
+  const missingTerms = model.translationTerms.filter((t) => t.status === 'confirmed' && !t.targetTerm?.trim());
   const selectableTerms = terms.filter((t) => t.id !== editingTermId);
   const allSelected = selectableTerms.length > 0 && selectableTerms.every((t) => selectedTermIds.has(t.id));
   const someSelected = selectedTermIds.size > 0 && !allSelected;
@@ -87,7 +148,8 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
         {/* 统计与操作栏 */}
         <Group gap="xs" justify="space-between" wrap="wrap">
           <Group gap="xs">
-            <Badge variant="light" color="yellow">共 {terms.length} 条</Badge>
+            <Badge variant="light" color="yellow">共 {model.translationTerms.length} 条</Badge>
+            <Badge variant="light" color="orange">待确认 {model.pendingTermCount} 条</Badge>
             {missingTerms.length > 0 ? (
               <Badge variant="light" color="red">缺译 {missingTerms.length} 条</Badge>
             ) : null}
@@ -103,11 +165,12 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
                     setSelectedTermIds(new Set(selectableTerms.map((t) => t.id)));
                   }
                 }}
-                label={`全选`}
+                label={`全选当前筛选（${selectableTerms.length} 条）`}
               />
             ) : null}
           </Group>
           <Group gap="xs">
+            {selectedTermIds.size > 0 ? <><Button size="compact-sm" disabled={actionBusy} onClick={() => changeStatus([...selectedTermIds], 'confirmed')}>确认所选</Button><Button size="compact-sm" variant="light" color="gray" disabled={actionBusy} onClick={() => changeStatus([...selectedTermIds], 'excluded')}>排除所选</Button></> : null}
             {selectedTermIds.size > 0 ? (
               <Button
                 color="red"
@@ -137,8 +200,41 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
         </Group>
 
         <Text size="xs" c="dimmed">
-          术语表会在翻译时注入到翻译模型的提示词中，确保人物名、地名、专有名词翻译一致。
+          仅已确认术语参与翻译。待确认候选不计入缺译；已排除术语不会因重复提取而重新出现。
         </Text>
+
+        <Select label="术语状态" value={statusFilter} onChange={(value) => { setStatusFilter(value ?? 'all'); setSelectedTermIds(new Set()); setPage(1); }} data={[{ value: 'all', label: '全部状态' }, ...Object.entries(statusLabels).map(([value, label]) => ({ value, label }))]} />
+        <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+          <Stack gap="xs">
+            <Select label="本书术语提取模型" description="留空继承全局术语提取模型，再回退默认对话模型。" data={modelOptions} value={extractionModelKey || null} onChange={(value) => setExtractionModelKey(value ?? '')} disabled={configLocked || actionBusy || run?.status === 'running'} searchable clearable />
+            <Group gap="xs">
+              <Button variant="subtle" size="compact-sm" disabled={configLocked || actionBusy || run?.status === 'running'} onClick={() => {
+                if (!sourceId || !novelId) return;
+                void perform(async () => {
+                  const split = extractionModelKey.indexOf(':');
+                  await updateLibraryTranslationProfile(sourceId, novelId, { termExtractionModel: extractionModelKey ? { providerId: extractionModelKey.slice(0, split), modelId: extractionModelKey.slice(split + 1) } : null });
+                  onNotify({ tone: 'success', title: '提取模型已保存', message: '下次提取使用此配置。' });
+                });
+              }}>保存提取模型</Button>
+              <Button size="compact-sm" loading={actionBusy} disabled={!sourceId || !novelId || run?.status === 'running'} onClick={() => {
+                if (!sourceId || !novelId) return;
+                void perform(async () => { const result = await startLibraryTermExtraction(sourceId, novelId); setRun(result.run); });
+              }}>AI 提取候选</Button>
+              {run?.status === 'running' ? <Button size="compact-sm" variant="outline" color="red" disabled={actionBusy} onClick={() => {
+                if (!sourceId || !novelId) return;
+                void perform(async () => { const result = await cancelLibraryTermExtraction(sourceId, novelId); setRun(result.run); });
+              }}>取消提取</Button> : null}
+            </Group>
+            <Text size="xs" c="dimmed">提取在后台分批执行，关闭浮窗后仍会继续。修改模型后请先保存。</Text>
+            {loadError ? <Alert color="red">{loadError}</Alert> : null}
+            {run ? <Stack gap={4}>
+              <Text size="sm" fw={600}>{run.status === 'running' ? '正在提取候选' : run.status === 'completed' ? '提取完成' : run.status === 'cancelled' ? '提取已取消' : '提取失败'}</Text>
+              <Progress value={run.totalBatches ? run.completedBatches / run.totalBatches * 100 : 0} animated={run.status === 'running'} />
+              <Text size="xs">已跑 {run.completedBatches}/{run.totalBatches} 批 · 识别 {run.candidates} 条候选 · 本次新增 {run.added} 条</Text>
+              {run.errorMessage ? <Text size="xs" c="red">{run.errorMessage}</Text> : null}
+            </Stack> : null}
+          </Stack>
+        </Paper>
 
         {/* 新增表单 */}
         <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
@@ -203,12 +299,12 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
         {/* 术语列表 */}
         {terms.length === 0 ? (
           <Text size="xs" c="dimmed">
-            还没有术语。添加后会自动应用到翻译流程中，确保专有名词翻译一致。
+            当前筛选下没有术语。可先提取 AI 候选或手动添加已确认术语。
           </Text>
         ) : (
           <ScrollArea.Autosize mah={420} type="hover">
             <Stack gap="xs">
-              {terms.map((term) => (
+              {visibleTerms.map((term) => (
                 <Paper key={term.id} p="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
                   {editingTermId === term.id ? (
                     <Stack gap="xs">
@@ -262,7 +358,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
                       </Group>
                     </Stack>
                   ) : (
-                    <Group justify="space-between" wrap="nowrap">
+                    <Group justify="space-between" wrap="wrap">
                       <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
                         <Checkbox
                           size="xs"
@@ -281,13 +377,14 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <Group gap="xs" wrap="nowrap">
                             <Text size="sm" fw={600} truncate="end">{term.sourceTerm}</Text>
+                            <Badge size="xs" variant="light" color={term.status === 'confirmed' ? 'green' : term.status === 'pending' ? 'orange' : 'gray'}>{statusLabels[term.status]}</Badge>
                             {term.targetTerm ? (
                               <>
                                 <Text size="xs" c="dimmed">→</Text>
                                 <Text size="sm" truncate="end">{term.targetTerm}</Text>
                               </>
                             ) : (
-                              <Badge variant="light" color="red" size="xs">待译</Badge>
+                              term.status === 'confirmed' ? <Badge variant="light" color="red" size="xs">待译</Badge> : null
                             )}
                           </Group>
                           <Group gap="xs" mt={2}>
@@ -296,6 +393,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
                                 {ENTITY_TYPE_OPTIONS.find((o) => o.value === term.entityType)?.label ?? term.entityType}
                               </Badge>
                             ) : null}
+                            {term.extractedFromChapterId ? <Text size="xs" c="dimmed">来源：{model.detail?.novel.chapters.find((chapter) => chapter.id === term.extractedFromChapterId)?.title ?? term.extractedFromChapterId}</Text> : null}
                             {term.note ? (
                               <Text size="xs" c="dimmed" truncate="end">{term.note}</Text>
                             ) : null}
@@ -305,7 +403,9 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
                           </Group>
                         </div>
                       </Group>
-                      <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
+                      <Group gap="xs" wrap="wrap" style={{ flexShrink: 0 }}>
+                        {term.status !== 'confirmed' ? <Button size="compact-xs" variant="light" disabled={actionBusy} onClick={() => changeStatus([term.id], 'confirmed')}>确认</Button> : null}
+                        {term.status !== 'excluded' ? <Button size="compact-xs" variant="subtle" color="gray" disabled={actionBusy} onClick={() => changeStatus([term.id], 'excluded')}>排除</Button> : null}
                         <Button
                           variant="subtle"
                           size="compact-xs"
@@ -330,6 +430,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
             </Stack>
           </ScrollArea.Autosize>
         )}
+        {pageCount > 1 ? <Pagination aria-label="术语列表分页" total={pageCount} value={currentPage} onChange={setPage} size="sm" /> : null}
       </Stack>
     </Modal>
   );
