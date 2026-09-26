@@ -769,7 +769,9 @@ function serializeProvider(
       const validation = validations.get(createValidationKey(provider.id, model.id));
       return {
         ...model,
-        resolvedCapabilities: validation?.detectedCapabilities ?? resolveDetectedCapabilities(model, provider.type),
+        // 始终按当前配置解析能力；验证缓存仅用于连通性状态，
+        // 否则历史验证结果会永久覆盖后续配置变更（如嵌入模型残留对话标签）
+        resolvedCapabilities: resolveDetectedCapabilities(model, provider.type),
         lastValidatedAt: validation?.checkedAt ?? null,
         isConfigured: model.modelId.length > 0,
       };
@@ -873,8 +875,10 @@ function resolveDetectedCapabilities(
   return normalizeCapabilities(detected);
 }
 
-function extractCapabilityHints(modelId: string, providerType: LlmProviderType): string[] {
-  return [modelId.toLowerCase(), providerType.toLowerCase()];
+function extractCapabilityHints(modelId: string, _providerType: LlmProviderType): string[] {
+  // 仅以模型 ID 作为能力线索；provider 类型（如 "ollama" 含 "llama"）
+  // 会把所有该提供商的模型误判为对话模型
+  return [modelId.toLowerCase()];
 }
 
 function isProviderConfigured(

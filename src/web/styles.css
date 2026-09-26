@@ -130,9 +130,15 @@ button:disabled {
   --input-bd: rgba(168, 133, 96, 0.2) !important;
   --input-bd-focus: rgba(255, 140, 66, 0.6) !important;
   --input-placeholder-color: var(--muted) !important;
+
+  /* 浮层表面（Select/Combobox/Popover 下拉、菜单、body 底色）对齐暖纸质面板色，
+     避免 Mantine 内置 neutral dark 色阶产生黑灰浮层（dark-6 = Popover 下拉，dark-7 = 选项悬停/body） */
+  --mantine-color-body: #241a14 !important;
+  --mantine-color-dark-6: #2f2418 !important;
+  --mantine-color-dark-7: #241a14 !important;
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not(.mantine-Input-input):not(.mantine-PillsInputField-field),
+input:not([type="checkbox"]):not([type="radio"]):not(.mantine-Input-input):not(.mantine-PillsInputField-field):not(.mantine-PasswordInput-innerInput),
 select,
 textarea:not(.w-md-editor-text-input) {
   width: 100%;
@@ -149,7 +155,7 @@ textarea {
   resize: vertical;
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not(.mantine-Input-input):not(.mantine-PillsInputField-field):focus,
+input:not([type="checkbox"]):not([type="radio"]):not(.mantine-Input-input):not(.mantine-PillsInputField-field):not(.mantine-PasswordInput-innerInput):focus,
 select:focus,
 textarea:not(.w-md-editor-text-input):focus,
 button:focus-visible {
@@ -470,14 +476,19 @@ button:focus-visible {
 }
 
 .reader-copy {
-  display: grid;
-  gap: 1rem;
   font-size: 1.03rem;
+  overflow-wrap: anywhere;
 }
 
 .reader-copy p {
   margin: 0;
   line-height: 1.9;
+}
+
+/* 段落间距由阅读排版偏好（paragraphSpacing）驱动；块级排布，
+   避免 grid 隐式列被个别不可断内容撑宽导致整章文字溢出背景 */
+.reader-copy > * + * {
+  margin-top: var(--reader-para-gap, 1rem);
 }
 
 .reader-section-divider {

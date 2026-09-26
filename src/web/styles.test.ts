@@ -39,6 +39,6 @@ test('global form field styles do not override Mantine pills input internals', (
   const stylesPath = path.join(webRoot, 'styles.css');
   const css = fs.readFileSync(stylesPath, 'utf8');
 
-  assert.match(css, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\.mantine-Input-input\):not\(\.mantine-PillsInputField-field\)/);
-  assert.match(css, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\.mantine-Input-input\):not\(\.mantine-PillsInputField-field\):focus/);
+  assert.match(css, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\.mantine-Input-input\):not\(\.mantine-PillsInputField-field\):not\(\.mantine-PasswordInput-innerInput\)/);
+  assert.match(css, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\.mantine-Input-input\):not\(\.mantine-PillsInputField-field\):not\(\.mantine-PasswordInput-innerInput\):focus/);
 });

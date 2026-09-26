@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Badge, Button, Drawer, Group, Modal, NumberInput, Paper, Progress, SegmentedControl, Slider, Stack, Text, TextInput, Title } from '@mantine/core';
 import MDEditor from '@uiw/react-md-editor';
 import ReactMarkdown from 'react-markdown';
@@ -156,7 +156,7 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
       <Paper p="lg" radius="lg" maw={760} mx="auto" w="100%" style={{ background: 'rgba(38,26,20,0.7)', border: '1px solid rgba(168,133,96,0.12)' }}>
         <Group mb="md"><Badge variant="light" color="gray">{chapter.mediaAssets.length} 张图片</Badge>
           <Text size="xs" c="dimmed">{chapter.mediaAssets.length === 0 ? '无图片。' : `已缓存 ${readerChapter.media.cached} 张。`}</Text></Group>
-        <div className="reader-copy" style={{ fontSize: `${model.readerTypography?.fontSize ?? 1.03}rem`, lineHeight: model.readerTypography?.lineHeight ?? 1.9, fontFamily: resolveReaderFontFamily(model.readerTypography) }}>
+        <div className="reader-copy" style={{ fontSize: `${model.readerTypography?.fontSize ?? 1.03}rem`, lineHeight: model.readerTypography?.lineHeight ?? 1.9, fontFamily: resolveReaderFontFamily(model.readerTypography), '--reader-para-gap': `${model.readerTypography?.paragraphSpacing ?? 1}rem` } as CSSProperties}>
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={{ img: ({ src, alt }) => <img src={src} alt={alt ?? ''} style={{ maxWidth: '100%', borderRadius: 14 }} /> }}>{renderedChapterContent}</ReactMarkdown>
         </div>
         <Group justify="center" mt="lg">
