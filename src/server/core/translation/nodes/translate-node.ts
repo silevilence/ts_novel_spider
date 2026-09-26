@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { generateText, stepCountIs, type ToolSet, type LanguageModel } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -9,7 +10,7 @@ import type { TranslationHistoryManager } from './history-manager';
 import type { LlmInteractionLogger } from './llm-logger';
 import type { SystemPreferencesService, LlmProviderConfig } from '../../system-preferences';
 import { resolveTranslationModel } from '../../translation-pipeline';
-import { batchHyMt2Segments, buildHyMt2Prompt, mergeHyMt2Drafts } from './hy-mt2-messages';
+import { batchHyMt2Segments, buildHyMt2Prompt, hasHyMt2GlossaryEcho, hasHyMt2BackgroundEcho, selectTranslationTerms, mergeHyMt2Drafts } from './hy-mt2-messages';
 
 interface HyMt2Context {
   targetLang: string;
@@ -135,8 +136,8 @@ export async function translateNode(
   const hyMt2: HyMt2Context | undefined = useHyMt2 ? { targetLang: state.targetLang, previousParagraphs: [] } : undefined;
   console.log(`[translation] translateNode: provider=${provider.type} model=${modelRoute.modelId} paragraphsPerBatch=${paragraphsPerBatch} ${historyManager.summary()}`);
 
-  const glossary = buildGlossaryContext(state.glossary);
-  const systemPrompt = buildTranslationSystemPrompt(state.sourceLang, state.targetLang, glossary);
+  llmLogger = llmLogger?.withContext({ sourceId: state.sourceId, novelId: state.novelId, chapterId: state.chapterId, unitKind: state.unitKind });
+  const systemPrompt = buildTranslationSystemPrompt(state.sourceLang, state.targetLang, '');
   const totalSegments = state.segments.length;
   console.log(`[translation] 开始翻译共 ${totalSegments} 个段落，每批 ${paragraphsPerBatch} 段`);
 
@@ -265,33 +266,46 @@ async function translateBatch(
 ): Promise<ParagraphDraft[]> {
   let lastError: Error | null = null;
   let includeBackground = true;
+  let includeGlossary = true;
   const maxRetries = 3;
   // 温度递进：0.3 → 0.45 → 0.6 → 0.75（每次提高不稳定性以尝试不同输出）
   const retryTemperatures = [0.3, 0.45, 0.6, 0.75];
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const temperature = retryTemperatures[attempt] ?? 0.3;
+    const batchPrompt = hyMt2 ? buildHyMt2Prompt(batch, hyMt2.targetLang, includeGlossary ? glossary : [], includeBackground ? hyMt2.previousParagraphs : []) : buildBatchPrompt(batch);
+    const historyMessages = hyMt2 ? [] : historyManager.buildHistoryMessages();
+
+    console.log(`[translation] 调用 LLM (尝试 ${attempt + 1}/${maxRetries + 1}, ${batch.length} 段, ${historyMessages.length} 条历史, temp=${temperature})`);
+
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      ...historyMessages,
+      { role: 'user', content: batchPrompt },
+    ];
+
+    const requestSystemPrompt = hyMt2 ? '' : appendTranslationGlossary(systemPrompt, selectTranslationTerms(batch, glossary));
+    const maxOutputTokens = Math.max(batch.reduce((sum, segment) => sum + segment.sourceText.length, 0) * 3, 512);
+    const callStart = Date.now();
+    const logParams = {
+      provider: modelIdStr.slice(0, modelIdStr.indexOf(':')),
+      model: modelIdStr.slice(modelIdStr.indexOf(':') + 1),
+      systemPrompt: requestSystemPrompt, userPrompt: batchPrompt, messages,
+      callId: randomUUID(), attempt: attempt + 1,
+      paragraphIndices: batch.map((segment) => segment.paragraphIndex), temperature, maxOutputTokens,
+    };
+    let responseText = '';
+    let errorMessage: string | undefined;
+    llmLogger?.logCall({ ...logParams, event: 'request', response: '', durationMs: 0 });
     try {
-      const batchPrompt = hyMt2 ? buildHyMt2Prompt(batch, hyMt2.targetLang, glossary, includeBackground ? hyMt2.previousParagraphs : []) : buildBatchPrompt(batch);
-      const historyMessages = hyMt2 ? [] : historyManager.buildHistoryMessages();
-
-      console.log(`[translation] 调用 LLM (尝试 ${attempt + 1}/${maxRetries + 1}, ${batch.length} 段, ${historyMessages.length} 条历史, temp=${temperature})`);
-
-      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-        ...historyMessages,
-        { role: 'user', content: batchPrompt },
-      ];
-
-      const callStart = Date.now();
       const result = await generateText({
         model,
-        ...(hyMt2 ? {} : { system: systemPrompt }),
+        ...(hyMt2 ? {} : { system: requestSystemPrompt }),
         messages,
         temperature,
-        maxOutputTokens: Math.max(batch.reduce((sum, s) => sum + s.sourceText.length, 0) * 3, 512),
+        maxOutputTokens,
+        maxRetries: 0,
         abortSignal: AbortSignal.timeout(120000),
       });
-      const callDuration = Date.now() - callStart;
 
       // 打印 DeepSeek 缓存命中信息
       // @ai-sdk/deepseek 会放在 providerMetadata.deepseek 中；
@@ -332,9 +346,19 @@ async function translateBatch(
         }
       } catch { /* ignore */ }
 
-      const responseText = result.text.trim();
+      responseText = result.text;
       if (hyMt2) {
         const sourceText = batch.map((segment) => segment.sourceText).join('\n');
+        if (hasHyMt2GlossaryEcho(responseText, sourceText, glossary)) {
+          // 不清洗后冒充译文；移除造成回显的参考材料，重新翻译当前正文。
+          includeGlossary = false;
+          includeBackground = false;
+          throw new Error('HY-MT2 返回了术语表，去除参考材料后重试当前待译文本。');
+        }
+        if (hasHyMt2BackgroundEcho(responseText, batch, hyMt2.previousParagraphs)) {
+          includeBackground = false;
+          throw new Error('HY-MT2 重复了前文背景，去除背景后重试当前待译文本。');
+        }
         const echoedSection = ['【背景信息】', '【待翻译文本】', '参考下面的翻译：']
           .some((section) => responseText.includes(section) && !sourceText.includes(section));
         if (echoedSection) {
@@ -344,19 +368,16 @@ async function translateBatch(
         }
       }
 
-      llmLogger?.logCall({
-        provider: modelIdStr.split(':')[0] ?? 'unknown',
-        model: modelIdStr.split(':')[1] ?? modelIdStr,
-        systemPrompt: hyMt2 ? '' : systemPrompt,
-        userPrompt: batchPrompt,
-        response: responseText,
-        durationMs: callDuration,
-      });
-
-      return splitBatchResponse(responseText, batch, glossary, modelIdStr);
+      const drafts = splitBatchResponse(responseText.trim(), batch, glossary, modelIdStr);
+      if (hyMt2 && drafts.some((draft) => hasHyMt2BackgroundEcho(draft.translatedText, [draft], hyMt2.previousParagraphs))) {
+        includeBackground = false;
+        throw new Error('HY-MT2 部分段落重复了前文背景，去除背景后重试当前待译文本。');
+      }
+      return drafts;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       const errMsg = lastError.message;
+      errorMessage = errMsg;
 
       // 检测是否是上下文超标错误
       if (!hyMt2 && isContextOverflowError(errMsg) && historyManager.size > 0) {
@@ -372,6 +393,8 @@ async function translateBatch(
         throw lastError;
       }
       console.warn(`[translation] 翻译失败，第 ${attempt + 1} 次重试 (temp=${temperature}→${retryTemperatures[attempt + 1]}): ${errMsg}`);
+    } finally {
+      llmLogger?.logCall({ ...logParams, event: 'response', response: responseText, durationMs: Date.now() - callStart, ...(errorMessage ? { error: errorMessage } : {}) });
     }
   }
 
@@ -391,30 +414,28 @@ async function translateSingleSegment(
   hyMt2?: HyMt2Context,
 ): Promise<ParagraphDraft> {
   const userPrompt = hyMt2 ? buildHyMt2Prompt([segment], hyMt2.targetLang, glossary, hyMt2.previousParagraphs) : segment.sourceText;
+  const requestSystemPrompt = hyMt2 ? '' : appendTranslationGlossary(systemPrompt, selectTranslationTerms([segment], glossary));
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [{ role: 'user', content: userPrompt }];
+  const maxOutputTokens = Math.max(segment.sourceText.length * 3, 256);
   const callStart = Date.now();
-  const result = await generateText({
-    model,
-    ...(hyMt2 ? {} : { system: systemPrompt }),
-    messages: [
-      { role: 'user', content: userPrompt },
-    ],
-    temperature: 0.3,
-    maxOutputTokens: Math.max(segment.sourceText.length * 3, 256),
-    abortSignal: AbortSignal.timeout(60000),
-  });
-  const callDuration = Date.now() - callStart;
-
-  let translatedText = result.text.trim();
-  translatedText = stripTranslationNumberPrefix(segment.sourceText, translatedText);
-
-  llmLogger?.logCall({
-    provider: modelIdStr.split(':')[0] ?? 'unknown',
-    model: modelIdStr.split(':')[1] ?? modelIdStr,
-    systemPrompt: hyMt2 ? '' : systemPrompt,
-    userPrompt,
-    response: translatedText,
-    durationMs: callDuration,
-  });
+  const logParams = {
+    provider: modelIdStr.slice(0, modelIdStr.indexOf(':')), model: modelIdStr.slice(modelIdStr.indexOf(':') + 1),
+    systemPrompt: requestSystemPrompt, userPrompt, messages, callId: randomUUID(),
+    paragraphIndices: [segment.paragraphIndex], temperature: 0.3, maxOutputTokens,
+  };
+  let responseText = '';
+  let errorMessage: string | undefined;
+  llmLogger?.logCall({ ...logParams, event: 'request', response: '', durationMs: 0 });
+  try {
+    const result = await generateText({ model, ...(hyMt2 ? {} : { system: requestSystemPrompt }), messages, temperature: 0.3, maxOutputTokens, maxRetries: 0, abortSignal: AbortSignal.timeout(60000) });
+    responseText = result.text;
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    llmLogger?.logCall({ ...logParams, event: 'response', response: responseText, durationMs: Date.now() - callStart, ...(errorMessage ? { error: errorMessage } : {}) });
+  }
+  const translatedText = stripTranslationNumberPrefix(segment.sourceText, responseText.trim());
 
   const appliedTermIds = findAppliedTerms(translatedText, glossary);
 
@@ -541,6 +562,12 @@ function buildTranslationSystemPrompt(
     parts.push('', '【术语表（强制遵循）】', glossary);
   }
   return parts.join('\n');
+}
+
+/** 每次请求只添加当前原文命中的术语；通用模型保留原有提示词结构。 */
+function appendTranslationGlossary(systemPrompt: string, glossary: TranslationTermEntry[]): string {
+  const context = buildGlossaryContext(glossary);
+  return context ? `${systemPrompt}\n\n【术语表（强制遵循）】\n${context}` : systemPrompt;
 }
 
 /** 从术语表中查找哪些术语出现在译文中 */

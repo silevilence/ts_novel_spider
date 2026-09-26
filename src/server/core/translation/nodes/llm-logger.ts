@@ -1,29 +1,34 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/**
- * LLM 交互日志记录器。
- *
- * 将每次 LLM 调用的 system prompt、user prompt 和 response 写入
- * `.data/llm-logs/` 目录下按日期滚动的日志文件。
- * 文件保留最近 7 天，超期的自动删除。
- */
+export interface LlmLogContext {
+  sourceId?: string;
+  novelId?: string;
+  chapterId?: string;
+  unitKind?: string;
+}
+
+/** 按日期保存请求、原始响应及错误，保留七天；同步追加以确保调用返回时已落盘。 */
 export class LlmInteractionLogger {
   readonly #logDir: string;
   readonly #enabled: boolean;
-  #todayDate: string = '';
-  #stream: fs.WriteStream | null = null;
+  readonly #context: LlmLogContext;
+  #todayDate = '';
 
-  constructor(logDir?: string, enabled = false) {
+  constructor(logDir?: string, enabled = true, context: LlmLogContext = {}) {
     this.#logDir = logDir ?? path.resolve(process.cwd(), '.data', 'llm-logs');
     this.#enabled = enabled;
+    this.#context = context;
   }
 
-  get enabled(): boolean {
-    return this.#enabled;
+  get enabled(): boolean { return this.#enabled; }
+
+  /** 为并行任务创建独立上下文，避免章节标识互相覆盖。 */
+  withContext(context: LlmLogContext): LlmInteractionLogger {
+    return new LlmInteractionLogger(this.#logDir, this.#enabled, { ...this.#context, ...context });
   }
 
-  /** 记录一次 LLM 交互 */
+  /** 不包含 API Key；messages 保留本次实际发送的完整角色和历史消息。 */
   logCall(params: {
     provider: string;
     model: string;
@@ -32,74 +37,49 @@ export class LlmInteractionLogger {
     response: string;
     durationMs: number;
     error?: string;
+    event?: 'request' | 'response';
+    callId?: string;
+    attempt?: number;
+    paragraphIndices?: number[];
+    messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    temperature?: number;
+    maxOutputTokens?: number;
   }): void {
     if (!this.#enabled) return;
-
-    try {
-      this.#ensureStream();
-      const entry = [
-        `=== ${new Date().toISOString()} ===`,
-        `Provider: ${params.provider}`,
-        `Model: ${params.model}`,
-        `Duration: ${params.durationMs}ms`,
-        params.error ? `ERROR: ${params.error}` : '',
-        `--- SYSTEM ---`,
-        params.systemPrompt,
-        `--- USER ---`,
-        params.userPrompt,
-        `--- RESPONSE ---`,
-        params.response,
-        '',
-      ].filter((l) => l !== '').join('\n') + '\n';
-
-      this.#stream?.write(entry);
-    } catch {
-      // 日志写入失败不应影响翻译流程
-    }
-  }
-
-  #ensureStream(): void {
-    const today = new Date().toISOString().slice(0, 10);
-    if (this.#todayDate === today && this.#stream) return;
-
-    this.#stream?.end();
-    this.#stream = null;
-
     try {
       fs.mkdirSync(this.#logDir, { recursive: true });
-      const filePath = path.join(this.#logDir, `${today}.log`);
-      this.#stream = fs.createWriteStream(filePath, { flags: 'a' });
-      this.#todayDate = today;
-
-      // 清理超过 7 天的旧日志
-      this.#cleanOldLogs();
-    } catch {
-      // 无法创建日志文件时静默失败
-    }
-  }
-
-  #cleanOldLogs(): void {
-    try {
-      const now = Date.now();
-      const maxAge = 7 * 24 * 60 * 60 * 1000;
-      const files = fs.readdirSync(this.#logDir);
-      for (const file of files) {
-        if (!file.endsWith('.log')) continue;
-        const datePart = file.replace('.log', '');
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) continue;
-        const fileTime = new Date(datePart).getTime();
-        if (now - fileTime > maxAge) {
-          fs.unlinkSync(path.join(this.#logDir, file));
+      const today = new Date().toISOString().slice(0, 10);
+      const entry = [
+        `=== ${new Date().toISOString()} ===`,
+        `Event: ${params.event ?? 'response'} Call: ${params.callId ?? ''}`,
+        `Context: ${JSON.stringify(this.#context)}`,
+        `Provider: ${params.provider}`,
+        `Model: ${params.model}`,
+        `Attempt: ${params.attempt ?? 1} Paragraphs: ${JSON.stringify(params.paragraphIndices ?? [])}`,
+        `Temperature: ${params.temperature ?? ''} MaxOutputTokens: ${params.maxOutputTokens ?? ''}`,
+        `Duration: ${params.durationMs}ms`,
+        params.error ? `ERROR: ${params.error}` : '',
+        '--- SYSTEM ---', params.systemPrompt,
+        '--- USER ---', params.userPrompt,
+        '--- MESSAGES ---', JSON.stringify(params.messages ?? []),
+        '--- RESPONSE ---', params.response, '',
+      ].join('\n') + '\n';
+      fs.appendFileSync(path.join(this.#logDir, `${today}.log`), entry, 'utf8');
+      if (this.#todayDate !== today) {
+        this.#todayDate = today;
+        for (const name of fs.readdirSync(this.#logDir)) {
+          if (/^\d{4}-\d{2}-\d{2}\.log$/.test(name)
+            && Date.now() - new Date(name.slice(0, 10)).getTime() > 7 * 86400000) {
+            fs.unlinkSync(path.join(this.#logDir, name));
+          }
         }
       }
-    } catch {
-      // 清理失败不影响
+    } catch (error) {
+      // 不中断翻译，但不能静默吞掉无法写入日志的原因。
+      console.warn('[translation] LLM 交互日志写入失败:', error instanceof Error ? error.message : String(error));
     }
   }
 
-  /** 关闭日志流（应用退出时调用） */
-  close(): void {
-    this.#stream?.end();
-    this.#stream = null;
-  }
+  /** 同步写入无需刷新流，保留调用方的关闭接口。 */
+  close(): void {}
 }

@@ -556,6 +556,7 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
   const [targetLang, setTargetLang] = useState('zh-CN');
   const [translationConcurrency, setTranslationConcurrency] = useState(3);
   const [preferredModelKey, setPreferredModelKey] = useState('');
+  const [enableLlmInteractionLog, setEnableLlmInteractionLog] = useState(true);
   const [extractionModelKey, setExtractionModelKey] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -571,6 +572,7 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
         setTargetLang(transPrefs.config.targetLang);
         setTranslationConcurrency(transPrefs.config.translationConcurrency);
         setPreferredModelKey(transPrefs.config.preferredTranslationModelKey ?? '');
+        setEnableLlmInteractionLog(transPrefs.config.enableLlmInteractionLog);
         const extraction = transPrefs.config.termExtractionModel;
         setExtractionModelKey(extraction?.providerId && extraction.modelId ? `${extraction.providerId}:${extraction.modelId}` : '');
         // Build chat-only model options
@@ -599,6 +601,7 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
         targetLang,
         translationConcurrency,
         preferredTranslationModelKey: preferredModelKey || null,
+        enableLlmInteractionLog,
         termExtractionModel: extractionModelKey ? { providerId: extractionModelKey.slice(0, extractionModelKey.indexOf(':')), modelId: extractionModelKey.slice(extractionModelKey.indexOf(':') + 1) } : null,
       });
       onNotice({ tone: 'success', title: '已保存', message: '翻译默认值已更新。' });
@@ -642,6 +645,12 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
         value={translationConcurrency}
         onChange={(v) => setTranslationConcurrency(typeof v === 'number' ? v : 3)}
         hideControls
+      />
+      <Checkbox
+        label="保存翻译模型交互日志"
+        description="保存完整请求、原始响应和失败原因至 .data/llm-logs，保留 7 天；对后续启动的翻译任务生效。"
+        checked={enableLlmInteractionLog}
+        onChange={(event) => setEnableLlmInteractionLog(event.currentTarget.checked)}
       />
       <Button
         variant="filled"

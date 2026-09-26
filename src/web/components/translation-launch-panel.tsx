@@ -13,12 +13,17 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
   const [selectedModel, setSelectedModel] = useState('');
   const [availableModels, setAvailableModels] = useState<Array<{ key: string; label: string }>>([]);
   const [glossaryOpened, setGlossaryOpened] = useState(false);
+  const selectionStorageKey = `translation-model:${JSON.stringify([model.location.sourceId, model.location.novelId])}`;
 
   useEffect(() => {
+    let active = true;
+    setAvailableModels([]);
+    setSelectedModel('');
     Promise.all([
       fetchLlmProvidersPreferences(),
       fetchTranslationPreferences(),
     ]).then(([p, transPrefs]) => {
+      if (!active) return;
       const models: Array<{ key: string; label: string }> = [];
       for (const provider of p.providers) {
         if (!provider.enabled) continue;
@@ -28,14 +33,21 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
         }
       }
       setAvailableModels(models);
+      let saved: string | null = null;
+      try { saved = window.localStorage.getItem(selectionStorageKey); } catch { /* 浏览器可能禁用持久存储。 */ }
       const preferred = transPrefs.config.preferredTranslationModelKey;
-      if (preferred && models.some((m) => m.key === preferred)) {
-        setSelectedModel(preferred);
-      } else if (models.length > 0 && !selectedModel) {
-        setSelectedModel(models[0]!.key);
-      }
+      setSelectedModel([saved, preferred].find((key) => key && models.some((m) => m.key === key)) ?? models[0]?.key ?? '');
     }, () => {});
-  }, []);
+    return () => { active = false; };
+  }, [selectionStorageKey]);
+
+  function selectModel(value: string | null) {
+    if (!value) return;
+    setSelectedModel(value);
+    try { window.localStorage.setItem(selectionStorageKey, value); } catch {
+      onNotify({ tone: 'error', title: '模型选择未保存', message: '浏览器无法保存本书的模型选择，请检查本地存储设置。' });
+    }
+  }
 
   // 轮询翻译构建状态（运行时每3秒更新，驱动进度条）
   useEffect(() => {
@@ -108,7 +120,8 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
             <Select
               data={availableModels.map((m) => ({ value: m.key, label: m.label }))}
               value={selectedModel}
-              onChange={(v) => v && setSelectedModel(v)}
+              onChange={selectModel}
+              aria-label="翻译模型"
               disabled={isRunning}
               searchable
               style={{ flex: 1, minWidth: 200 }}

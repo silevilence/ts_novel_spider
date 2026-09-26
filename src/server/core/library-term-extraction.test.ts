@@ -221,7 +221,7 @@ test('invalid extraction routes and unavailable source are rejected before a run
 });
 
 test('only confirmed library terms enter refined snapshots and actual translation prompts', async () => {
-  const { repository, preferences, directory, cleanup } = fixture();
+  const { repository, preferences, directory, cleanup } = fixture('unique_confirmed unique_pending unique_excluded');
   const prompts: string[] = [];
   const server = http.createServer(async (request, response) => {
     let text = '';
@@ -246,8 +246,8 @@ test('only confirmed library terms enter refined snapshots and actual translatio
     await waitFor(() => translation.getTranslationBuild('test', 'novel')?.status !== 'running');
     assert.equal(translation.getTranslationBuild('test', 'novel')?.status, 'completed');
     assert.ok(prompts.length > 0);
+    assert.ok(prompts.some((prompt) => prompt.includes('unique_confirmed')));
     for (const prompt of prompts) {
-      assert.match(prompt, /unique_confirmed/);
       assert.doesNotMatch(prompt, /unique_pending|unique_excluded|target_pending|target_excluded/);
     }
   } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); cleanup(); }

@@ -271,7 +271,7 @@ export const TRANSLATION_DEFAULTS: TranslationPreferencesConfig = {
   translationModels: [],
   translationConcurrency: 2,
   preferredTranslationModelKey: null,
-  enableLlmInteractionLog: false,
+  enableLlmInteractionLog: true,
   autoRejectUntranslatedTerms: true,
   defaultExportMode: 'original',
 };
@@ -709,7 +709,7 @@ export class SystemPreferencesService {
   }
 
   updateTranslationPreferences(input: TranslationPreferencesInput): TranslationPreferencesState {
-    this.#translation = normalizeTranslationPreferencesInput(input);
+    this.#translation = normalizeTranslationPreferencesInput({ ...this.#translation, ...input });
     this.#translationUpdatedAt = new Date().toISOString();
     this.touch();
     persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
@@ -1549,7 +1549,11 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
     }
 
     if (isRecord(parsed.translation)) {
-      result.translation = parsed.translation as TranslationPreferencesInput;
+      result.translation = {
+        ...parsed.translation as TranslationPreferencesInput,
+        enableLlmInteractionLog: typeof parsed.translation.enableLlmInteractionLog === 'boolean'
+          ? parsed.translation.enableLlmInteractionLog : TRANSLATION_DEFAULTS.enableLlmInteractionLog,
+      };
     }
 
     if (isRecord(parsed.scheduling)) {
