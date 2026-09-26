@@ -281,6 +281,7 @@ export class ControlCenterService {
     this.#translation = new TranslationService(this.#repository, this.#systemPreferences);
     this.#termExtraction = new LibraryTermExtractionService(this.#repository, this.#systemPreferences);
     this.#termExtraction.recoverInterruptedRuns();
+    this.#translation.recoverInterruptedTermTranslations();
     this.#refinedTranslation = new RefinedTranslationService(this.#repository, this.#systemPreferences, this.#exportEngine);
     this.#refinedTranslation.recoverInterruptedTasks();
     this.#registry = new Map(
@@ -972,6 +973,9 @@ export class ControlCenterService {
   }
 
   getLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.getRun(sourceId, novelId); }
+  getLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.getTermTranslation(sourceId, novelId); }
+  startLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.startTermTranslation(sourceId, novelId); }
+  cancelLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.cancelTermTranslation(sourceId, novelId); }
   startLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.start(sourceId, novelId); }
   cancelLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.cancel(sourceId, novelId); }
   bulkUpdateLibraryTermStatus(sourceId: string, novelId: string, termIds: string[], status: TranslationTermStatus) { return this.#translation.bulkUpdateTermStatus(sourceId, novelId, termIds, status); }
@@ -1127,6 +1131,7 @@ export class ControlCenterService {
 
   moveLibraryNovelToTrash(sourceId: string, novelId: string): boolean {
     this.#termExtraction.cancel(sourceId, novelId);
+    this.#translation.cancelTermTranslation(sourceId, novelId);
     return this.#repository.moveNovelToTrash(sourceId, novelId);
   }
 

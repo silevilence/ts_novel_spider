@@ -840,6 +840,16 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   router.get('/novels/:sourceId/:novelId/translate/term-extraction', (request, response) => {
     response.json({ run: service.getLibraryTermExtraction(request.params.sourceId, request.params.novelId) });
   });
+  router.get('/novels/:sourceId/:novelId/translate/term-translation', (request, response) => {
+    response.json({ run: service.getLibraryTermTranslation(request.params.sourceId, request.params.novelId) });
+  });
+  router.post('/novels/:sourceId/:novelId/translate/term-translation', (request, response) => {
+    try { response.status(202).json({ run: service.startLibraryTermTranslation(request.params.sourceId, request.params.novelId) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法启动术语翻译。' }); }
+  });
+  router.post('/novels/:sourceId/:novelId/translate/term-translation/cancel', (request, response) => {
+    response.json({ run: service.cancelLibraryTermTranslation(request.params.sourceId, request.params.novelId) });
+  });
   router.post('/novels/:sourceId/:novelId/translate/term-extraction', (request, response) => {
     try { response.status(202).json({ run: service.startLibraryTermExtraction(request.params.sourceId, request.params.novelId) }); }
     catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法启动术语提取。' }); }

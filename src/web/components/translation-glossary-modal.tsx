@@ -1,5 +1,6 @@
 import { useState, useEffect, useEffectEvent } from 'react';
-import type { StoredTermExtractionRun, TranslationTermStatus } from '../../server/core/novel-repository';
+import type { StoredTermExtractionRun, StoredTermTranslationRun, TranslationTermStatus } from '../../server/core/novel-repository';
+import { fetchLibraryTermTranslation, startLibraryTermTranslation, cancelLibraryTermTranslation } from '../services/api';
 import { fetchLibraryTermExtraction, startLibraryTermExtraction, cancelLibraryTermExtraction, bulkUpdateLibraryTermStatus, fetchLibraryTranslationProfile, updateLibraryTranslationProfile, fetchLlmProvidersPreferences } from '../services/api';
 import {
   Alert,
@@ -55,6 +56,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [page, setPage] = useState(1);
   const [run, setRun] = useState<StoredTermExtractionRun | null>(null);
+  const [translationRun, setTranslationRun] = useState<StoredTermTranslationRun | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [extractionModelKey, setExtractionModelKey] = useState('');
@@ -67,12 +69,15 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
     if (!opened || !sourceId || !novelId) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    setRun(null); setSelectedTermIds(new Set()); setLoadError(''); setPage(1);
+    setRun(null); setTranslationRun(null); setSelectedTermIds(new Set()); setLoadError(''); setPage(1);
     const poll = async () => {
       try {
-        const payload = await fetchLibraryTermExtraction(sourceId, novelId);
+        const [payload, translationPayload] = await Promise.all([
+          fetchLibraryTermExtraction(sourceId, novelId), fetchLibraryTermTranslation(sourceId, novelId),
+        ]);
         if (!active) return;
         setRun(payload.run); setLoadError('');
+        setTranslationRun(translationPayload.run);
         await refreshTerms();
       } catch (error) { if (active) setLoadError(error instanceof Error ? error.message : '提取进度加载失败。'); }
       if (active) timer = setTimeout(() => void poll(), 2000);
@@ -232,6 +237,34 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
               <Progress value={run.totalBatches ? run.completedBatches / run.totalBatches * 100 : 0} animated={run.status === 'running'} />
               <Text size="xs">已跑 {run.completedBatches}/{run.totalBatches} 批 · 识别 {run.candidates} 条候选 · 本次新增 {run.added} 条</Text>
               {run.errorMessage ? <Text size="xs" c="red">{run.errorMessage}</Text> : null}
+            </Stack> : null}
+          </Stack>
+        </Paper>
+
+        {/* 缺译术语翻译 */}
+        <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
+          <Stack gap="xs">
+            <Group gap="xs">
+              <Button size="compact-sm" loading={actionBusy} disabled={!sourceId || !novelId || !missingTerms.length || translationRun?.status === 'running'} onClick={() => {
+                if (!sourceId || !novelId) return;
+                void perform(async () => {
+                  const result = await startLibraryTermTranslation(sourceId, novelId);
+                  setTranslationRun(result.run);
+                  onNotify({ tone: 'success', title: '术语翻译已启动', message: `正在后台翻译 ${result.run.totalTerms} 条缺译术语。` });
+                });
+              }}>AI 翻译缺译术语（{missingTerms.length}）</Button>
+              {translationRun?.status === 'running' ? <Button size="compact-sm" variant="outline" color="red" disabled={actionBusy} onClick={() => {
+                if (!sourceId || !novelId) return;
+                void perform(async () => { const result = await cancelLibraryTermTranslation(sourceId, novelId); setTranslationRun(result.run); });
+              }}>取消术语翻译</Button> : null}
+            </Group>
+            <Text size="xs" c="dimmed">翻译全书所有已确认且译文为空的术语，不受筛选或勾选影响。使用上方已保存的术语提取模型及本书目标语言；关闭浮窗后继续运行，已有译文保留。</Text>
+            {translationRun ? <Stack gap={4}>
+              <Text size="sm" fw={600}>{translationRun.status === 'running' ? '正在翻译术语' : translationRun.status === 'completed' ? '术语翻译完成' : translationRun.status === 'cancelled' ? '术语翻译已取消' : '术语翻译失败'}</Text>
+              <Progress value={translationRun.totalTerms ? translationRun.processedTerms / translationRun.totalTerms * 100 : 0} animated={translationRun.status === 'running'} />
+              <Text size="xs">已处理 {translationRun.processedTerms}/{translationRun.totalTerms} 条 · 已翻译 {translationRun.translatedTerms} 条 · 因条目变更跳过 {translationRun.skippedTerms} 条</Text>
+              {translationRun.errorMessage ? <Text size="xs" c="red">{translationRun.errorMessage}</Text> : null}
+              {translationRun.status === 'failed' || translationRun.status === 'cancelled' ? <Text size="xs" c="dimmed">已完成的译文已保存，可再次点击翻译剩余缺译术语。</Text> : null}
             </Stack> : null}
           </Stack>
         </Paper>

@@ -1,4 +1,4 @@
-import type { StoredTermExtractionRun, TranslationTermStatus } from '../../server/core/novel-repository';
+import type { StoredTermExtractionRun, StoredTermTranslationRun, TranslationTermStatus } from '../../server/core/novel-repository';
 import type { TranslationProfile, TranslationProfileInput } from '../../server/core/translation-service';
 import type { HealthPayload } from '../../server/routes/health';
 import type {
@@ -1379,6 +1379,15 @@ function libraryTranslationUrl(sourceId: string, novelId: string) {
 }
 export async function fetchLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun | null }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction`);
+}
+export async function fetchLibraryTermTranslation(sourceId: string, novelId: string): Promise<{ run: StoredTermTranslationRun | null }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-translation`);
+}
+export async function startLibraryTermTranslation(sourceId: string, novelId: string): Promise<{ run: StoredTermTranslationRun }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-translation`, { method: 'POST' });
+}
+export async function cancelLibraryTermTranslation(sourceId: string, novelId: string): Promise<{ run: StoredTermTranslationRun | null }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-translation/cancel`, { method: 'POST' });
 }
 export async function startLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction`, { method: 'POST' });

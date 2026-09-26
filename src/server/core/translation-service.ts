@@ -1,4 +1,5 @@
 import type { TranslationTermStatus } from './novel-repository';
+import { LibraryTermTranslationService } from './library-term-translation';
 import type { SqliteNovelRepository } from './novel-repository';
 import type { StoredTranslationProfileInput } from './novel-repository';
 import type {
@@ -119,6 +120,7 @@ export interface TranslationChapterDetail {
 
 /** 翻译流水线服务——对 ControlCenterService 暴露的外观 */
 export class TranslationService {
+  readonly #termTranslation: LibraryTermTranslationService;
   readonly #repository: SqliteNovelRepository;
   readonly #preferences: SystemPreferencesService;
   readonly #abortControllers = new Map<string, AbortController>();
@@ -128,7 +130,13 @@ export class TranslationService {
   constructor(repository: SqliteNovelRepository, preferences: SystemPreferencesService) {
     this.#repository = repository;
     this.#preferences = preferences;
+    this.#termTranslation = new LibraryTermTranslationService(repository, preferences);
   }
+
+  recoverInterruptedTermTranslations(): void { this.#termTranslation.recoverInterruptedRuns(); }
+  getTermTranslation(sourceId: string, novelId: string) { return this.#termTranslation.getRun(sourceId, novelId); }
+  startTermTranslation(sourceId: string, novelId: string) { return this.#termTranslation.start(sourceId, novelId); }
+  cancelTermTranslation(sourceId: string, novelId: string) { return this.#termTranslation.cancel(sourceId, novelId); }
 
   /** 获取单本小说的翻译配置——合并全局默认 */
   getTranslationProfile(sourceId: string, novelId: string): TranslationProfile | null {

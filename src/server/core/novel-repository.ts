@@ -343,6 +343,13 @@ export interface StoredTermExtractionRun {
   startedAt: string; updatedAt: string; errorMessage: string | null;
 }
 
+export interface StoredTermTranslationRun {
+  id: string; sourceId: string; novelId: string;
+  status: 'running' | 'completed' | 'cancelled' | 'failed';
+  totalTerms: number; processedTerms: number; translatedTerms: number; skippedTerms: number;
+  startedAt: string; updatedAt: string; errorMessage: string | null;
+}
+
 export interface StoredTranslationTermRow {
   status: TranslationTermStatus;
   id: string;
@@ -2154,7 +2161,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const status = this.getNovelPurgeStatus(sourceId, novelId); if (!status?.canPurge) return false;
     const transaction = this.#database.transaction(() => {
       if (sourceId === 'manual') this.#database.prepare(`DELETE FROM manual_volumes WHERE novel_id=?`).run(novelId);
-      for (const table of ['chapter_versions', 'novel_metadata_versions', 'chapter_translation_paragraphs', 'chapter_translations', 'chapter_translation_qa', 'novel_translation_build_checkpoints', 'novel_translation_build_logs', 'novel_translation_builds', 'novel_translation_profiles', 'novel_translation_terms', 'novel_term_extraction_runs', 'knowledge_graph_summaries', 'knowledge_graph_chunks', 'knowledge_graph_relations', 'knowledge_graph_entities', 'novel_graph_build_checkpoints', 'novel_graph_build_logs', 'novel_graph_builds', 'novel_graph_profiles', 'scheduled_summaries', 'scheduled_novels', 'reader_typography', 'bookmarks', 'reading_progress', 'novel_aliases', 'task_history', 'chapters']) {
+      for (const table of ['chapter_versions', 'novel_metadata_versions', 'chapter_translation_paragraphs', 'chapter_translations', 'chapter_translation_qa', 'novel_translation_build_checkpoints', 'novel_translation_build_logs', 'novel_translation_builds', 'novel_translation_profiles', 'novel_translation_terms', 'novel_term_extraction_runs', 'novel_term_translation_runs', 'knowledge_graph_summaries', 'knowledge_graph_chunks', 'knowledge_graph_relations', 'knowledge_graph_entities', 'novel_graph_build_checkpoints', 'novel_graph_build_logs', 'novel_graph_builds', 'novel_graph_profiles', 'scheduled_summaries', 'scheduled_novels', 'reader_typography', 'bookmarks', 'reading_progress', 'novel_aliases', 'task_history', 'chapters']) {
         this.#database.prepare(`DELETE FROM ${table} WHERE source_id=? AND novel_id=?`).run(sourceId, novelId);
       }
       return this.#database.prepare(`DELETE FROM novels WHERE source_id=? AND novel_id=? AND deleted_at IS NOT NULL`).run(sourceId, novelId).changes > 0;
@@ -2801,6 +2808,40 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
   getTermExtractionRun(sourceId: string, novelId: string): StoredTermExtractionRun | null {
     const row = this.#database.prepare('SELECT run_json FROM novel_term_extraction_runs WHERE source_id = ? AND novel_id = ?').get(sourceId, novelId) as { run_json: string } | undefined;
     return row ? JSON.parse(row.run_json) as StoredTermExtractionRun : null;
+  }
+
+  getTermTranslationRun(sourceId: string, novelId: string): StoredTermTranslationRun | null {
+    const row = this.#database.prepare('SELECT run_json FROM novel_term_translation_runs WHERE source_id = ? AND novel_id = ?').get(sourceId, novelId) as { run_json: string } | undefined;
+    return row ? JSON.parse(row.run_json) as StoredTermTranslationRun : null;
+  }
+
+  saveTermTranslationRun(run: StoredTermTranslationRun): void {
+    this.#database.prepare('INSERT INTO novel_term_translation_runs (source_id, novel_id, run_json) VALUES (?, ?, ?) ON CONFLICT(source_id, novel_id) DO UPDATE SET run_json = excluded.run_json')
+      .run(run.sourceId, run.novelId, JSON.stringify(run));
+  }
+
+  recoverTermTranslationRuns(): void {
+    const rows = this.#database.prepare('SELECT run_json FROM novel_term_translation_runs').all() as Array<{ run_json: string }>;
+    for (const row of rows) {
+      const run = JSON.parse(row.run_json) as StoredTermTranslationRun;
+      if (run.status === 'running') this.saveTermTranslationRun({ ...run, status: 'failed', errorMessage: '服务重启，术语翻译已中断；可重新翻译，已有译文会保留。', updatedAt: new Date().toISOString() });
+    }
+  }
+
+  /** Atomically fills only still-confirmed empty translations and checkpoints progress. */
+  saveTermTranslationBatch(run: StoredTermTranslationRun, terms: Array<{ id: string; targetTerm: string }>, processedTerms: number): StoredTermTranslationRun {
+    return this.#database.transaction(() => {
+      const missingIds = new Set(this.listMissingTranslationTerms(run.sourceId, run.novelId).map((term) => term.id));
+      const update = this.#database.prepare("UPDATE novel_translation_terms SET target_term = ?, updated_at = ? WHERE source_id = ? AND novel_id = ? AND term_id = ? AND status = 'confirmed' AND (target_term IS NULL OR trim(target_term) = '')");
+      const now = new Date().toISOString();
+      let translated = 0;
+      for (const term of terms) {
+        if (missingIds.delete(term.id) && term.targetTerm.trim()) translated += update.run(term.targetTerm.trim(), now, run.sourceId, run.novelId, term.id).changes;
+      }
+      const next = { ...run, processedTerms: run.processedTerms + processedTerms, translatedTerms: run.translatedTerms + translated, skippedTerms: run.skippedTerms + processedTerms - translated, updatedAt: now };
+      this.saveTermTranslationRun(next);
+      return next;
+    })();
   }
 
   saveTermExtractionRun(run: StoredTermExtractionRun): void {
@@ -4791,6 +4832,12 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       );
 
       CREATE TABLE IF NOT EXISTS novel_term_extraction_runs (
+        source_id TEXT NOT NULL, novel_id TEXT NOT NULL, run_json TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_term_translation_runs (
         source_id TEXT NOT NULL, novel_id TEXT NOT NULL, run_json TEXT NOT NULL,
         PRIMARY KEY (source_id, novel_id),
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
