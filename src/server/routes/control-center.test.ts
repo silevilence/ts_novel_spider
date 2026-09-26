@@ -402,6 +402,7 @@ test('control-center routes expose sources, preview and task lifecycle', async (
                 enabled: true,
                 capabilityMode: 'auto',
                 defaultFor: ['chat'],
+                translationMessageFormat: 'hy-mt2',
               },
             ],
           },
@@ -412,12 +413,16 @@ test('control-center routes expose sources, preview and task lifecycle', async (
       providers: Array<{
         id: string;
         isConfigured?: boolean;
-        models: Array<{ modelId: string }>;
+        models: Array<{ modelId: string; translationMessageFormat: string }>;
       }>;
     };
     assert.equal(updateLlmResponse.status, 200);
     assert.equal(updateLlmPayload.providers[0]?.id, 'provider-1');
     assert.equal(updateLlmPayload.providers[0]?.models[0]?.modelId, 'claude-sonnet-4-5');
+    assert.equal(updateLlmPayload.providers[0]?.models[0]?.translationMessageFormat, 'hy-mt2');
+    const reloadedLlm = await fetch(`${baseUrl}/api/control/preferences/llm-providers`);
+    const reloadedPayload = await reloadedLlm.json() as typeof updateLlmPayload;
+    assert.equal(reloadedPayload.providers[0]?.models[0]?.translationMessageFormat, 'hy-mt2');
 
     const validateLlmResponse = await fetch(
       `${baseUrl}/api/control/preferences/llm-providers/provider-1/models/model-1/validate`,

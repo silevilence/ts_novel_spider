@@ -1,4 +1,4 @@
-import { generateText, stepCountIs, type ToolSet } from 'ai';
+import { generateText, stepCountIs, type ToolSet, type LanguageModel } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -9,6 +9,12 @@ import type { TranslationHistoryManager } from './history-manager';
 import type { LlmInteractionLogger } from './llm-logger';
 import type { SystemPreferencesService, LlmProviderConfig } from '../../system-preferences';
 import { resolveTranslationModel } from '../../translation-pipeline';
+import { batchHyMt2Segments, buildHyMt2Prompt, mergeHyMt2Drafts } from './hy-mt2-messages';
+
+interface HyMt2Context {
+  targetLang: string;
+  previousParagraphs: ParagraphDraft[];
+}
 
 /** 批量段落翻译的分隔符：LLM 必须保持此分隔符以支持本地拆分 */
 const BATCH_SEPARATOR = '\n\n---\n\n';
@@ -125,6 +131,8 @@ export async function translateNode(
   }
 
   const model = createLanguageModel(provider, modelRoute.modelId);
+  const useHyMt2 = provider.models.find((m) => m.modelId === modelRoute.modelId)?.translationMessageFormat === 'hy-mt2';
+  const hyMt2: HyMt2Context | undefined = useHyMt2 ? { targetLang: state.targetLang, previousParagraphs: [] } : undefined;
   console.log(`[translation] translateNode: provider=${provider.type} model=${modelRoute.modelId} paragraphsPerBatch=${paragraphsPerBatch} ${historyManager.summary()}`);
 
   const glossary = buildGlossaryContext(state.glossary);
@@ -136,18 +144,19 @@ export async function translateNode(
   const modelIdStr = `${modelRoute.providerId}:${modelRoute.modelId}`;
 
   // 按 paragraphsPerBatch 分组段落
-  const batches = chunkArray(state.segments, paragraphsPerBatch);
+  const batches = useHyMt2 ? batchHyMt2Segments(state.segments, paragraphsPerBatch) : chunkArray(state.segments, paragraphsPerBatch);
+  const completedDrafts = () => useHyMt2 ? mergeHyMt2Drafts(state.segments, drafts) : drafts;
 
   for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
     const batch = batches[batchIdx]!;
 
     if (state.pauseRequested || abortSignal?.aborted) {
       console.log(`[translation] 翻译中断: 批 ${batchIdx + 1}/${batches.length}`);
-      return { draftParagraphs: drafts, pauseRequested: true };
+      return { draftParagraphs: completedDrafts(), pauseRequested: true };
     }
 
-    const batchStartIdx = batchIdx * paragraphsPerBatch + 1;
-    const batchEndIdx = batchStartIdx + batch.length - 1;
+    const batchStartIdx = batch[0]!.paragraphIndex + 1;
+    const batchEndIdx = batch[batch.length - 1]!.paragraphIndex + 1;
     console.log(`[translation] 批 ${batchIdx + 1}/${batches.length} (段 ${batchStartIdx}-${batchEndIdx}, ${batch.length} 段)...`);
 
     try {
@@ -159,6 +168,7 @@ export async function translateNode(
         modelIdStr,
         historyManager,
         llmLogger,
+        hyMt2,
       );
       drafts.push(...batchDrafts);
 
@@ -167,16 +177,17 @@ export async function translateNode(
       const allValid = batchDrafts.every(
         (d) => d.translatedText && d.translatedText.length > 0,
       );
-      if (allValid) {
+      if (allValid && !useHyMt2) {
         const batchPrompt = buildBatchPrompt(batch);
         const batchResponse = batchDrafts.map((d) => d.translatedText).join('\n---\n');
         historyManager.addEntry(batchPrompt, batchResponse);
       }
 
       // 通知外部批次完成（用于实时进度条）
-      onBatchProgress?.(batch.length, drafts.length);
+      if (hyMt2) hyMt2.previousParagraphs = completedDrafts().slice(-2);
+      onBatchProgress?.(batch.length, completedDrafts().length);
 
-      console.log(`[translation] 批 ${batchIdx + 1}/${batches.length} 完成 (${batchDrafts.length} 段译文${allValid ? ', 已入历史' : ''})`);
+      console.log(`[translation] 批 ${batchIdx + 1}/${batches.length} 完成 (${batchDrafts.length} 段译文${allValid && !useHyMt2 ? ', 已入历史' : ''})`);
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       console.error(`[translation] 批 ${batchIdx + 1}/${batches.length} 整体失败:`, errMsg);
@@ -189,26 +200,30 @@ export async function translateNode(
         // 回退路径也检查暂停
         if (state.pauseRequested || abortSignal?.aborted) {
           console.log(`[translation] 回退中翻译中断: 段索引 ${segment.paragraphIndex}`);
-          return { draftParagraphs: drafts, pauseRequested: true };
+          return { draftParagraphs: completedDrafts(), pauseRequested: true };
         }
 
         console.log(`[translation]   回退段 ${si + 1}/${batch.length} (段索引 ${segment.paragraphIndex}, ${segment.sourceText.length} 字)...`);
         try {
-          const singleDraft = await translateSingleSegment(
+          const singleDraft = hyMt2 ? (await translateBatch(
+            [segment], model, systemPrompt, state.glossary, modelIdStr, historyManager, llmLogger, hyMt2,
+          ))[0]! : await translateSingleSegment(
             segment,
             model,
             systemPrompt,
             state.glossary,
             modelIdStr,
             llmLogger,
+            hyMt2,
           );
           drafts.push(singleDraft);
           // 逐段成功时也追加到历史，保持上下文连贯
-          if (singleDraft.translatedText && singleDraft.translatedText.length > 0) {
+          if (!useHyMt2 && singleDraft.translatedText && singleDraft.translatedText.length > 0) {
             historyManager.addEntry(segment.sourceText, singleDraft.translatedText);
           }
           // 通知进度（回退段也算完成）
-          onBatchProgress?.(1, drafts.length);
+          if (hyMt2) hyMt2.previousParagraphs = completedDrafts().slice(-2);
+          onBatchProgress?.(1, completedDrafts().length);
         } catch (singleError) {
           const singleMsg = singleError instanceof Error ? singleError.message : String(singleError);
           console.error(`[translation] 段 ${segment.paragraphIndex} 回退也失败:`, singleMsg);
@@ -220,6 +235,7 @@ export async function translateNode(
             appliedTermIds: [],
             modelId: modelIdStr,
           });
+          if (hyMt2) hyMt2.previousParagraphs = completedDrafts().slice(-2);
         }
       }
     }
@@ -227,7 +243,7 @@ export async function translateNode(
 
   console.log(`[translation] 翻译全部完成: ${drafts.length} 段译文, ${historyManager.summary()}`);
   return {
-    draftParagraphs: drafts,
+    draftParagraphs: completedDrafts(),
     translatorModelId: modelIdStr,
   };
 }
@@ -239,15 +255,16 @@ export async function translateNode(
  */
 async function translateBatch(
   batch: Array<{ paragraphIndex: number; sourceText: string; id: string }>,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  model: any,
+  model: LanguageModel,
   systemPrompt: string,
   glossary: TranslationTermEntry[],
   modelIdStr: string,
   historyManager: TranslationHistoryManager,
   llmLogger?: LlmInteractionLogger,
+  hyMt2?: HyMt2Context,
 ): Promise<ParagraphDraft[]> {
   let lastError: Error | null = null;
+  let includeBackground = true;
   const maxRetries = 3;
   // 温度递进：0.3 → 0.45 → 0.6 → 0.75（每次提高不稳定性以尝试不同输出）
   const retryTemperatures = [0.3, 0.45, 0.6, 0.75];
@@ -255,8 +272,8 @@ async function translateBatch(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const temperature = retryTemperatures[attempt] ?? 0.3;
     try {
-      const batchPrompt = buildBatchPrompt(batch);
-      const historyMessages = historyManager.buildHistoryMessages();
+      const batchPrompt = hyMt2 ? buildHyMt2Prompt(batch, hyMt2.targetLang, glossary, includeBackground ? hyMt2.previousParagraphs : []) : buildBatchPrompt(batch);
+      const historyMessages = hyMt2 ? [] : historyManager.buildHistoryMessages();
 
       console.log(`[translation] 调用 LLM (尝试 ${attempt + 1}/${maxRetries + 1}, ${batch.length} 段, ${historyMessages.length} 条历史, temp=${temperature})`);
 
@@ -268,7 +285,7 @@ async function translateBatch(
       const callStart = Date.now();
       const result = await generateText({
         model,
-        system: systemPrompt,
+        ...(hyMt2 ? {} : { system: systemPrompt }),
         messages,
         temperature,
         maxOutputTokens: Math.max(batch.reduce((sum, s) => sum + s.sourceText.length, 0) * 3, 512),
@@ -316,11 +333,21 @@ async function translateBatch(
       } catch { /* ignore */ }
 
       const responseText = result.text.trim();
+      if (hyMt2) {
+        const sourceText = batch.map((segment) => segment.sourceText).join('\n');
+        const echoedSection = ['【背景信息】', '【待翻译文本】', '参考下面的翻译：']
+          .some((section) => responseText.includes(section) && !sourceText.includes(section));
+        if (echoedSection) {
+          // 小模型可能把背景当成正文；本次请求重试时去除可选背景，保留术语与待译文本。
+          includeBackground = false;
+          throw new Error('HY-MT2 返回了提示词区块，去除背景后重试当前待译文本。');
+        }
+      }
 
       llmLogger?.logCall({
         provider: modelIdStr.split(':')[0] ?? 'unknown',
         model: modelIdStr.split(':')[1] ?? modelIdStr,
-        systemPrompt,
+        systemPrompt: hyMt2 ? '' : systemPrompt,
         userPrompt: batchPrompt,
         response: responseText,
         durationMs: callDuration,
@@ -332,7 +359,7 @@ async function translateBatch(
       const errMsg = lastError.message;
 
       // 检测是否是上下文超标错误
-      if (isContextOverflowError(errMsg) && historyManager.size > 0) {
+      if (!hyMt2 && isContextOverflowError(errMsg) && historyManager.size > 0) {
         const discardCount = Math.max(2, Math.ceil(historyManager.size / 2));
         console.warn(`[translation] 上下文超标，舍弃 ${discardCount} 条旧历史后重试 (${historyManager.size} → ${Math.max(0, historyManager.size - discardCount)})`);
         historyManager.discardOldest(discardCount);
@@ -356,19 +383,20 @@ async function translateBatch(
  */
 async function translateSingleSegment(
   segment: { paragraphIndex: number; sourceText: string; id: string },
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  model: any,
+  model: LanguageModel,
   systemPrompt: string,
   glossary: TranslationTermEntry[],
   modelIdStr: string,
   llmLogger?: LlmInteractionLogger,
+  hyMt2?: HyMt2Context,
 ): Promise<ParagraphDraft> {
+  const userPrompt = hyMt2 ? buildHyMt2Prompt([segment], hyMt2.targetLang, glossary, hyMt2.previousParagraphs) : segment.sourceText;
   const callStart = Date.now();
   const result = await generateText({
     model,
-    system: systemPrompt,
+    ...(hyMt2 ? {} : { system: systemPrompt }),
     messages: [
-      { role: 'user', content: segment.sourceText },
+      { role: 'user', content: userPrompt },
     ],
     temperature: 0.3,
     maxOutputTokens: Math.max(segment.sourceText.length * 3, 256),
@@ -382,8 +410,8 @@ async function translateSingleSegment(
   llmLogger?.logCall({
     provider: modelIdStr.split(':')[0] ?? 'unknown',
     model: modelIdStr.split(':')[1] ?? modelIdStr,
-    systemPrompt,
-    userPrompt: segment.sourceText,
+    systemPrompt: hyMt2 ? '' : systemPrompt,
+    userPrompt,
     response: translatedText,
     durationMs: callDuration,
   });
@@ -585,8 +613,7 @@ function getProvider(
 }
 
 /** 创建 AI SDK 语言模型 */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: string): any {
+function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: string): LanguageModel {
   const enabledModels = provider.models.filter((m) => m.enabled && m.modelId);
   const modelId = overrideModelId || enabledModels[0]?.modelId || 'gpt-4o';
 

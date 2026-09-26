@@ -661,6 +661,9 @@ export class TranslationService {
     const terms = this.#repository.listTranslationTerms(sourceId, novelId, 'confirmed');
     const profile = this.getTranslationProfile(sourceId, novelId);
     const paragraphsPerBatch = profile?.translationConcurrency ?? 2;
+    const novelModel = profile?.translationModels[0];
+    modelOverride ??= novelModel?.providerId && novelModel.modelId
+      ? `${novelModel.providerId}:${novelModel.modelId}` : undefined;
 
     // 解析翻译模型的上下文窗口设置（若配置了则按 Token 截断，否则按条目数）
     let contextWindowTokens = 0;
@@ -669,7 +672,7 @@ export class TranslationService {
       const modelRoute = resolveTranslationModel(this.#preferences, modelOverride);
       if (modelRoute) {
         const provider = llmState.providers.find((p) => p.id === modelRoute.providerId);
-        const model = provider?.models.find((m) => m.id === modelRoute.modelId);
+        const model = provider?.models.find((m) => m.modelId === modelRoute.modelId);
         contextWindowTokens = model?.contextWindowTokens ?? 0;
       }
     } catch { /* ignore */ }

@@ -54,7 +54,7 @@ function splitMarkdownBlocks(text: string): Array<{ text: string; isTable: boole
     .map((part) => ({ text: part, isTable: isGfmTable(part) }));
 }
 
-function isGfmTable(block: string): boolean {
+export function isGfmTable(block: string): boolean {
   const lines = block.split('\n');
   return lines.length >= 2
     && /\|/.test(lines[0] ?? '')

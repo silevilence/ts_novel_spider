@@ -56,6 +56,7 @@ export interface UpdateLlmModelInput {
   capabilities: ModelCapability[];
   defaultFor: ModelCapability[];
   contextWindowTokens?: number;
+  translationMessageFormat?: 'general' | 'hy-mt2';
 }
 
 export interface UpdateLlmProviderInput {

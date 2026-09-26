@@ -724,7 +724,7 @@ function parseLlmProvider(value: unknown, providerIndex: number): LlmProviderCon
   };
 }
 
-function parseLlmModels(value: unknown, providerIndex: number) {
+function parseLlmModels(value: unknown, providerIndex: number): NonNullable<LlmProviderConfigInput['models']> {
   if (!Array.isArray(value)) {
     throw new Error(`providers[${providerIndex}].models must be an array.`);
   }
@@ -738,6 +738,10 @@ function parseLlmModels(value: unknown, providerIndex: number) {
     const label = optionalStringField(entry.label);
     const modelId = optionalStringField(entry.modelId);
     const capabilityMode = optionalCapabilityMode(entry.capabilityMode);
+    const translationMessageFormat = entry.translationMessageFormat;
+    if (translationMessageFormat !== undefined && translationMessageFormat !== 'general' && translationMessageFormat !== 'hy-mt2') {
+      throw new Error('translationMessageFormat must be general or hy-mt2.');
+    }
 
     return {
       ...(id !== undefined ? { id } : {}),
@@ -745,6 +749,7 @@ function parseLlmModels(value: unknown, providerIndex: number) {
       ...(modelId !== undefined ? { modelId } : {}),
       ...(typeof entry.enabled === 'boolean' ? { enabled: entry.enabled } : {}),
       ...(capabilityMode !== undefined ? { capabilityMode } : {}),
+      ...(translationMessageFormat !== undefined ? { translationMessageFormat } : {}),
       ...(entry.capabilities !== undefined
         ? { capabilities: parseCapabilityArray(entry.capabilities, `providers[${providerIndex}].models[${modelIndex}].capabilities`) }
         : {}),

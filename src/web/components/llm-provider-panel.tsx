@@ -243,6 +243,7 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
       capabilities: ['chat'],
       defaultFor: [],
       contextWindowTokens: 0,
+      translationMessageFormat: 'general' as const,
     };
     setDraft((prev) =>
       prev.map((p) => (p.id === providerId ? { ...p, models: [...p.models, model] } : p)),
@@ -307,6 +308,7 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
             capabilities: m.detectedCapabilities.length > 0 ? m.detectedCapabilities : (['chat'] as ModelCapability[]),
             defaultFor: [] as ModelCapability[],
             contextWindowTokens: 0,
+            translationMessageFormat: 'general' as const,
           }));
         importedCount = newModels.length;
         return { ...p, models: [...p.models, ...newModels] };
@@ -359,6 +361,7 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
           capabilities: m.capabilities,
           defaultFor: m.defaultFor,
           contextWindowTokens: m.contextWindowTokens ?? 0,
+          translationMessageFormat: m.translationMessageFormat ?? 'general',
         })),
       }));
       const payload = await updateLlmProvidersPreferences(inputs);
@@ -606,6 +609,9 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
                                 <Text size="xs" c="dimmed" truncate maw={180}>
                                   {model.modelId.trim() || '未填 ID'}
                                 </Text>
+                                <Badge size="xs" variant="light" color="gray">
+                                  翻译：{model.translationMessageFormat === 'hy-mt2' ? 'HY-MT2' : '通用'}
+                                </Badge>
                               </Table.Td>
                               <Table.Td>
                                 <Group gap={3} wrap="wrap">
@@ -860,6 +866,7 @@ function toDraft(p: ControlLlmProvidersPayload['providers'][number]): ProviderDr
       capabilities: [...m.capabilities] as ModelCapability[],
       defaultFor: [...m.defaultFor] as ModelCapability[],
       contextWindowTokens: m.contextWindowTokens,
+      translationMessageFormat: m.translationMessageFormat ?? 'general',
     })),
   };
 }
@@ -915,6 +922,15 @@ function ModelEditModal({ providerId, modelId, draft, serverState, opened, onClo
             placeholder={provider.type === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'}
           />
           </SimpleGrid>
+
+          <Select
+            label="翻译消息格式"
+            description="仅用于书库翻译（含元数据与卷标题）。HY-MT2 使用单轮翻译提示词。"
+            data={[{ value: 'general', label: '通用' }, { value: 'hy-mt2', label: 'HY-MT2' }]}
+            value={model.translationMessageFormat ?? 'general'}
+            onChange={(value) => onUpdateModel(modelId, 'translationMessageFormat', value ?? 'general')}
+            allowDeselect={false}
+          />
 
           {resolvedCaps.includes('chat') ? (
             <NumberInput

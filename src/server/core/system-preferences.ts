@@ -14,6 +14,7 @@ import { toError } from './spider';
 
 export type ModelCapability = 'chat' | 'embedding' | 'rerank';
 export type ModelCapabilityMode = 'manual' | 'auto';
+export type TranslationMessageFormat = 'general' | 'hy-mt2';
 export type LlmProviderType = 'openai-compatible' | 'anthropic' | 'google-generative-ai' | 'ollama';
 
 export interface LlmModelConfigInput {
@@ -25,6 +26,7 @@ export interface LlmModelConfigInput {
   capabilities?: ModelCapability[];
   defaultFor?: ModelCapability[];
   contextWindowTokens?: number;
+  translationMessageFormat?: TranslationMessageFormat;
 }
 
 export interface LlmProviderConfigInput {
@@ -47,6 +49,7 @@ interface StoredLlmModelConfig {
   capabilities: ModelCapability[];
   defaultFor: ModelCapability[];
   contextWindowTokens: number;
+  translationMessageFormat: TranslationMessageFormat;
 }
 
 interface StoredLlmProviderConfig {
@@ -796,6 +799,7 @@ function normalizeProviderInputs(inputs: LlmProviderConfigInput[]): StoredLlmPro
             capabilities: normalizeCapabilities(modelInput.capabilities ?? ['chat']),
             defaultFor: normalizeCapabilities(modelInput.defaultFor ?? []),
             contextWindowTokens: modelInput.contextWindowTokens ?? 0,
+            translationMessageFormat: modelInput.translationMessageFormat === 'hy-mt2' ? 'hy-mt2' as const : 'general' as const,
           })),
         ),
       };
@@ -1530,6 +1534,15 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       updatedAt:
         typeof parsed.updatedAt === 'string' || parsed.updatedAt === null ? parsed.updatedAt : null,
     };
+
+    // 存量模型缺少格式字段时显式迁移为通用格式，不按模型名称猜测。
+    result.llmProviders = result.llmProviders.map((provider) => ({
+      ...provider,
+      models: (provider.models ?? []).map((model) => ({
+        ...model,
+        translationMessageFormat: model.translationMessageFormat === 'hy-mt2' ? 'hy-mt2' : 'general',
+      })),
+    }));
 
     if (readerTypography) {
       result.readerTypography = readerTypography;

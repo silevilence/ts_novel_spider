@@ -138,6 +138,7 @@ export function createTranslationPipelineGraph(runtime: TranslationPipelineRunti
       return segmentNode(state);
     })
     .addNode('translate', async (state: TranslationPipelineState) => {
+      // 消息格式由实际模型路由决定；请求碎片在节点内合并，不改变图状态的段落边界。
       return translateNode(state, runtime.preferences, runtime.historyManager, runtime.paragraphsPerBatch, runtime.llmLogger, runtime.onBatchProgress, runtime.modelOverride, runtime.abortSignal);
     })
     .addNode('assemble', async (state: TranslationPipelineState) => {
@@ -166,16 +167,25 @@ export function resolveTranslationModel(
   preferences: SystemPreferencesService,
   modelOverride?: string,
 ): { providerId: string; modelId: string } | null {
-  // 1. 用户手动指定（来自翻译启动面板的模型选择器）
-  if (modelOverride) {
-    const [overrideProviderId, overrideModelId] = modelOverride.split(':');
-    if (overrideProviderId && overrideModelId) {
-      console.log(`[translation] 使用用户指定模型: ${overrideProviderId}/${overrideModelId}`);
-      return { providerId: overrideProviderId!, modelId: overrideModelId! };
-    }
-  }
-
   const llmState = preferences.getLlmState();
+  const findRoute = (key: string) => {
+    const separator = key.indexOf(':');
+    if (separator < 1) return null;
+    const provider = llmState.providers.find((p) => p.id === key.slice(0, separator) && p.enabled && p.isConfigured);
+    const modelKey = key.slice(separator + 1);
+    const model = provider?.models.find((m) => (m.id === modelKey || m.modelId === modelKey)
+      && m.enabled && m.isConfigured && m.resolvedCapabilities.includes('chat'));
+    return provider && model ? { providerId: provider.id, modelId: model.modelId } : null;
+  };
+
+  // 显式覆盖不可用时直接失败，避免静默使用另一个模型及其消息格式。
+  if (modelOverride) return findRoute(modelOverride);
+
+  const preferredKey = preferences.getTranslationState().config.preferredTranslationModelKey;
+  if (preferredKey) {
+    const preferred = findRoute(preferredKey);
+    if (preferred) return preferred;
+  }
 
   // 2a. 模型网关中指定的默认 chat 模型
   const gateway = preferences.getModelGateway();
@@ -185,24 +195,7 @@ export function resolveTranslationModel(
       const gwModel = gwProvider.models.find((m) => m.modelId === gateway.chat!.modelId && m.enabled && m.isConfigured && m.resolvedCapabilities.includes('chat'));
       if (gwModel) {
         console.log(`[translation] 使用模型网关默认翻译模型: ${gwProvider.id}/${gwModel.modelId}`);
-        return { providerId: gwProvider.id, modelId: gwModel.id };
-      }
-    }
-  }
-
-  // 2. 全局翻译偏好中指定的默认模型
-  const translationPrefs = preferences.getTranslationState().config;
-  if (translationPrefs.preferredTranslationModelKey) {
-    const [prefProviderId, prefModelId] = translationPrefs.preferredTranslationModelKey.split(':');
-    if (prefProviderId && prefModelId) {
-      const prefProvider = llmState.providers.find((p) => p.id === prefProviderId && p.enabled && p.isConfigured);
-      if (prefProvider) {
-        const prefModel = prefProvider.models.find((m) => m.id === prefModelId && m.enabled && m.isConfigured);
-        if (prefModel && prefModel.resolvedCapabilities.includes('chat')) {
-          console.log(`[translation] 使用全局默认翻译模型: ${prefProviderId}/${prefModelId}`);
-          return { providerId: prefProviderId!, modelId: prefModelId! };
-        }
-        console.log(`[translation] 全局默认翻译模型 ${prefProviderId}/${prefModelId} 不可用（未启用/未配置/非 chat），回退自动选择`);
+        return { providerId: gwProvider.id, modelId: gwModel.modelId };
       }
     }
   }
@@ -220,7 +213,7 @@ export function resolveTranslationModel(
 
       if (model.resolvedCapabilities.includes('chat')) {
         console.log(`[translation] 自动选中翻译模型: ${provider.id}/${model.modelId} (capabilities: ${model.resolvedCapabilities.join(',')})`);
-        return { providerId: provider.id, modelId: model.id };
+        return { providerId: provider.id, modelId: model.modelId };
       }
       console.log(`[translation] 跳过模型 ${provider.id}/${model.modelId}: enabled=${model.enabled} configured=${model.isConfigured} capabilities=${model.resolvedCapabilities.join(',')}`);
     }

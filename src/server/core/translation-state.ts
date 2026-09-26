@@ -3,6 +3,7 @@ import type { TranslationLanguageCode, TranslationChapterStatus, TranslationBuil
 /** 翻译段（段落级切分结果） */
 export interface TranslationSegment {
   id: string;
+  /** 原始段落索引；HY-MT2 请求碎片共享此索引，写入草稿前合并。 */
   paragraphIndex: number;
   sourceText: string;
 }
