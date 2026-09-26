@@ -220,6 +220,52 @@ test('invalid extraction routes and unavailable source are rejected before a run
   } finally { cleanup(); }
 });
 
+test('extraction uses the saved per-novel thinking switch even with an inherited model', async () => {
+  const { repository, preferences, cleanup } = fixture();
+  const requests: Array<{ modelId: string; thinkingEnabled?: boolean }> = [];
+  const extraction = new LibraryTermExtractionService(repository, preferences, async (_preferences, route) => {
+    requests.push(route);
+    return '{"terms":[]}';
+  });
+  const translation = new TranslationService(repository, preferences);
+  try {
+    assert.equal(translation.getTranslationProfile('test', 'novel')?.termExtractionThinkingEnabled, false);
+    for (const enabled of [false, true, false]) {
+      const saved = translation.updateTranslationProfile('test', 'novel', { termExtractionThinkingEnabled: enabled });
+      assert.equal(saved?.termExtractionThinkingEnabled, enabled);
+      translation.updateTranslationProfile('test', 'novel', { targetLang: 'en' });
+      assert.equal(repository.getTranslationProfile('test', 'novel')?.termExtractionThinkingEnabled, enabled);
+      extraction.start('test', 'novel');
+      await waitFor(() => extraction.getRun('test', 'novel')?.status !== 'running');
+      assert.equal(requests.at(-1)?.modelId, 'default');
+      assert.equal(requests.at(-1)?.thinkingEnabled, enabled);
+    }
+  } finally { cleanup(); }
+});
+
+test('legacy profiles migrate thinking to disabled and persist the switch across reopening', () => {
+  const { directory, preferences, cleanup } = fixture();
+  const file = path.join(directory, 'thinking-migration.db');
+  try {
+    const old = new SqliteNovelRepository(file);
+    old.saveMetadata('test', { novelId: 'novel', title: '物語', author: '', description: '', tags: [], chapterCount: 0, infoPageUrl: '' });
+    new TranslationService(old, preferences).updateTranslationProfile('test', 'novel', { targetLang: 'en' });
+    old.close();
+    const raw = new Database(file);
+    raw.exec('ALTER TABLE novel_translation_profiles DROP COLUMN term_extraction_thinking_enabled');
+    raw.close();
+    for (const expected of [false, true]) {
+      const migrated = new SqliteNovelRepository(file);
+      try {
+        const service = new TranslationService(migrated, preferences);
+        assert.equal(service.getTranslationProfile('test', 'novel')?.termExtractionThinkingEnabled, expected);
+        assert.equal(service.getTranslationProfile('test', 'novel')?.targetLang, 'en');
+        service.updateTranslationProfile('test', 'novel', { termExtractionThinkingEnabled: true });
+      } finally { migrated.close(); }
+    }
+  } finally { cleanup(); }
+});
+
 test('only confirmed library terms enter refined snapshots and actual translation prompts', async () => {
   const { repository, preferences, directory, cleanup } = fixture('unique_confirmed unique_pending unique_excluded');
   const prompts: string[] = [];

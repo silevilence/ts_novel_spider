@@ -51,6 +51,7 @@ export interface TranslationProfile {
   sourceLang: string;
   targetLang: string;
   termExtractionModel: { providerId?: string; modelId?: string } | null;
+  termExtractionThinkingEnabled: boolean;
   translationModels: Array<{ providerId?: string; modelId?: string; maxConcurrency: number }>;
   translationConcurrency: number;
   autoRejectUntranslatedTerms: boolean;
@@ -64,6 +65,7 @@ export interface TranslationProfileInput {
   sourceLang?: string;
   targetLang?: string;
   termExtractionModel?: { providerId?: string; modelId?: string } | null;
+  termExtractionThinkingEnabled?: boolean;
   translationModels?: Array<{ providerId?: string; modelId?: string; maxConcurrency?: number }>;
   translationConcurrency?: number;
   autoRejectUntranslatedTerms?: boolean;
@@ -151,6 +153,7 @@ export class TranslationService {
         sourceLang: global.sourceLang,
         targetLang: global.targetLang,
         termExtractionModel: global.termExtractionModel,
+        termExtractionThinkingEnabled: false,
         translationModels: global.translationModels.map((m) => ({
           ...m,
           maxConcurrency: global.translationConcurrency,
@@ -170,6 +173,7 @@ export class TranslationService {
       sourceLang: profile.sourceLang,
       targetLang: profile.targetLang,
       termExtractionModel: profile.termExtractionModel,
+      termExtractionThinkingEnabled: profile.termExtractionThinkingEnabled,
       translationModels: profile.translationModels,
       translationConcurrency: profile.translationConcurrency,
       autoRejectUntranslatedTerms: profile.autoRejectUntranslatedTerms,
@@ -182,6 +186,9 @@ export class TranslationService {
 
   /** 更新单本翻译配置 */
   updateTranslationProfile(sourceId: string, novelId: string, input: TranslationProfileInput): TranslationProfile | null {
+    if (input.termExtractionThinkingEnabled !== undefined && typeof input.termExtractionThinkingEnabled !== 'boolean') {
+      throw new Error('术语提取思考开关必须为布尔值。');
+    }
     const existing = this.#repository.getTranslationProfile(sourceId, novelId);
     const global = this.#preferences.getTranslationState().config;
 
@@ -195,6 +202,7 @@ export class TranslationService {
       novelId,
       sourceLang: input.sourceLang ?? existing?.sourceLang ?? global.sourceLang,
       targetLang: input.targetLang ?? existing?.targetLang ?? global.targetLang,
+      termExtractionThinkingEnabled: input.termExtractionThinkingEnabled ?? existing?.termExtractionThinkingEnabled ?? false,
       termExtractionModel: input.termExtractionModel !== undefined
         ? (input.termExtractionModel
           ? {

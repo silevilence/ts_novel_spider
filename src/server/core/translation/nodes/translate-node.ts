@@ -61,11 +61,12 @@ export async function generateRefinedTranslationText(
   }
 
   const result = await generateText({
-    model: createLanguageModel(provider, route.modelId),
+    model: createLanguageModel(provider, route.modelId, route.thinkingEnabled),
     system,
     prompt,
     ...(abortSignal ? { abortSignal } : {}),
-    ...(route.thinkingEnabled ? { providerOptions: refinedThinkingProviderOptions(provider) as never } : { temperature: 0.2 }),
+    ...(!route.thinkingEnabled ? { temperature: 0.2 } : {}),
+    ...(route.thinkingEnabled !== undefined ? { providerOptions: refinedThinkingProviderOptions(provider, route.thinkingEnabled) as never } : {}),
   });
   return result.text.trim();
 }
@@ -83,7 +84,7 @@ export async function runRefinedTranslationToolAgent(
   const provider = getProvider(preferences, route.providerId);
   if (!provider) throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
   const result = await generateText({
-    model: createLanguageModel(provider, route.modelId),
+    model: createLanguageModel(provider, route.modelId, route.thinkingEnabled),
     system,
     prompt,
     tools,
@@ -96,7 +97,8 @@ export async function runRefinedTranslationToolAgent(
     prepareStep: async ({ stepNumber }) => stepNumber === 0
       ? { system: `${system}\n开始前请先调用 ${firstToolName} 读取任务物料；不要跳过此步骤。` }
       : {},
-    ...(route.thinkingEnabled ? { providerOptions: refinedThinkingProviderOptions(provider) as never } : { temperature: 0.2 }),
+    ...(!route.thinkingEnabled ? { temperature: 0.2 } : {}),
+    ...(route.thinkingEnabled !== undefined ? { providerOptions: refinedThinkingProviderOptions(provider, route.thinkingEnabled) as never } : {}),
   });
   return { text: result.text.trim(), toolCallCount: result.toolCalls.length, toolCalls: result.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })) };
 }
@@ -640,7 +642,7 @@ function getProvider(
 }
 
 /** 创建 AI SDK 语言模型 */
-function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: string): LanguageModel {
+function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: string, thinkingEnabled?: boolean): LanguageModel {
   const enabledModels = provider.models.filter((m) => m.enabled && m.modelId);
   const modelId = overrideModelId || enabledModels[0]?.modelId || 'gpt-4o';
 
@@ -661,6 +663,12 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
       return createAnthropic({
         apiKey: provider.apiKey || 'sk-ant-placeholder',
         ...(provider.baseUrl ? { baseURL: provider.baseUrl } : {}),
+        // The SDK omits thinking.type=disabled; preserve an explicit off request.
+        ...(thinkingEnabled === false ? { fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          if (typeof init?.body !== 'string') return fetch(input, init);
+          const body = JSON.parse(init.body) as Record<string, unknown>;
+          return fetch(input, { ...init, body: JSON.stringify({ ...body, thinking: { type: 'disabled' } }) });
+        } } : {}),
       })(modelId);
 
     case 'google-generative-ai':
@@ -672,7 +680,7 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
     case 'ollama':
       return createOllama({
         baseURL: provider.baseUrl || 'http://localhost:11434/api',
-      })(modelId);
+      })(modelId, thinkingEnabled !== undefined ? { think: thinkingEnabled } : {});
 
     default:
       return createOpenAI({
@@ -682,12 +690,13 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
   }
 }
 
-/** Provider-native thinking parameters for the optional refined-workflow switch. */
-function refinedThinkingProviderOptions(provider: LlmProviderConfig): Record<string, Record<string, unknown>> {
+/** Explicit native thinking controls; omitted switches retain provider defaults. */
+function refinedThinkingProviderOptions(provider: LlmProviderConfig, enabled: boolean): Record<string, Record<string, unknown>> {
   switch (provider.type) {
-    case 'openai-compatible': return { openai: { reasoningEffort: 'medium' } };
-    case 'anthropic': return { anthropic: { thinking: { type: 'enabled', budgetTokens: 2048 } } };
-    case 'google-generative-ai': return { google: { thinkingConfig: { thinkingBudget: 2048, includeThoughts: false } } };
-    case 'ollama': return { ollama: { think: true } };
+    case 'openai-compatible': return { openai: { reasoningEffort: enabled ? 'medium' : 'none' } };
+    case 'anthropic': return { anthropic: { thinking: enabled ? { type: 'enabled', budgetTokens: 2048 } : { type: 'disabled' } } };
+    case 'google-generative-ai': return { google: { thinkingConfig: { thinkingBudget: enabled ? 2048 : 0, includeThoughts: false } } };
+    // ai-sdk-ollama reads `think` from model settings, not providerOptions.
+    case 'ollama': return {};
   }
 }

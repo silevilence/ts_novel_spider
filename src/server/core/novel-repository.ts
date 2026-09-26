@@ -320,6 +320,7 @@ export interface StoredTranslationProfileInput {
   sourceLang: TranslationLanguageCode;
   targetLang: TranslationLanguageCode;
   termExtractionModel: TranslationModelRoute | null;
+  termExtractionThinkingEnabled: boolean;
   translationModels: TranslationModelRoute[];
   reviewModel: TranslationModelRoute | null;
   translationConcurrency: number;
@@ -729,6 +730,7 @@ interface TranslationProfileRow {
   source_lang: string;
   target_lang: string;
   term_extraction_model_json: string | null;
+  term_extraction_thinking_enabled: number;
   translation_models_json: string;
   review_model_json: string | null;
   translation_concurrency: number;
@@ -2643,7 +2645,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         `
           SELECT
             source_id, novel_id, source_lang, target_lang,
-            term_extraction_model_json, translation_models_json, review_model_json,
+            term_extraction_model_json, term_extraction_thinking_enabled, translation_models_json, review_model_json,
             translation_concurrency, quality_threshold, auto_reject_untranslated_terms,
             default_export_mode, config_locked, locked_at, updated_at
           FROM novel_translation_profiles
@@ -2664,15 +2666,16 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         `
           INSERT INTO novel_translation_profiles (
             source_id, novel_id, source_lang, target_lang,
-            term_extraction_model_json, translation_models_json, review_model_json,
+            term_extraction_model_json, term_extraction_thinking_enabled, translation_models_json, review_model_json,
             translation_concurrency, quality_threshold, auto_reject_untranslated_terms,
             default_export_mode, config_locked, locked_at, updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(source_id, novel_id) DO UPDATE SET
             source_lang = excluded.source_lang,
             target_lang = excluded.target_lang,
             term_extraction_model_json = excluded.term_extraction_model_json,
+            term_extraction_thinking_enabled = excluded.term_extraction_thinking_enabled,
             translation_models_json = excluded.translation_models_json,
             review_model_json = excluded.review_model_json,
             translation_concurrency = excluded.translation_concurrency,
@@ -2687,6 +2690,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .run(
         input.sourceId, input.novelId, input.sourceLang, input.targetLang,
         input.termExtractionModel ? JSON.stringify(input.termExtractionModel) : null,
+        input.termExtractionThinkingEnabled ? 1 : 0,
         JSON.stringify(input.translationModels),
         input.reviewModel ? JSON.stringify(input.reviewModel) : null,
         input.translationConcurrency, input.qualityThreshold,
@@ -4818,6 +4822,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         source_lang TEXT NOT NULL DEFAULT 'ja',
         target_lang TEXT NOT NULL DEFAULT 'zh-CN',
         term_extraction_model_json TEXT,
+        term_extraction_thinking_enabled INTEGER NOT NULL DEFAULT 0,
         translation_models_json TEXT NOT NULL DEFAULT '[]',
         review_model_json TEXT,
         translation_concurrency INTEGER NOT NULL DEFAULT 2,
@@ -4979,6 +4984,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
     // 翻译构建——段落级进度追踪（幂等迁移：仅对旧库补列）
     this.ensureColumnExists('novel_translation_terms', 'status', "TEXT NOT NULL DEFAULT 'confirmed' CHECK(status IN ('pending', 'confirmed', 'excluded'))");
+    this.ensureColumnExists('novel_translation_profiles', 'term_extraction_thinking_enabled', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novel_translation_builds', 'current_chapter_title', 'TEXT');
     this.ensureColumnExists('novel_translation_builds', 'current_chapter_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('novel_translation_builds', 'current_chapter_translated_paragraphs', 'INTEGER NOT NULL DEFAULT 0');
@@ -5518,6 +5524,7 @@ function mapTranslationProfileRow(row: TranslationProfileRow): StoredTranslation
     sourceLang: row.source_lang,
     targetLang: row.target_lang,
     termExtractionModel: row.term_extraction_model_json ? JSON.parse(row.term_extraction_model_json) as TranslationModelRoute : null,
+    termExtractionThinkingEnabled: row.term_extraction_thinking_enabled === 1,
     translationModels: parseTranslationModelRoutesJson(row.translation_models_json),
     reviewModel: row.review_model_json ? JSON.parse(row.review_model_json) as TranslationModelRoute : null,
     translationConcurrency: row.translation_concurrency,

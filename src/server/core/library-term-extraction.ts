@@ -53,7 +53,7 @@ export class LibraryTermExtractionService {
     const controller = new AbortController();
     this.#controllers.set(run.id, controller);
     void this.#execute(run, windows, chapters, local?.sourceLang ?? global.sourceLang,
-      { providerId: resolved.provider.id, modelId: resolved.model.modelId }, controller);
+      { providerId: resolved.provider.id, modelId: resolved.model.modelId, thinkingEnabled: local?.termExtractionThinkingEnabled ?? false }, controller);
     return run;
   }
 
@@ -66,7 +66,7 @@ export class LibraryTermExtractionService {
     return cancelled;
   }
 
-  async #execute(run: StoredTermExtractionRun, windows: ReturnType<typeof buildGlossarySourceWindows>, chapters: GlossarySourceChapter[], sourceLang: string, route: { providerId: string; modelId: string }, controller: AbortController) {
+  async #execute(run: StoredTermExtractionRun, windows: ReturnType<typeof buildGlossarySourceWindows>, chapters: GlossarySourceChapter[], sourceLang: string, route: { providerId: string; modelId: string; thinkingEnabled: boolean }, controller: AbortController) {
     try {
       for (const window of windows) {
         controller.signal.throwIfAborted();

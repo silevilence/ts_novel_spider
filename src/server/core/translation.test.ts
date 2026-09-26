@@ -59,6 +59,7 @@ test('translation tables are created by migration', () => {
       sourceLang: 'ja',
       targetLang: 'zh-CN',
       termExtractionModel: null,
+      termExtractionThinkingEnabled: false,
       translationModels: [{ providerId: 'p1', modelId: 'gpt-4o', maxConcurrency: 2 }],
       reviewModel: null,
       translationConcurrency: 2,

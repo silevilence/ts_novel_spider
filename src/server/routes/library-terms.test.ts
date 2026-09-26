@@ -93,8 +93,16 @@ test('library term APIs validate statuses, scope bulk writes and expose extracti
     const unavailable = await fetch(`${base}/term-translation`, { method: 'POST' });
     assert.equal(unavailable.status, 422);
     assert.match((await unavailable.json() as { message: string }).message, /模型不可用/);
-    const profile = await fetch(`${base}/profile`).then((r) => r.json()) as { translation: { termExtractionModel: unknown } };
+    const profile = await fetch(`${base}/profile`).then((r) => r.json()) as { translation: { termExtractionModel: unknown; termExtractionThinkingEnabled: boolean } };
     assert.equal(profile.translation.termExtractionModel, null);
+    assert.equal(profile.translation.termExtractionThinkingEnabled, false);
+    for (const enabled of [true, false]) {
+      const saved = await fetch(`${base}/profile`, json({ termExtractionThinkingEnabled: enabled }, 'PUT'));
+      assert.equal(saved.status, 200);
+      const read = await fetch(`${base}/profile`).then((r) => r.json()) as { translation: { termExtractionThinkingEnabled: boolean } };
+      assert.equal(read.translation.termExtractionThinkingEnabled, enabled);
+    }
+    assert.equal((await fetch(`${base}/profile`, json({ termExtractionThinkingEnabled: 'false' }, 'PUT'))).status, 422);
   } finally { await closeServer(server); cleanup(); fs.rmSync(temp, { recursive: true, force: true }); }
 });
 

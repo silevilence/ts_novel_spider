@@ -15,6 +15,7 @@ import {
   ScrollArea,
   Select,
   Stack,
+  Switch,
   Text,
   TextInput,
 } from '@mantine/core';
@@ -60,6 +61,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
   const [actionBusy, setActionBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [extractionModelKey, setExtractionModelKey] = useState('');
+  const [extractionThinkingEnabled, setExtractionThinkingEnabled] = useState(false);
   const [configLocked, setConfigLocked] = useState(false);
   const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
   const sourceId = model.detail?.novel.sourceId;
@@ -86,6 +88,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
     void Promise.all([fetchLibraryTranslationProfile(sourceId, novelId), fetchLlmProvidersPreferences()]).then(([{ translation: profile }, providers]) => {
       if (!active) return;
       setConfigLocked(profile.configLocked);
+      setExtractionThinkingEnabled(profile.termExtractionThinkingEnabled);
       const route = profile.termExtractionModel;
       setExtractionModelKey(route?.providerId && route.modelId ? `${route.providerId}:${route.modelId}` : '');
       setModelOptions(providers.providers.filter((p) => p.enabled).flatMap((p) => p.models.filter((m) => m.enabled && m.resolvedCapabilities.includes('chat')).map((m) => ({ value: `${p.id}:${m.modelId}`, label: `${p.label} / ${m.label || m.modelId}` }))));
@@ -212,15 +215,16 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
         <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
           <Stack gap="xs">
             <Select label="本书术语提取模型" description="留空继承全局术语提取模型，再回退默认对话模型。" data={modelOptions} value={extractionModelKey || null} onChange={(value) => setExtractionModelKey(value ?? '')} disabled={configLocked || actionBusy || run?.status === 'running'} searchable clearable />
+            <Switch label="术语提取启用模型思考" description="默认关闭，仅影响术语提取。需模型支持原生思考切换；保存后下次提取生效。" checked={extractionThinkingEnabled} disabled={configLocked || actionBusy || run?.status === 'running'} onChange={(event) => setExtractionThinkingEnabled(event.currentTarget.checked)} />
             <Group gap="xs">
               <Button variant="subtle" size="compact-sm" disabled={configLocked || actionBusy || run?.status === 'running'} onClick={() => {
                 if (!sourceId || !novelId) return;
                 void perform(async () => {
                   const split = extractionModelKey.indexOf(':');
-                  await updateLibraryTranslationProfile(sourceId, novelId, { termExtractionModel: extractionModelKey ? { providerId: extractionModelKey.slice(0, split), modelId: extractionModelKey.slice(split + 1) } : null });
-                  onNotify({ tone: 'success', title: '提取模型已保存', message: '下次提取使用此配置。' });
+                  await updateLibraryTranslationProfile(sourceId, novelId, { termExtractionModel: extractionModelKey ? { providerId: extractionModelKey.slice(0, split), modelId: extractionModelKey.slice(split + 1) } : null, termExtractionThinkingEnabled: extractionThinkingEnabled });
+                  onNotify({ tone: 'success', title: '提取配置已保存', message: '下次提取使用此模型和思考设置。' });
                 });
-              }}>保存提取模型</Button>
+              }}>保存提取配置</Button>
               <Button size="compact-sm" loading={actionBusy} disabled={!sourceId || !novelId || run?.status === 'running'} onClick={() => {
                 if (!sourceId || !novelId) return;
                 void perform(async () => { const result = await startLibraryTermExtraction(sourceId, novelId); setRun(result.run); });
