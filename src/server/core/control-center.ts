@@ -1190,6 +1190,7 @@ export class ControlCenterService {
     return this.#refinedTranslation.createTask(sourceId, novelId, input);
   }
   listRefinedTranslationTasks(recycleBin = false) { return this.#refinedTranslation.listTasks(recycleBin); }
+  syncRefinedTranslationSource(taskId: string, input: Parameters<RefinedTranslationService['syncSource']>[1]) { return this.#refinedTranslation.syncSource(taskId, input); }
   updateRefinedTranslationTaskConfiguration(taskId: string, input: Parameters<RefinedTranslationService['updateTaskConfiguration']>[1]) { return this.#refinedTranslation.updateTaskConfiguration(taskId, input); }
   getRefinedTranslationTask(taskId: string) { return this.#refinedTranslation.getTaskDetail(taskId); }
   getRefinedTranslationChapter(taskId: string, chapterId: string) { return this.#refinedTranslation.getChapter(taskId, chapterId); }

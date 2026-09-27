@@ -1230,7 +1230,7 @@ export interface RefinedSegment { paragraphIndex: number; sourceText: string; tr
 export async function fetchRefinedTasks(recycleBin = false): Promise<{ tasks: RefinedTask[] }> { return requestJson(`/api/refined-translations/tasks${recycleBin ? '?recycleBin=true' : ''}`); }
 export interface RefinedModelRouteInput { providerId: string; modelId: string; thinkingEnabled?: boolean; }
 export interface RefinedModelConfigInput { termExtractionModel?: RefinedModelRouteInput | null; termTranslationModel?: RefinedModelRouteInput | null; translationModels?: RefinedModelRouteInput[]; omissionModel?: RefinedModelRouteInput | null; reviewModel?: RefinedModelRouteInput | null; concurrency?: number; maxReviewRounds?: number; }
-export async function createRefinedTask(input: { sourceId: string; novelId: string; name?: string; sourceLang?: string; targetLang?: string; modelConfig?: RefinedModelConfigInput }): Promise<{ task: RefinedTask }> { return requestJson('/api/refined-translations/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); }
+export async function createRefinedTask(input: { reuseTaskId?: string; sourceId: string; novelId: string; name?: string; sourceLang?: string; targetLang?: string; modelConfig?: RefinedModelConfigInput }): Promise<{ task: RefinedTask }> { return requestJson('/api/refined-translations/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); }
 export async function updateRefinedTask(taskId: string, input: { name?: string; sourceLang?: string; targetLang?: string; modelConfig?: RefinedModelConfigInput }): Promise<{ task: RefinedTask }> { return requestJson(`/api/refined-translations/tasks/${encodeURIComponent(taskId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); }
 export async function fetchRefinedTask(taskId: string): Promise<RefinedTaskDetail> { return requestJson(`/api/refined-translations/tasks/${encodeURIComponent(taskId)}`); }
 export type RefinedReviewResolution = 'open' | 'accepted' | 'partially_accepted' | 'rejected' | 'resolved' | 'ignored' | 'superseded';
@@ -1403,4 +1403,9 @@ export async function fetchLibraryTranslationProfile(sourceId: string, novelId: 
 }
 export async function updateLibraryTranslationProfile(sourceId: string, novelId: string, input: TranslationProfileInput): Promise<{ translation: TranslationProfile }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/profile`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+
+/** Merge the latest local source snapshot and optionally import matching refined translations. */
+export async function syncRefinedSource(taskId: string, input: { reuseTaskId?: string }): Promise<{ task: RefinedTask; summary: { addedChapters: number; updatedChapters: number; preservedSegments: number; reusedSegments: number; pendingSegments: number; metadataChanged: boolean } }> {
+  return requestJson(`/api/refined-translations/tasks/${encodeURIComponent(taskId)}/sync-source`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
 }

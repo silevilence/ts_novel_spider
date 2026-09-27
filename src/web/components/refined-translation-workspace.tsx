@@ -23,6 +23,7 @@ import {
 
 import {
   createRefinedTask,
+  syncRefinedSource,
   createRefinedTerm,
   bulkDeleteRefinedTerms,
   bulkUpdateRefinedTerms,
@@ -91,6 +92,10 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
   const [segments, setSegments] = useState<RefinedSegment[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [reuseTasks, setReuseTasks] = useState<RefinedTask[]>([]);
+  const [reuseTaskId, setReuseTaskId] = useState<string | null>(null);
   const [recycleBin, setRecycleBin] = useState(false);
   const [novelOptions, setNovelOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
@@ -168,7 +173,9 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
 
   const openCreate = async () => {
     try {
-      const [result, providers] = await Promise.all([fetchLibraryNovels(), fetchLlmProvidersPreferences()]);
+      const [result, providers, availableTasks] = await Promise.all([fetchLibraryNovels(), fetchLlmProvidersPreferences(), fetchRefinedTasks()]);
+      setReuseTasks(availableTasks.tasks);
+      setReuseTaskId(null);
       setNovelOptions(result.novels.filter((item) => item.downloadedChapters > 0).map((item) => ({ value: `${item.sourceId}\u0000${item.metadata.novelId}`, label: `${item.metadata.title}（已采集 ${item.downloadedChapters} 章）` })));
       setModelOptions(providers.providers.flatMap((provider) => provider.enabled ? provider.models.filter((model) => model.enabled && model.isConfigured && model.resolvedCapabilities.includes('chat')).map((model) => ({ value: `${provider.id}\u0000${model.modelId}`, label: `${provider.label} / ${model.modelId}` })) : []));
       setCreateOpen(true);
@@ -233,6 +240,9 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
     </Paper>
     {detail ? <Stack gap="sm">
       <Group justify="space-between"><Button variant="subtle" leftSection={<IconArrowRight size={15} style={{ transform: 'rotate(180deg)' }} />} onClick={() => { setDetail(null); setSelectedId(null); }}>返回任务列表</Button><Text size="xs" c="dimmed">工作区使用完整宽度，便于阅读、校对与导出。</Text></Group>
+      {!detail.task.deletedAt && <Group justify="flex-end"><Button variant="light" disabled={detail.task.status === 'running' || !detail.task.sourceId || !detail.task.novelId} onClick={() => {
+        void fetchRefinedTasks().then((result) => { setReuseTasks(result.tasks); setReuseTaskId(null); setSyncOpen(true); }).catch((error: unknown) => onNotify({ tone: 'error', title: '无法加载同步配置', message: error instanceof Error ? error.message : '请稍后重试。' }));
+      }}>同步原文</Button></Group>}
       <Paper p="lg" radius="lg" style={{ background: 'rgba(31,21,16,.72)', border: '1px solid rgba(168,133,96,.18)' }}>
         <RefinedTranslationTaskPanel
           detail={detail}
@@ -311,9 +321,12 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
     </Stack>}
     <Modal opened={createOpen} onClose={() => setCreateOpen(false)} title="从已抓取小说创建精翻任务" centered>
       <Stack>
-        <Select label="翻译源" data={novelOptions} value={newSource} onChange={(value) => setNewSource(value ?? '')} searchable />
+        <Select label="翻译源" data={novelOptions} value={newSource} onChange={(value) => { setNewSource(value ?? ''); setReuseTaskId(null); }} searchable />
         <TextInput label="任务名称（可留空）" value={newName} onChange={(event) => setNewName(event.currentTarget.value)} placeholder="默认：小说名 精翻任务 日期" />
         <SimpleGrid cols={2}><TextInput label="源语言（留空继承偏好）" value={newSourceLang} onChange={(event) => setNewSourceLang(event.currentTarget.value)} placeholder="ja" /><TextInput label="目标语言（留空继承偏好）" value={newTargetLang} onChange={(event) => setNewTargetLang(event.currentTarget.value)} placeholder="zh-CN" /></SimpleGrid>
+        <Select label="带入已有精翻译文（可选）" description="仅带入同源、同语言且原文一致的段落；保留术语确认步骤，带入译文重新审核。" clearable searchable value={reuseTaskId} data={reuseTasks.filter((task) => `${task.sourceId}\u0000${task.novelId}` === newSource).map((task) => ({ value: task.id, label: `${task.name}（${task.sourceLang} → ${task.targetLang}）` }))} onChange={(value) => {
+          setReuseTaskId(value); const donor = reuseTasks.find((task) => task.id === value); if (donor) { setNewSourceLang(donor.sourceLang); setNewTargetLang(donor.targetLang); }
+        }} />
         <Text size="xs" c="dimmed">未选择时自动继承全局翻译模型。可分别覆盖任务内各自动步骤。</Text>
         <SimpleGrid cols={2}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Stack key={key} gap={4}><Select label={label} data={modelOptions} clearable value={modelKeys[key] ?? null} onChange={(value) => setModelKeys((current) => ({ ...current, [key]: value ?? '' }))} /><Checkbox size="xs" label="启用模型思考" checked={modelThinking[key] ?? false} disabled={!modelKeys[key]} onChange={(event) => { const enabled = event.currentTarget.checked; setModelThinking((current) => ({ ...current, [key]: enabled })); }} /></Stack>)}</SimpleGrid><Stack gap={4}><MultiSelect label="正文初翻模型池" description="按段落轮转分配，配合任务并发数执行。" data={modelOptions} value={translationModelKeys} onChange={setTranslationModelKeys} clearable /><Checkbox size="xs" label="正文初翻启用模型思考" checked={translationThinking} disabled={!translationModelKeys.length} onChange={(event) => setTranslationThinking(event.currentTarget.checked)} /></Stack><Text size="xs" c="dimmed">仅在所选模型支持原生思考时开启；翻译、审核等步骤可分别设置。</Text>
         <Button disabled={!newSource} onClick={() => {
@@ -324,11 +337,27 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
             return providerId && modelId ? { providerId, modelId, ...(modelThinking[key] ? { thinkingEnabled: true } : {}) } : null;
           };
           const translationModels = translationModelKeys.flatMap((key) => { const [providerId, modelId] = key.split('\u0000'); return providerId && modelId ? [{ providerId, modelId, ...(translationThinking ? { thinkingEnabled: true } : {}) }] : []; });
-          void createRefinedTask({ sourceId, novelId, ...(newName.trim() ? { name: newName.trim() } : {}), ...(newSourceLang.trim() ? { sourceLang: newSourceLang.trim() } : {}), ...(newTargetLang.trim() ? { targetLang: newTargetLang.trim() } : {}), modelConfig: { termExtractionModel: route('termExtractionModel'), termTranslationModel: route('termTranslationModel'), translationModels, omissionModel: route('omissionModel'), reviewModel: route('reviewModel') } }).then(({ task }) => {
+          void createRefinedTask({ sourceId, novelId, ...(reuseTaskId ? { reuseTaskId } : {}), ...(newName.trim() ? { name: newName.trim() } : {}), ...(newSourceLang.trim() ? { sourceLang: newSourceLang.trim() } : {}), ...(newTargetLang.trim() ? { targetLang: newTargetLang.trim() } : {}), modelConfig: { termExtractionModel: route('termExtractionModel'), termTranslationModel: route('termTranslationModel'), translationModels, omissionModel: route('omissionModel'), reviewModel: route('reviewModel') } }).then(({ task }) => {
             setCreateOpen(false); setNewName(''); setNewSourceLang(''); setNewTargetLang(''); setModelKeys({}); setModelThinking({}); setTranslationModelKeys([]); setTranslationThinking(false); setSelectedId(task.id); void loadTasks();
             onNotify({ tone: 'success', title: '精翻任务已创建', message: '已将正文和术语候选快照到独立任务。' });
           }).catch((error: unknown) => onNotify({ tone: 'error', title: '创建失败', message: error instanceof Error ? error.message : '请稍后再试。' }));
         }}>创建并进入术语确认</Button>
+      </Stack>
+    </Modal>
+    <Modal opened={syncOpen} onClose={() => { if (!syncing) setSyncOpen(false); }} title="同步任务原文" centered>
+      <Stack>
+        <Text size="sm">同步书库中最新已下载的原文与元数据。请先在书库完成抓取或编辑；新增、修改的段落待译，未变段落保留译文，受影响章节重新审核。源书缺失的章节仍保留在任务中。</Text>
+        <Select label="同时带入其他精翻任务的译文（可选）" description="只填补原文一致的缺译段落，保留当前任务已有译文。" clearable searchable value={reuseTaskId} onChange={setReuseTaskId} disabled={syncing} data={reuseTasks.filter((task) => detail && task.id !== detail.task.id && task.sourceId === detail.task.sourceId && task.novelId === detail.task.novelId && task.sourceLang === detail.task.sourceLang && task.targetLang === detail.task.targetLang).map((task) => ({ value: task.id, label: task.name }))} />
+        <Button loading={syncing} disabled={!detail || detail.task.status === 'running'} onClick={() => {
+          if (!detail) return;
+          const id = detail.task.id;
+          setSyncing(true);
+          void syncRefinedSource(id, reuseTaskId ? { reuseTaskId } : {}).then(async ({ summary }) => {
+            setSyncOpen(false);
+            await loadTasks(); await loadDetail(id);
+            onNotify({ tone: 'success', title: '原文同步完成', message: `新增 ${summary.addedChapters} 章，更新 ${summary.updatedChapters} 章；保留 ${summary.preservedSegments} 段译文，带入 ${summary.reusedSegments} 段，待译 ${summary.pendingSegments} 段。${summary.metadataChanged ? '元数据已更新。' : ''}` });
+          }).catch((error: unknown) => onNotify({ tone: 'error', title: '同步失败', message: error instanceof Error ? error.message : '请稍后重试。' })).finally(() => setSyncing(false));
+        }}>确认同步</Button>
       </Stack>
     </Modal>
   </Stack>;

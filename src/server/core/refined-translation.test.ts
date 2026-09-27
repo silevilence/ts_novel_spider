@@ -762,3 +762,180 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
     await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
 }
+
+
+/** In-memory source library and deterministic model for source synchronization regressions. */
+function createSourceSyncFixture(generateText: ConstructorParameters<typeof RefinedTranslationService>[3] = async () => { throw new Error('Unexpected model call'); }) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'refined-source-sync-'));
+  const repository = new SqliteNovelRepository(':memory:');
+  const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(directory, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(directory, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(directory, 'assets') }) }), generateText);
+  const novelId = repository.createManualNovel('测试原书').metadata.novelId;
+  const chapter = repository.saveManualChapter(novelId, { title: '第一章', content: '原文甲\n\n原文乙\n\n原文甲' }).chapter;
+  const create = (reuseTaskId?: string) => service.createTask('manual', novelId, { sourceLang: 'ja', targetLang: 'zh-CN', ...(reuseTaskId ? { reuseTaskId } : {}), modelConfig: { translationModels: [{ providerId: 'fake', modelId: 'model' }], reviewModel: { providerId: 'fake', modelId: 'model' } } });
+  return { repository, service, novelId, chapter, create, close: () => { repository.close(); fs.rmSync(directory, { recursive: true, force: true }); } };
+}
+
+test('source sync preserves paragraph occurrences across insertions and invalidates only changed chapter reviews', () => {
+  const f = createSourceSyncFixture();
+  try {
+    const task = f.create();
+    ['译文甲一', '译文乙', '译文甲二'].forEach((text, index) => f.service.writeSegment(task.id, f.chapter.id, index, { translatedText: text }));
+    const oldSegments = f.repository.listRefinedTranslationSegments(task.id, f.chapter.id);
+    f.repository.updateRefinedTranslationChapterReview(task.id, f.chapter.id, { reviewRound: 5, reviewScore: 99, status: 'reviewed' });
+    f.repository.updateRefinedTranslationTask(task.id, { stage: 'completed', status: 'completed' });
+    f.repository.saveRefinedTranslationCheckpoint(task.id, 'reviewing', { chapterId: f.chapter.id, paragraphIndex: 2 });
+    f.service.writeReview(task.id, { chapterId: f.chapter.id, reviewRound: 5, severity: 'high', paragraphIndices: [2], scores: {}, suggestion: '旧位置意见', replacementText: null, forceChange: true, resolved: false, resolution: 'open', resolutionNote: null });
+    f.repository.saveManualChapter(f.novelId, { chapterId: f.chapter.id, title: '新标题', content: '新增段\n\n原文甲\n\n修改的乙\n\n原文甲' });
+    const added = f.repository.saveManualChapter(f.novelId, { title: '第二章', content: '新章正文' }).chapter;
+    const { summary, task: synced } = f.service.syncSource(task.id);
+    assert.equal(summary.addedChapters, 1);
+    assert.equal(summary.updatedChapters, 1);
+    assert.equal(summary.preservedSegments, 2);
+    assert.equal(summary.pendingSegments, 3);
+    const segments = f.repository.listRefinedTranslationSegments(task.id, f.chapter.id);
+    assert.deepEqual(segments.map((segment) => segment.translatedText), [null, '译文甲一', null, '译文甲二']);
+    assert.equal(segments[1]?.id, oldSegments[0]?.id);
+    assert.equal(segments[3]?.id, oldSegments[2]?.id);
+    assert.equal(f.repository.listRefinedTranslationSegments(task.id, added.id)[0]?.status, 'pending');
+    assert.equal(f.repository.getRefinedTranslationChapter(task.id, f.chapter.id)?.reviewRound, 0);
+    assert.equal(f.repository.listRefinedTranslationReviews(task.id)[0]?.resolution, 'superseded');
+    assert.equal(f.repository.getRefinedTranslationCheckpoint(task.id, 'reviewing'), null);
+    assert.equal(synced.status, 'paused');
+    assert.equal(synced.stage, 'translating');
+    const second = f.service.syncSource(task.id);
+    assert.equal(second.summary.updatedChapters, 0);
+    assert.equal(second.summary.addedChapters, 0);
+    assert.deepEqual(f.repository.listRefinedTranslationSegments(task.id, f.chapter.id), segments);
+    f.repository.deleteManualChapter(f.novelId, added.id);
+    f.service.syncSource(task.id);
+    assert.ok(f.repository.getRefinedTranslationChapter(task.id, added.id));
+  } finally { f.close(); }
+});
+
+test('source sync keeps unchanged reviews and clears only changed metadata translations', () => {
+  const f = createSourceSyncFixture();
+  try {
+    const task = f.create();
+    f.repository.updateRefinedTranslationMetadata(task.id, { title: '书名译文', author: '作者译文', description: '简介译文', tags: ['标签译文'] });
+    f.repository.updateRefinedTranslationChapterReview(task.id, f.chapter.id, { reviewRound: 2, reviewScore: 90, status: 'reviewed' });
+    f.repository.updateRefinedTranslationTask(task.id, { stage: 'completed', status: 'completed' });
+    const noChange = f.service.syncSource(task.id);
+    assert.equal(noChange.task.status, 'completed');
+    f.repository.updateManualMetadata(f.novelId, { title: '新书名', author: '', description: '', tags: [] });
+    const synced = f.service.syncSource(task.id);
+    assert.equal(synced.summary.metadataChanged, true);
+    assert.deepEqual(synced.task.translatedMetadata, { title: null, author: '作者译文', description: '简介译文', tags: ['标签译文'] });
+    assert.equal(f.repository.getRefinedTranslationChapter(task.id, f.chapter.id)?.status, 'reviewed');
+  } finally { f.close(); }
+});
+
+test('creation and sync import matching refined results without overwriting local translations', () => {
+  const f = createSourceSyncFixture();
+  try {
+    const donor = f.create();
+    ['带入甲一', '带入乙', '带入甲二'].forEach((text, index) => f.service.writeSegment(donor.id, f.chapter.id, index, { translatedText: text }));
+    const plain = f.create();
+    assert.equal(f.repository.listRefinedTranslationSegments(plain.id, f.chapter.id)[0]?.status, 'pending');
+    f.service.writeSegment(plain.id, f.chapter.id, 0, { translatedText: '保留本地译文' });
+    const result = f.service.syncSource(plain.id, { reuseTaskId: donor.id });
+    assert.equal(result.summary.reusedSegments, 2);
+    assert.deepEqual(f.repository.listRefinedTranslationSegments(plain.id, f.chapter.id).map((segment) => segment.translatedText), ['保留本地译文', '带入乙', '带入甲二']);
+    const imported = f.create(donor.id);
+    assert.ok(f.repository.listRefinedTranslationSegments(imported.id, f.chapter.id).every((segment) => segment.status === 'translated'));
+    assert.equal(f.repository.getRefinedTranslationChapter(imported.id, f.chapter.id)?.reviewRound, 0);
+    assert.equal(f.repository.hasRefinedTranslationReuse(imported.id, f.chapter.id), true);
+    f.repository.saveManualChapter(f.novelId, { chapterId: f.chapter.id, title: '第一章', content: '原文甲\n\n新原文\n\n原文甲\n\n原文甲' });
+    const partial = f.create(donor.id);
+    assert.deepEqual(f.repository.listRefinedTranslationSegments(partial.id, f.chapter.id).map((segment) => segment.translatedText), ['带入甲一', null, '带入甲二', null]);
+    assert.equal(f.service.syncSource(plain.id, { reuseTaskId: donor.id }).summary.reusedSegments, 0);
+    assert.equal(f.repository.listRefinedTranslationSegments(donor.id, f.chapter.id)[1]?.translatedText, '带入乙');
+  } finally { f.close(); }
+});
+
+test('reuse validation is atomic and rejects foreign languages, novels, deleted donors and active targets', () => {
+  const f = createSourceSyncFixture();
+  try {
+    const donor = f.create();
+    const target = f.create();
+    const before = f.repository.listRefinedTranslationTasks().length;
+    f.repository.updateRefinedTranslationTask(donor.id, { targetLang: 'en' });
+    assert.throws(() => f.create(donor.id), /同语言/);
+    assert.equal(f.repository.listRefinedTranslationTasks().length, before);
+    assert.throws(() => f.service.syncSource(target.id, { reuseTaskId: donor.id }), /同语言/);
+    f.repository.updateRefinedTranslationTask(donor.id, { targetLang: 'zh-CN' });
+    assert.throws(() => f.service.syncSource(target.id, { reuseTaskId: target.id }), /其他精翻任务/);
+    const otherNovel = f.repository.createManualNovel('其他书').metadata.novelId;
+    f.repository.saveManualChapter(otherNovel, { title: '第一章', content: '原文甲' });
+    const foreign = f.service.createTask('manual', otherNovel, { sourceLang: 'ja', targetLang: 'zh-CN' });
+    assert.throws(() => f.service.syncSource(target.id, { reuseTaskId: foreign.id }), /同源小说/);
+    f.service.markDeleted(donor.id);
+    assert.throws(() => f.service.syncSource(target.id, { reuseTaskId: donor.id }), /未删除/);
+    f.repository.updateRefinedTranslationTask(target.id, { status: 'running' });
+    assert.throws(() => f.service.syncSource(target.id), /暂停/);
+    f.repository.updateRefinedTranslationTask(target.id, { status: 'paused' });
+    f.service.markDeleted(target.id);
+    assert.throws(() => f.service.syncSource(target.id), /回收站/);
+  } finally { f.close(); }
+});
+
+test('fully imported chapters skip initial paragraph translation and omission checks but run a fresh review', async () => {
+  const prompts: string[] = [];
+  const f = createSourceSyncFixture(async (_preferences, _route, system) => {
+    prompts.push(system);
+    if (system.includes('审核')) return '{"score":100,"issues":[]}';
+    throw new Error('Imported chapter must not be translated again');
+  });
+  try {
+    const donor = f.create();
+    ['译文一', '译文二', '译文三'].forEach((text, index) => f.service.writeSegment(donor.id, f.chapter.id, index, { translatedText: text }));
+    f.service.updateChapterTitle(donor.id, f.chapter.id, '章节译名');
+    const task = f.create(donor.id);
+    f.repository.updateRefinedTranslationTask(task.id, { stage: 'translating', status: 'paused' });
+    f.service.resume(task.id);
+    await waitFor(() => f.repository.getRefinedTranslationTask(task.id)?.status === 'completed');
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0]!, /审核/);
+    assert.equal(f.repository.getRefinedTranslationChapter(task.id, f.chapter.id)?.reviewRound, 1);
+    assert.equal(f.repository.getRefinedTranslationCheckpoint(task.id, 'checking'), null);
+  } finally { f.close(); }
+});
+
+
+test('partial reuse translates only missing paragraphs before completing review', async () => {
+  const translatedPrompts: string[] = [];
+  const f = createSourceSyncFixture(async (_preferences, _route, system, prompt) => {
+    if (system.includes('审核')) return '{"score":100,"issues":[]}';
+    translatedPrompts.push(prompt);
+    return '新段译文';
+  });
+  try {
+    const donor = f.create();
+    f.service.writeSegment(donor.id, f.chapter.id, 0, { translatedText: '保留译文一' });
+    f.service.writeSegment(donor.id, f.chapter.id, 2, { translatedText: '保留译文三' });
+    f.service.updateChapterTitle(donor.id, f.chapter.id, '章节译名');
+    const task = f.create(donor.id);
+    f.repository.updateRefinedTranslationTask(task.id, { stage: 'translating' });
+    f.service.resume(task.id);
+    await waitFor(() => f.repository.getRefinedTranslationTask(task.id)?.status === 'completed');
+    assert.equal(translatedPrompts.length, 1);
+    assert.match(translatedPrompts[0]!, /原文乙/);
+    assert.deepEqual(f.repository.listRefinedTranslationSegments(task.id, f.chapter.id).map((segment) => segment.translatedText), ['保留译文一', '新段译文', '保留译文三']);
+  } finally { f.close(); }
+});
+
+test('sync refuses paused tasks with an outstanding model call until cancellation settles', async () => {
+  let release: (() => void) | undefined;
+  const f = createSourceSyncFixture(async () => new Promise<string>((resolve) => { release = () => resolve('译文'); }));
+  try {
+    const task = f.create();
+    f.repository.updateRefinedTranslationTask(task.id, { stage: 'translating' });
+    f.service.resume(task.id);
+    await waitFor(() => Boolean(release));
+    f.service.pause(task.id);
+    assert.throws(() => f.service.syncSource(task.id), /等待当前模型调用结束/);
+    release!();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.doesNotThrow(() => f.service.syncSource(task.id));
+    assert.equal(f.repository.listRefinedTranslationSegments(task.id, f.chapter.id)[0]?.translatedText, null);
+  } finally { release?.(); f.close(); }
+});

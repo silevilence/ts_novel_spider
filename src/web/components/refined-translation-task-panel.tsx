@@ -419,6 +419,7 @@ function WorkflowStateGraphCompact({ task, detail, currentChapter, onSelect }: {
     { id: 'glossary_setup-glossary_translation', source: 'glossary_setup', sourceHandle: 'source-right', target: 'glossary_translation', targetHandle: 'target-left', label: '人工确认' },
     { id: 'glossary_translation-translating', source: 'glossary_translation', sourceHandle: 'source-right', target: 'translating', targetHandle: 'target-left', label: '人工确认' },
     { id: 'translating-checking', source: 'translating', sourceHandle: 'source-bottom', target: 'checking', targetHandle: 'target-top', label: '已初翻' },
+    { id: 'translating-reviewing', source: 'translating', sourceHandle: 'source-right', target: 'reviewing', targetHandle: 'target-top', label: '译文已带入，直接审核' },
     { id: 'checking-reviewing', source: 'checking', sourceHandle: 'source-right', target: 'reviewing', targetHandle: 'target-left', label: '无遗漏' },
     { id: 'reviewing-completed', source: 'reviewing', sourceHandle: 'source-right', target: 'completed', targetHandle: 'target-left', label: '通过' },
   ].map((edge) => ({ ...edge, animated: task.stage === edge.source, style: edgeStyle, labelStyle: { fill: '#f0c96a', fontWeight: 700 }, labelBgStyle: { fill: '#211611', fillOpacity: .92 }, markerEnd: { type: MarkerType.ArrowClosed, color: '#b89565' } }));

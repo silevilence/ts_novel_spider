@@ -10,12 +10,18 @@ export function createRefinedTranslationRouter({ service }: { service: ControlCe
   router.post('/tasks', (request, response) => {
     try {
       const body = objectBody(request.body); const sourceId = requiredString(body, 'sourceId'); const novelId = requiredString(body, 'novelId');
-      const task = service.createRefinedTranslationTask(sourceId, novelId, { ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig } : {}) });
+      const task = service.createRefinedTranslationTask(sourceId, novelId, { ...(optionalString(body.reuseTaskId) ? { reuseTaskId: optionalString(body.reuseTaskId)! } : {}), ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig } : {}) });
       response.status(201).json({ task });
     } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '创建精翻任务失败。' }); }
   });
   router.get('/tasks/:taskId', (request, response) => {
     const task = service.getRefinedTranslationTask(request.params.taskId); if (!task) return response.status(404).json({ message: '精翻任务不存在。' }); return response.json(task);
+  });
+  router.post('/tasks/:taskId/sync-source', (request, response) => {
+    try {
+      const reuseTaskId = optionalString(objectBody(request.body).reuseTaskId);
+      return response.json(service.syncRefinedTranslationSource(request.params.taskId, reuseTaskId ? { reuseTaskId } : {}));
+    } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '同步原文失败。' }); }
   });
   router.put('/tasks/:taskId', (request, response) => { const body = objectBody(request.body); const task = service.updateRefinedTranslationTaskConfiguration(request.params.taskId, { ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig as unknown as NonNullable<Parameters<ControlCenterService['updateRefinedTranslationTaskConfiguration']>[1]['modelConfig']> } : {}) }); return task ? response.json({ task }) : response.status(404).json({ message: '精翻任务不存在或已在回收站。' }); });
   router.get('/tasks/:taskId/stream', (request, response) => {

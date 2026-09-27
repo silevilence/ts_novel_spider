@@ -680,9 +680,9 @@ export interface RefinedTranslationModelConfig {
 
 export interface StoredRefinedTranslationTaskRow {
   id: string; sourceId: string | null; novelId: string | null; name: string; novelTitle: string; author: string;
-  /** Immutable source metadata copied at task creation; it survives source-novel deletion. */
+  /** Independent source snapshot, refreshed only by explicit source synchronization. */
   sourceMetadata: { title: string; author: string; description: string; tags: string[]; infoPageUrl: string };
-  /** Metadata translated as part of the refined workflow; sourceMetadata remains immutable. */
+  /** Translated metadata; source synchronization invalidates only changed fields. */
   translatedMetadata: { title: string | null; author: string | null; description: string | null; tags: string[] };
   sourceLang: string; targetLang: string; status: RefinedTranslationTaskStatus; stage: RefinedTranslationStage;
   modelConfig: RefinedTranslationModelConfig; deletedAt: string | null; createdAt: string; updatedAt: string;
@@ -4237,6 +4237,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
   createRefinedTranslationTask(input: {
     id: string; sourceId: string; novelId: string; name: string; novelTitle: string; author: string;
     sourceMetadata?: StoredRefinedTranslationTaskRow['sourceMetadata'];
+    reuseTaskId?: string;
     sourceLang: string; targetLang: string; modelConfig: RefinedTranslationModelConfig;
     chapters: Array<{ id: string; index: number; title: string; volumeTitle: string | null; content: string; paragraphs: string[] }>;
     terms: Array<{ sourceTerm: string; targetTerm: string | null; entityType: string | null; priority: number; suggestion: string | null }>;
@@ -4261,6 +4262,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         chapter.paragraphs.forEach((sourceText, paragraphIndex) => insertSegment.run(crypto.randomUUID(), input.id, chapter.id, paragraphIndex, sourceText, now));
       }
       for (const term of input.terms) insertTerm.run(crypto.randomUUID(), input.id, term.sourceTerm, term.targetTerm, term.entityType, term.priority, term.suggestion, now);
+      if (input.reuseTaskId) this.syncRefinedTranslationSource(input.id, { metadata: input.sourceMetadata ?? { title: input.novelTitle, author: input.author, description: '', tags: [], infoPageUrl: '' }, chapters: input.chapters, reuseTaskId: input.reuseTaskId });
     })();
     const task = this.getRefinedTranslationTask(input.id);
     if (!task) throw new Error('Failed to create refined translation task.');
@@ -4268,10 +4270,101 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     return task;
   }
 
+  /** Atomically merge downloaded source chapters, retaining exact paragraph occurrences and local translations. */
+  syncRefinedTranslationSource(taskId: string, input: {
+    metadata: StoredRefinedTranslationTaskRow['sourceMetadata'];
+    chapters: Array<{ id: string; index: number; title: string; volumeTitle: string | null; content: string; paragraphs: string[] }>;
+    reuseTaskId?: string;
+  }) {
+    return this.#database.transaction(() => {
+      const task = this.getRefinedTranslationTask(taskId);
+      if (!task || task.deletedAt) throw new Error('精翻任务不存在或已在回收站。');
+      if (task.status === 'running') throw new Error('请先暂停任务再同步原文。');
+      if (input.reuseTaskId) {
+        const donor = this.getRefinedTranslationTask(input.reuseTaskId);
+        if (!donor || donor.deletedAt || donor.id === taskId || !task.sourceId || !task.novelId || donor.sourceId !== task.sourceId || donor.novelId !== task.novelId || donor.sourceLang !== task.sourceLang || donor.targetLang !== task.targetLang) throw new Error('只能复用同源小说、同语言且未删除的其他精翻任务。');
+      }
+      const result = { addedChapters: 0, updatedChapters: 0, preservedSegments: 0, reusedSegments: 0, pendingSegments: 0, metadataChanged: false };
+      const now = new Date().toISOString();
+      for (const source of input.chapters) {
+        const current = this.getRefinedTranslationChapter(taskId, source.id);
+        const existing = this.listRefinedTranslationSegments(taskId, source.id);
+        const donorSegments = input.reuseTaskId ? this.listRefinedTranslationSegments(input.reuseTaskId, source.id) : [];
+        // Consume occurrences once: repeated paragraphs must not borrow another occurrence's translation.
+        const queues = (segments: StoredRefinedTranslationSegmentRow[]) => {
+          const map = new Map<string, StoredRefinedTranslationSegmentRow[]>();
+          for (const segment of segments) { const queue = map.get(segment.sourceText) ?? []; queue.push(segment); map.set(segment.sourceText, queue); }
+          return map;
+        };
+        const own = queues(existing); const donor = queues(donorSegments);
+        let reused = 0;
+        const segments = source.paragraphs.map((sourceText, paragraphIndex) => {
+          const previous = own.get(sourceText)?.shift();
+          const candidate = donor.get(sourceText)?.shift();
+          if (previous?.translatedText?.trim()) {
+            result.preservedSegments += 1;
+            return { ...previous, paragraphIndex };
+          }
+          if (candidate?.status === 'translated' && candidate.translatedText?.trim()) {
+            reused += 1;
+            return { id: previous?.id ?? crypto.randomUUID(), paragraphIndex, sourceText, translatedText: candidate.translatedText, status: 'translated' as const };
+          }
+          return { id: previous?.id ?? crypto.randomUUID(), paragraphIndex, sourceText, translatedText: previous?.translatedText ?? null, status: previous?.status ?? 'pending' as const };
+        });
+        result.reusedSegments += reused;
+        result.pendingSegments += segments.filter((segment) => segment.status === 'pending' || segment.status === 'failed').length;
+        const contentChanged = !current || current.sourceContent !== source.content || current.title !== source.title;
+        const changed = contentChanged || current?.chapterIndex !== source.index || current?.volumeTitle !== source.volumeTitle || reused > 0;
+        if (!changed) continue;
+        if (current) result.updatedChapters += 1; else result.addedChapters += 1;
+        const resetReview = contentChanged || reused > 0;
+        const translatedTitle = current?.title === source.title ? current.translatedTitle : null;
+        const donorChapter = input.reuseTaskId ? this.getRefinedTranslationChapter(input.reuseTaskId, source.id) : null;
+        const title = translatedTitle ?? (donorChapter?.title === source.title ? donorChapter.translatedTitle : null);
+        const status = resetReview ? (segments.every((segment) => segment.status === 'translated' || segment.status === 'skipped') ? 'translated' : 'pending') : current!.status;
+        this.#database.prepare(`INSERT INTO refined_translation_chapters
+          (task_id, chapter_id, chapter_index, title, volume_title, source_content, translated_title, status, review_round, review_score, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(task_id, chapter_id) DO UPDATE SET chapter_index=excluded.chapter_index, title=excluded.title,
+          volume_title=excluded.volume_title, source_content=excluded.source_content, translated_title=excluded.translated_title,
+          status=excluded.status, review_round=excluded.review_round, review_score=excluded.review_score, updated_at=excluded.updated_at`)
+          .run(taskId, source.id, source.index, source.title, source.volumeTitle, source.content, title, status, resetReview ? 0 : current!.reviewRound, resetReview ? null : current!.reviewScore, now);
+        this.#database.prepare('DELETE FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ?').run(taskId, source.id);
+        const insert = this.#database.prepare(`INSERT INTO refined_translation_segments (segment_id, task_id, chapter_id, paragraph_index, source_text, translated_text, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const segment of segments) insert.run(segment.id, taskId, source.id, segment.paragraphIndex, segment.sourceText, segment.translatedText, segment.status, now);
+        if (resetReview) this.#database.prepare('UPDATE refined_translation_chapters SET has_reused_translation = ? WHERE task_id = ? AND chapter_id = ?').run(reused > 0 ? 1 : 0, taskId, source.id);
+        if (resetReview) {
+          // Old paragraph indices are no longer actionable; retain the audit trail as superseded.
+          this.#database.prepare(`UPDATE refined_translation_reviews SET resolved = 1, resolution = 'superseded', resolution_note = '原文同步或译文带入后需重新审核' WHERE task_id = ? AND chapter_id = ?`).run(taskId, source.id);
+        }
+      }
+      result.metadataChanged = JSON.stringify(task.sourceMetadata) !== JSON.stringify(input.metadata);
+      if (result.metadataChanged) {
+        const translated = { ...task.translatedMetadata };
+        for (const key of ['title', 'author', 'description'] as const) if (task.sourceMetadata[key] !== input.metadata[key]) translated[key] = null;
+        if (JSON.stringify(task.sourceMetadata.tags) !== JSON.stringify(input.metadata.tags)) translated.tags = [];
+        this.#database.prepare('UPDATE refined_translation_tasks SET novel_title = ?, author = ?, source_metadata_json = ?, translated_metadata_json = ? WHERE task_id = ?')
+          .run(input.metadata.title, input.metadata.author, JSON.stringify(input.metadata), JSON.stringify(translated), taskId);
+      }
+      if (result.addedChapters || result.updatedChapters || result.metadataChanged) {
+        const stage = task.stage === 'glossary_setup' || task.stage === 'glossary_translation' ? task.stage : 'translating';
+        this.#database.prepare("DELETE FROM refined_translation_checkpoints WHERE task_id = ? AND stage NOT IN ('glossary_setup', 'glossary_translation')").run(taskId);
+        this.updateRefinedTranslationTask(taskId, { stage, status: 'paused' });
+        this.appendRefinedTranslationTransition({ taskId, fromStage: task.stage, toStage: stage, condition: '同步原文与带入匹配译文，等待继续流程', chapterId: null, reviewRound: null });
+      }
+      if (input.reuseTaskId) this.appendRefinedTranslationLog(taskId, 'info', `从精翻任务 ${input.reuseTaskId} 带入 ${result.reusedSegments} 段匹配译文，等待重新审核。`);
+      return result;
+    })();
+  }
+
   listRefinedTranslationTasks(includeDeleted = false): StoredRefinedTranslationTaskRow[] {
     const where = includeDeleted ? '' : 'WHERE deleted_at IS NULL';
     return this.#database.prepare(`SELECT * FROM refined_translation_tasks ${where} ORDER BY updated_at DESC`).all()
       .map((row) => mapRefinedTaskRow(row as RefinedTaskRow));
+  }
+
+  hasRefinedTranslationReuse(taskId: string, chapterId: string): boolean {
+    return Boolean(this.#database.prepare('SELECT 1 FROM refined_translation_chapters WHERE task_id = ? AND chapter_id = ? AND has_reused_translation = 1').get(taskId, chapterId));
   }
 
   listResumableRefinedTranslationTasks(): StoredRefinedTranslationTaskRow[] {
@@ -5002,7 +5095,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       CREATE TABLE IF NOT EXISTS refined_translation_chapters (
         task_id TEXT NOT NULL, chapter_id TEXT NOT NULL, chapter_index INTEGER NOT NULL, title TEXT NOT NULL,
         volume_title TEXT, source_content TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL,
-        review_round INTEGER NOT NULL DEFAULT 0, review_score REAL, updated_at TEXT NOT NULL,
+        review_round INTEGER NOT NULL DEFAULT 0, review_score REAL, has_reused_translation INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
         PRIMARY KEY(task_id, chapter_id), FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
       );
       CREATE TABLE IF NOT EXISTS refined_translation_segments (
@@ -5042,6 +5135,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       CREATE INDEX IF NOT EXISTS idx_refined_translation_reviews_lookup ON refined_translation_reviews(task_id, chapter_id, created_at DESC);
     `);
     this.ensureColumnExists('refined_translation_tasks', 'source_metadata_json', "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumnExists('refined_translation_chapters', 'has_reused_translation', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('refined_translation_tasks', 'translated_metadata_json', "TEXT NOT NULL DEFAULT '{}'");
     this.ensureColumnExists('refined_translation_reviews', 'resolution', "TEXT NOT NULL DEFAULT 'open'");
     this.ensureColumnExists('refined_translation_reviews', 'replacement_text', 'TEXT');
