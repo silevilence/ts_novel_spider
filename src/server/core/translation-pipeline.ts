@@ -10,6 +10,7 @@ import { segmentNode } from './translation/nodes/segment-node';
 import { translateNode } from './translation/nodes/translate-node';
 import { assembleNode } from './translation/nodes/assemble-node';
 import { finalizeNode } from './translation/nodes/finalize-node';
+import { restoreTranslationDrafts, saveTranslationDrafts } from './translation-checkpoint';
 
 /** 流水线注入了运行时的依赖 */
 export interface TranslationPipelineRuntime {
@@ -20,6 +21,8 @@ export interface TranslationPipelineRuntime {
   llmLogger?: LlmInteractionLogger;
   modelOverride?: string;
   abortSignal?: AbortSignal;
+  /** 显式继续任务时恢复有效草稿；从零重译不得复用检查点。 */
+  resumeIncomplete?: boolean;
   /** 每批翻译完成后的回调（段落数，累计总段数） */
   onBatchProgress?: (batchParagraphs: number, totalCompleted: number) => void;
 }
@@ -132,6 +135,12 @@ const TranslationState = Annotation.Root({
  * 注意：审校（review）节点暂未启用，预留给将来的多 Agent 翻译架构。
  */
 export function createTranslationPipelineGraph(runtime: TranslationPipelineRuntime) {
+  const checkpointModelKey = () => {
+    const route = resolveTranslationModel(runtime.preferences, runtime.modelOverride);
+    const provider = runtime.preferences.getLlmState().providers.find((item) => item.id === route?.providerId);
+    const model = provider?.models.find((item) => item.modelId === route?.modelId);
+    return JSON.stringify({ route, providerType: provider?.type, baseUrl: provider?.baseUrl, format: model?.translationMessageFormat ?? 'general' });
+  };
   const graph = new StateGraph(TranslationState)
 
     .addNode('segment', async (state: TranslationPipelineState) => {
@@ -139,20 +148,27 @@ export function createTranslationPipelineGraph(runtime: TranslationPipelineRunti
     })
     .addNode('translate', async (state: TranslationPipelineState) => {
       // 消息格式由实际模型路由决定；请求碎片在节点内合并，不改变图状态的段落边界。
-      return translateNode(state, runtime.preferences, runtime.historyManager, runtime.paragraphsPerBatch, runtime.llmLogger, runtime.onBatchProgress, runtime.modelOverride, runtime.abortSignal);
+      const modelKey = checkpointModelKey();
+      const input = runtime.resumeIncomplete
+        ? { ...state, draftParagraphs: restoreTranslationDrafts(runtime.repository, state, modelKey) } : state;
+      const result = await translateNode(input, runtime);
+      if (result.draftParagraphs) saveTranslationDrafts(runtime.repository, { ...input, ...result }, modelKey);
+      return result;
     })
     .addNode('assemble', async (state: TranslationPipelineState) => {
       return assembleNode(state);
     })
     .addNode('finalize', async (state: TranslationPipelineState) => {
-      return finalizeNode(state, runtime.repository);
+      const result = await finalizeNode(state, runtime.repository);
+      if (!result.errorMessage && !state.pauseRequested) saveTranslationDrafts(runtime.repository, state, checkpointModelKey(), { completed: true });
+      return result;
     })
 
     // 边界路由：segment -> translate -> assemble -> finalize
     .addEdge(START, 'segment')
-    .addEdge('segment', 'translate')
-    .addEdge('translate', 'assemble')
-    .addEdge('assemble', 'finalize')
+    .addConditionalEdges('segment', (state) => state.errorMessage ? END : 'translate', ['translate', END])
+    .addConditionalEdges('translate', (state) => state.errorMessage || state.pauseRequested ? END : 'assemble', ['assemble', END])
+    .addConditionalEdges('assemble', (state) => state.errorMessage || state.pauseRequested ? END : 'finalize', ['finalize', END])
     .addEdge('finalize', END);
 
   return graph.compile();

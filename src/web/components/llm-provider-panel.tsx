@@ -1,3 +1,4 @@
+import { TRANSLATION_MESSAGE_FORMATS, translationMessageFormatLabel } from '../../server/contracts/translation-message-format';
 import { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActionIcon,
@@ -610,7 +611,7 @@ export function LlmProviderPanel({ onNotice }: LlmProviderPanelProps) {
                                   {model.modelId.trim() || '未填 ID'}
                                 </Text>
                                 <Badge size="xs" variant="light" color="gray">
-                                  翻译：{model.translationMessageFormat === 'hy-mt2' ? 'HY-MT2' : '通用'}
+                                  翻译：{translationMessageFormatLabel(model.translationMessageFormat)}
                                 </Badge>
                               </Table.Td>
                               <Table.Td>
@@ -925,8 +926,8 @@ function ModelEditModal({ providerId, modelId, draft, serverState, opened, onClo
 
           <Select
             label="翻译消息格式"
-            description="仅用于书库翻译（含元数据与卷标题）。HY-MT2 使用单轮翻译提示词。"
-            data={[{ value: 'general', label: '通用' }, { value: 'hy-mt2', label: 'HY-MT2' }]}
+            description="仅用于书库翻译（含元数据与卷标题）。HY-MT2 与 Index-Translate 使用各自专用的单轮提示词。"
+            data={[...TRANSLATION_MESSAGE_FORMATS]}
             value={model.translationMessageFormat ?? 'general'}
             onChange={(value) => onUpdateModel(modelId, 'translationMessageFormat', value ?? 'general')}
             allowDeselect={false}

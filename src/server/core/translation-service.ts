@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { TranslationTermStatus } from './novel-repository';
 import { LibraryTermTranslationService } from './library-term-translation';
 import type { SqliteNovelRepository } from './novel-repository';
@@ -40,6 +41,30 @@ interface TranslationUnit {
   title: string;
   content: string;
   volumeTitle?: string | undefined;
+}
+
+/** 一轮执行的稳定标识；首条构建记录和后续进度均沿用相同值。 */
+interface TranslationRunStats {
+  runId: string;
+  runStartedAt: number;
+}
+
+/** 单元调度输入；恢复计数、请求覆盖和检查点恢复均使用具名字段。 */
+interface ProcessTranslationUnitsOptions {
+  sourceId: string;
+  novelId: string;
+  units: TranslationUnit[];
+  totalUnitCount: number;
+  realChapterCount: number;
+  sourceLang: string;
+  targetLang: string;
+  glossaryVersion: number;
+  profileVersion: number;
+  startTranslated: number;
+  startTotalParagraphs: number;
+  modelOverride?: string | undefined;
+  resumeIncomplete: boolean;
+  run: TranslationRunStats;
 }
 import { TranslationHistoryManager } from './translation/nodes/history-manager';
 import { LlmInteractionLogger } from './translation/nodes/llm-logger';
@@ -585,10 +610,8 @@ export class TranslationService {
       profile.targetLang,
     );
 
-    // 如果之前有暂停/完成且有已翻译单元，跳过已完成的继续翻译
-    const canResume = !fromScratch && existingBuild && (existingBuild.status === 'paused' || existingBuild.status === 'completed');
-    const startedTranslated = canResume ? (existingBuild?.translatedChapters ?? 0) : 0;
-    const startedFailed = canResume ? (existingBuild?.failedChapters ?? 0) : 0;
+    // 恢复时只跳过原文未变化的成功单元；本轮重新计算失败数。
+    const canResume = !fromScratch && existingBuild !== null && (existingBuild.status === 'paused' || existingBuild.status === 'completed' || existingBuild.status === 'failed');
     const remainingUnits = canResume
       ? allUnits.filter((u) => {
           const t = this.#repository.getChapterTranslation(sourceId, novelId, u.id, profile.sourceLang, profile.targetLang);
@@ -600,43 +623,53 @@ export class TranslationService {
 
     console.log(`[translation] ${canResume ? '继续翻译' : '全新翻译'}：下载 ${downloadedChapters.length} 章，共 ${allUnits.length} 个翻译单元，剩余 ${remainingUnits.length} 单元`);
 
-    const isResuming = canResume;
     const completedUnitCount = allUnits.length - remainingUnits.length;
+    const remainingIds = new Set(remainingUnits.map((unit) => unit.id));
+    const completedParagraphCount = allUnits
+      .filter((unit) => unit.kind === 'chapter' && !remainingIds.has(unit.id))
+      .reduce((count, unit) => count + this.#repository.listChapterTranslationParagraphs(sourceId, novelId, unit.id)
+        .filter((paragraph) => paragraph.translatedText?.trim()).length, 0);
 
     if (remainingUnits.length === 0) {
       throw new Error('所有内容均已翻译完成，无需继续。');
     }
 
-    console.log(`[translation] ${isResuming ? '继续翻译' : '开始翻译'}，剩余 ${remainingUnits.length} 单元`);
+    console.log(`[translation] ${canResume ? '继续翻译' : '开始翻译'}，剩余 ${remainingUnits.length} 单元`);
 
+    const run: TranslationRunStats = { runStartedAt: Date.now(), runId: randomUUID() };
     const build = this.#repository.saveTranslationBuild({
       sourceId,
       novelId,
       status: 'running',
       stage: 'translating',
-      progressPercent: isResuming ? Math.round((completedUnitCount / allUnits.length) * 100) : 0,
-      message: `${isResuming ? '继续' : '准备'}翻译 ${remainingUnits.length} 个单元`,
+      progressPercent: canResume ? Math.round((completedUnitCount / allUnits.length) * 100) : 0,
+      message: `${canResume ? '继续' : '准备'}翻译 ${remainingUnits.length} 个单元`,
       errorMessage: null,
-      startedAt: new Date().toISOString(),
+      startedAt: new Date(run.runStartedAt).toISOString(),
       completedAt: null,
-      modelStatsJson: JSON.stringify({ runStartedAt: new Date().toISOString() }),
+      modelStatsJson: JSON.stringify(run),
       // 恢复时保留旧计数，避免从头计数导致总数重复
-      translatedChapters: isResuming ? startedTranslated : 0,
+      translatedChapters: completedUnitCount,
       reviewedChapters: 0,
-      failedChapters: isResuming ? startedFailed : 0,
+      failedChapters: 0,
       glossaryVersion,
       profileVersion,
       currentChapterTitle: remainingUnits[0]?.title ?? null,
       currentChapterParagraphs: 0,
       currentChapterTranslatedParagraphs: 0,
-      totalTranslatedParagraphs: isResuming ? (existingBuild?.totalTranslatedParagraphs ?? 0) : 0,
+      totalTranslatedParagraphs: completedParagraphCount,
     });
 
     // 在后台启动章节翻译
     const totalUnitCount = allUnits.length;
     const realChapterCount = downloadedChapters.length;
     queueMicrotask(() => {
-      void this.processUnits(sourceId, novelId, remainingUnits, totalUnitCount, realChapterCount, profile.sourceLang, profile.targetLang, glossaryVersion, profileVersion, completedUnitCount, startedTranslated, startedFailed, canResume ? (existingBuild?.totalTranslatedParagraphs ?? 0) : 0, modelOverride);
+      void this.processUnits({
+        sourceId, novelId, units: remainingUnits, totalUnitCount, realChapterCount,
+        sourceLang: profile.sourceLang, targetLang: profile.targetLang, glossaryVersion, profileVersion,
+        startTranslated: completedUnitCount, startTotalParagraphs: completedParagraphCount,
+        modelOverride, resumeIncomplete: canResume, run,
+      });
     });
 
     return {
@@ -658,22 +691,11 @@ export class TranslationService {
     };
   }
 
-  private async processUnits(
-    sourceId: string,
-    novelId: string,
-    units: TranslationUnit[],
-    totalUnitCount: number,
-    realChapterCount: number,
-    sourceLang: string,
-    targetLang: string,
-    glossaryVersion: number,
-    profileVersion: number,
-    startCompletedUnits = 0,
-    startTranslated = 0,
-    startFailed = 0,
-    startTotalParagraphs = 0,
-    modelOverride?: string,
-  ): Promise<void> {
+  private async processUnits(options: ProcessTranslationUnitsOptions): Promise<void> {
+    const { sourceId, novelId, units, totalUnitCount, realChapterCount, sourceLang, targetLang,
+      glossaryVersion, profileVersion, startTranslated, startTotalParagraphs, resumeIncomplete, run } = options;
+    const { runId, runStartedAt } = run;
+    let { modelOverride } = options;
     const terms = this.#repository.listTranslationTerms(sourceId, novelId, 'confirmed');
     const profile = this.getTranslationProfile(sourceId, novelId);
     const paragraphsPerBatch = profile?.translationConcurrency ?? 2;
@@ -697,19 +719,19 @@ export class TranslationService {
       contextWindowTokens > 0 ? 999999 : 200, // Token 模式：极大条目数，由 Token 限制控制
       contextWindowTokens,
     );
-    const llmLogger = new LlmInteractionLogger(
-      undefined,
-      this.#preferences.getTranslationState().config.enableLlmInteractionLog,
-    );
+    const llmLogger = new LlmInteractionLogger({
+      enabled: this.#preferences.getTranslationState().config.enableLlmInteractionLog,
+      context: { runId },
+    });
 
     const abortKey = `${sourceId}:${novelId}`;
     const ac = new AbortController();
     this.#abortControllers.set(abortKey, ac);
 
     let translated = startTranslated;
-    let failed = startFailed;
+    let failed = 0;
+    let lastFailure: string | null = null;
     let totalParagraphsDone = startTotalParagraphs;
-    const runStartedAt = Date.now();
 
     // 闭包中引用的可变进度状态
     let progressChapterTitle = '';
@@ -731,6 +753,7 @@ export class TranslationService {
       historyManager,
       paragraphsPerBatch,
       llmLogger,
+      resumeIncomplete,
       abortSignal: ac.signal,
       onBatchProgress: (_batchParagraphs, totalCompleted) => {
         const nowTotal = totalParagraphsDone + totalCompleted;
@@ -741,7 +764,7 @@ export class TranslationService {
             message: `正在翻译… (${totalCompleted}/${progressChapterEstParagraphs}段)`,
             errorMessage: null,
             startedAt: new Date(runStartedAt).toISOString(), completedAt: null,
-            modelStatsJson: JSON.stringify({ runStartedAt }),
+            modelStatsJson: JSON.stringify(run),
             translatedChapters: translated, reviewedChapters: 0, failedChapters: failed,
             glossaryVersion, profileVersion,
             currentChapterTitle: progressChapterTitle,
@@ -755,9 +778,6 @@ export class TranslationService {
       ...(modelOverride ? { modelOverride } : {}),
     });
 
-    // 移除多余的重复日志行
-    let completedUnits = startCompletedUnits;
-
     // 确保合成翻译单元（元数据、卷标题）在 chapters 表中有傀儡记录，避免 FK 约束失败
     for (const unit of units) {
       if (unit.kind === 'meta' || unit.kind === 'volume') {
@@ -768,9 +788,11 @@ export class TranslationService {
     for (const unit of units) {
       if (ac.signal.aborted) { console.log(`[translation] 翻译已取消`); break; }
 
+      const label = unit.kind === 'meta' ? '元数据'
+        : unit.kind === 'volume' ? `卷「${unit.title}」`
+        : `第 ${unit.index} 章「${unit.title}」`;
       let unitOk = false;
-      let unitIndex = 0;
-      let unitTitle = unit.title;
+      let unitError: string | null = null;
 
       try {
         const contentHash = simpleHash(unit.content);
@@ -804,9 +826,6 @@ export class TranslationService {
           errorMessage: null,
         };
 
-        const label = unit.kind === 'meta' ? '元数据'
-          : unit.kind === 'volume' ? `卷「${unit.title}」`
-          : `第 ${unit.index} 章「${unit.title}」`;
         console.log(`[translation] 调用 LLM 翻译 ${label}...`);
 
         // 更新段落进度
@@ -815,11 +834,11 @@ export class TranslationService {
         progressChapterEstParagraphs = estParagraphs;
         this.#repository.saveTranslationBuild({
           sourceId, novelId, status: 'running', stage: 'translating',
-          progressPercent: totalUnitCount > 0 ? Math.round(((completedUnits + failed) / totalUnitCount) * 100) : 0,
+          progressPercent: totalUnitCount > 0 ? Math.round(((translated + failed) / totalUnitCount) * 100) : 0,
           message: `正在翻译 ${label}…`,
           errorMessage: null,
           startedAt: new Date(runStartedAt).toISOString(), completedAt: null,
-          modelStatsJson: JSON.stringify({ runStartedAt }),
+          modelStatsJson: JSON.stringify(run),
           translatedChapters: translated, reviewedChapters: 0, failedChapters: failed,
           glossaryVersion, profileVersion,
           currentChapterTitle: unit.title,
@@ -829,57 +848,32 @@ export class TranslationService {
           totalParagraphEstimate,
         });
 
-        await pipeline.invoke(state);
+        const result = await pipeline.invoke(state);
+        if (result.pauseRequested || ac.signal.aborted) break;
+        if (result.errorMessage) throw new Error(result.errorMessage);
 
         const saved = this.#repository.getChapterTranslation(sourceId, novelId, unit.id, sourceLang, targetLang);
-        if (saved && saved.status === 'completed') {
-          if (unit.kind === 'chapter') {
-            // 验证翻译是否真实发生
-            const paragraphs = this.#repository.listChapterTranslationParagraphs(sourceId, novelId, unit.id);
-            const hasRealTranslation = paragraphs.length > 0 && paragraphs.some(
-              (p) => p.translatedText && p.translatedText !== p.sourceText,
-            );
-            if (hasRealTranslation) {
-              unitOk = true;
-              console.log(`[translation] ✅ ${label}完成 (${paragraphs.length} 段)`);
-            } else {
-              console.log(`[translation] ⚠️ ${label}翻译未生效`);
-              try {
-                this.#repository.saveChapterTranslation({
-                  sourceId, novelId, chapterId: unit.id, sourceLang, targetLang,
-                  status: 'failed' as TranslationChapterStatus,
-                  sourceContentHash: contentHash,
-                  glossaryVersion, profileVersion,
-                });
-              } catch { /* ignore */ }
-            }
-          } else {
-            // meta / volume 单元：仅需确认 translatedTitle 非空
-            unitOk = true;
-            console.log(`[translation] ✅ ${label}完成`);
-          }
-        } else {
-          console.log(`[translation] ⚠️ ${label}状态: ${saved?.status ?? 'unknown'}`);
-          try {
-            this.#repository.saveChapterTranslation({
-              sourceId, novelId, chapterId: unit.id, sourceLang, targetLang,
-              status: 'failed' as TranslationChapterStatus,
-              sourceContentHash: contentHash,
-              glossaryVersion, profileVersion,
-            });
-          } catch { /* ignore */ }
+        if (!saved || saved.status !== 'completed' || !saved.translatedTitle?.trim()) {
+          throw new Error('翻译单元未完成保存。');
         }
+        unitOk = true;
+        console.log(`[translation] ✅ ${label}完成`);
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
-        const label = unit.kind === 'meta' ? '元数据'
-          : unit.kind === 'volume' ? `卷「${unit.title}」`
-          : `第 ${unit.index} 章「${unit.title}」`;
+        unitError = errMsg;
+        lastFailure = errMsg;
         console.error(`[translation] ❌ ${label}失败:`, errMsg);
+        const previous = this.#repository.getChapterTranslation(sourceId, novelId, unit.id, sourceLang, targetLang);
+        this.#repository.saveChapterTranslation({
+          ...previous, sourceId, novelId, chapterId: unit.id, sourceLang, targetLang,
+          status: 'failed', sourceContentHash: previous?.sourceContentHash ?? simpleHash(unit.content),
+          glossaryVersion: previous?.glossaryVersion ?? glossaryVersion,
+          profileVersion: previous?.profileVersion ?? profileVersion,
+        });
       }
 
       if (unitOk) {
         translated++;
-        completedUnits++;
       } else {
         failed++;
       }
@@ -887,7 +881,7 @@ export class TranslationService {
       // 段落计数（仅 chapter 单元有段落）
       let unitParagraphs = 0;
       try {
-        if (unit.kind === 'chapter') {
+        if (unitOk && unit.kind === 'chapter') {
           const paras = this.#repository.listChapterTranslationParagraphs(sourceId, novelId, unit.id);
           unitParagraphs = paras.length;
         }
@@ -901,10 +895,10 @@ export class TranslationService {
         stage: 'translating',
         progressPercent: totalUnitCount > 0 ? Math.round((total / totalUnitCount) * 100) : 0,
         message: `已译 ${translated}/${totalUnitCount} 单元 (${unitParagraphs}段)`,
-        errorMessage: null,
+        errorMessage: unitError,
         startedAt: new Date(runStartedAt).toISOString(),
         completedAt: null,
-        modelStatsJson: JSON.stringify({ runStartedAt }),
+        modelStatsJson: JSON.stringify(run),
         translatedChapters: translated,
         reviewedChapters: 0,
         failedChapters: failed,
@@ -922,7 +916,7 @@ export class TranslationService {
         sourceId, novelId,
         stage: 'translating',
         level: unitOk ? 'info' : 'warn',
-        message: `${unit.kind === 'meta' ? '元数据' : unit.kind === 'volume' ? `卷「${unit.title}」` : `第 ${unit.index} 章「${unit.title}」`}: ${unitOk ? '完成' : '失败'}`,
+        message: `${label}: ${unitOk ? '完成' : `失败：${unitError ?? '未知错误'}`}`,
       });
     }
 
@@ -931,14 +925,14 @@ export class TranslationService {
     this.#abortControllers.delete(abortKey);
     this.#repository.saveTranslationBuild({
       sourceId, novelId,
-      status: ac.signal.aborted ? 'failed' : 'completed',
-      stage: ac.signal.aborted ? 'failed' : 'completed',
+      status: ac.signal.aborted || failed > 0 ? 'failed' : 'completed',
+      stage: ac.signal.aborted || failed > 0 ? 'failed' : 'completed',
       progressPercent: 100,
       message: `翻译完成：${translated} 单元成功，${failed} 单元失败`,
-      errorMessage: null,
+      errorMessage: ac.signal.aborted ? '翻译已取消' : lastFailure,
       startedAt: new Date(runStartedAt).toISOString(),
       completedAt: new Date().toISOString(),
-      modelStatsJson: JSON.stringify({ runStartedAt }),
+      modelStatsJson: JSON.stringify(run),
       translatedChapters: translated,
       reviewedChapters: 0,
       failedChapters: failed,

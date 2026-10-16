@@ -404,6 +404,7 @@ test('control-center routes expose sources, preview and task lifecycle', async (
                 defaultFor: ['chat'],
                 translationMessageFormat: 'hy-mt2',
               },
+              { id: 'index', modelId: 'index-test', translationMessageFormat: 'bilibili-index-translate' },
             ],
           },
         ],
@@ -423,6 +424,13 @@ test('control-center routes expose sources, preview and task lifecycle', async (
     const reloadedLlm = await fetch(`${baseUrl}/api/control/preferences/llm-providers`);
     const reloadedPayload = await reloadedLlm.json() as typeof updateLlmPayload;
     assert.equal(reloadedPayload.providers[0]?.models[0]?.translationMessageFormat, 'hy-mt2');
+    assert.equal(updateLlmPayload.providers[0]?.models[1]?.translationMessageFormat, 'bilibili-index-translate');
+    assert.equal(reloadedPayload.providers[0]?.models[1]?.translationMessageFormat, 'bilibili-index-translate');
+    const invalidFormatResponse = await fetch(`${baseUrl}/api/control/preferences/llm-providers`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providers: [{ id: 'provider-1', models: [{ id: 'bad', translationMessageFormat: 'unsupported' }] }] }),
+    });
+    assert.equal(invalidFormatResponse.status, 400);
 
     const validateLlmResponse = await fetch(
       `${baseUrl}/api/control/preferences/llm-providers/provider-1/models/model-1/validate`,

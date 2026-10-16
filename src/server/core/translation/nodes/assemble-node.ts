@@ -7,6 +7,7 @@ import type { TranslationPipelineState, ParagraphDraft } from '../../translation
  * - 检查缺失译文并报告。
  */
 export async function assembleNode(state: TranslationPipelineState): Promise<Partial<TranslationPipelineState>> {
+  if (state.errorMessage) return {};
   // 如果已被暂停或取消，直接透传
   if (state.pauseRequested) {
     return { finalParagraphs: state.draftParagraphs };
@@ -18,14 +19,14 @@ export async function assembleNode(state: TranslationPipelineState): Promise<Par
     return { errorMessage: '无翻译草稿可组装。' };
   }
 
-  // 检查所有段落是否都有译文——缺失时记录警告但不阻塞保存
+  // 缺失译文必须阻止保存，避免覆盖已有有效结果。
   const missingTranslations = drafts.filter(
     (d) => !d.translatedText || d.translatedText.trim().length === 0,
   );
 
   if (missingTranslations.length > 0) {
     const missingIndices = missingTranslations.map((d) => d.paragraphIndex).join(', ');
-    console.warn(`[translation] assembleNode: ${missingTranslations.length} 段译文缺失 (索引: ${missingIndices})，将保留原文并标记`);
+    return { errorMessage: `译文缺失 (索引: ${missingIndices})，不保存失败单元。` };
   }
 
   // 按 paragraphIndex 排序确保顺序

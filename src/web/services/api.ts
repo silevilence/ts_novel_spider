@@ -1,3 +1,4 @@
+import type { TranslationMessageFormat } from '../../server/contracts/translation-message-format';
 import type { StoredTermExtractionRun, StoredTermTranslationRun, TranslationTermStatus } from '../../server/core/novel-repository';
 import type { TranslationProfile, TranslationProfileInput } from '../../server/core/translation-service';
 import type { HealthPayload } from '../../server/routes/health';
@@ -56,7 +57,7 @@ export interface UpdateLlmModelInput {
   capabilities: ModelCapability[];
   defaultFor: ModelCapability[];
   contextWindowTokens?: number;
-  translationMessageFormat?: 'general' | 'hy-mt2';
+  translationMessageFormat?: TranslationMessageFormat;
 }
 
 export interface UpdateLlmProviderInput {

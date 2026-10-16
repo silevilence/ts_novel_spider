@@ -1,3 +1,5 @@
+import { isTranslationMessageFormat, type TranslationMessageFormat } from '../contracts/translation-message-format';
+export type { TranslationMessageFormat } from '../contracts/translation-message-format';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,7 +16,6 @@ import { toError } from './spider';
 
 export type ModelCapability = 'chat' | 'embedding' | 'rerank';
 export type ModelCapabilityMode = 'manual' | 'auto';
-export type TranslationMessageFormat = 'general' | 'hy-mt2';
 export type LlmProviderType = 'openai-compatible' | 'anthropic' | 'google-generative-ai' | 'ollama';
 
 export interface LlmModelConfigInput {
@@ -801,7 +802,7 @@ function normalizeProviderInputs(inputs: LlmProviderConfigInput[]): StoredLlmPro
             capabilities: normalizeCapabilities(modelInput.capabilities ?? ['chat']),
             defaultFor: normalizeCapabilities(modelInput.defaultFor ?? []),
             contextWindowTokens: modelInput.contextWindowTokens ?? 0,
-            translationMessageFormat: modelInput.translationMessageFormat === 'hy-mt2' ? 'hy-mt2' as const : 'general' as const,
+            translationMessageFormat: normalizeTranslationMessageFormat(modelInput.translationMessageFormat),
           })),
         ),
       };
@@ -1544,7 +1545,7 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       ...provider,
       models: (provider.models ?? []).map((model) => ({
         ...model,
-        translationMessageFormat: model.translationMessageFormat === 'hy-mt2' ? 'hy-mt2' : 'general',
+        translationMessageFormat: normalizeTranslationMessageFormat(model.translationMessageFormat),
       })),
     }));
 
@@ -1737,4 +1738,9 @@ async function defaultNeo4jValidator(config: Neo4jConfig): Promise<Pick<Neo4jVal
   } finally {
     await driver.close();
   }
+}
+
+/** 存量/未知格式按通用格式迁移，专用格式独立于模型名称。 */
+function normalizeTranslationMessageFormat(value: unknown): TranslationMessageFormat {
+  return isTranslationMessageFormat(value) ? value : 'general';
 }

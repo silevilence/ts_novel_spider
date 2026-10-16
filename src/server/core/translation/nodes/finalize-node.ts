@@ -14,6 +14,7 @@ export async function finalizeNode(
   state: TranslationPipelineState,
   repository: SqliteNovelRepository,
 ): Promise<Partial<TranslationPipelineState>> {
+  if (state.errorMessage) return {};
   // 如果已被暂停或取消，不持久化（保留草稿供恢复）
   if (state.pauseRequested) {
     console.log(`[translation] finalizeNode: 翻译已暂停，跳过持久化`);
@@ -26,6 +27,10 @@ export async function finalizeNode(
   }
 
   const allParagraphs = state.finalParagraphs.length > 0 ? state.finalParagraphs : state.draftParagraphs;
+  if (allParagraphs.some((p) => !p.translatedText.trim())
+    || state.segments.some((segment) => !allParagraphs.some((p) => p.paragraphIndex === segment.paragraphIndex))) {
+    return { errorMessage: '译文不完整，不覆盖已有译文。' };
+  }
 
   if (allParagraphs.length === 0) {
     return { errorMessage: '无翻译结果可保存。' };

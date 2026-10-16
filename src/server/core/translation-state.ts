@@ -1,5 +1,20 @@
 import type { TranslationLanguageCode, TranslationChapterStatus, TranslationBuildStage } from './novel-repository';
 
+export type TranslationErrorCategory = 'empty_response' | 'format_mismatch' | 'prompt_echo' | 'api_error' | 'timeout' | 'cancelled';
+
+/** 段落失败记录；在当前流水线内生成用户可见的错误摘要。 */
+export interface TranslationFailureDetail {
+  category: TranslationErrorCategory;
+  paragraphIndices: number[];
+  message: string;
+}
+
+/** 同章已处理段落的背景；没有有效译文时仅允许使用其原文。 */
+export interface TranslationBackgroundParagraph {
+  sourceText: string;
+  translatedText?: string;
+}
+
 /** 翻译段（段落级切分结果） */
 export interface TranslationSegment {
   id: string;

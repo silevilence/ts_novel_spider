@@ -1,3 +1,4 @@
+import { isTranslationMessageFormat } from '../contracts/translation-message-format';
 import { Router } from 'express';
 import CronExpressionParser from 'cron-parser';
 
@@ -739,8 +740,8 @@ function parseLlmModels(value: unknown, providerIndex: number): NonNullable<LlmP
     const modelId = optionalStringField(entry.modelId);
     const capabilityMode = optionalCapabilityMode(entry.capabilityMode);
     const translationMessageFormat = entry.translationMessageFormat;
-    if (translationMessageFormat !== undefined && translationMessageFormat !== 'general' && translationMessageFormat !== 'hy-mt2') {
-      throw new Error('translationMessageFormat must be general or hy-mt2.');
+    if (translationMessageFormat !== undefined && !isTranslationMessageFormat(translationMessageFormat)) {
+      throw new Error('translationMessageFormat must be general, hy-mt2 or bilibili-index-translate.');
     }
 
     return {

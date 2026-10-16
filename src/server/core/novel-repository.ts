@@ -3091,6 +3091,16 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .run(sourceId, novelId);
   }
 
+  /** 按复合主键读取单章检查点，恢复时不加载整本书的草稿 JSON。 */
+  getTranslationBuildCheckpoint(sourceId: string, novelId: string, chapterId: string): StoredTranslationBuildCheckpointRow | null {
+    const row = this.#database.prepare(`
+      SELECT source_id, novel_id, chapter_id, chapter_index, stage, pipeline_state_json, warning_message, updated_at
+      FROM novel_translation_build_checkpoints
+      WHERE source_id = ? AND novel_id = ? AND chapter_id = ?
+    `).get(sourceId, novelId, chapterId) as TranslationBuildCheckpointRow | undefined;
+    return row ? mapTranslationBuildCheckpointRow(row) : null;
+  }
+
   listTranslationBuildCheckpoints(sourceId: string, novelId: string): StoredTranslationBuildCheckpointRow[] {
     return this.#database
       .prepare(

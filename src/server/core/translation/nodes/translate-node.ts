@@ -1,3 +1,4 @@
+import { redactSecrets } from './redact-secrets';
 import { randomUUID } from 'node:crypto';
 import { generateText, stepCountIs, type ToolSet, type LanguageModel } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -5,20 +6,24 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOllama } from 'ai-sdk-ollama';
 
-import type { TranslationPipelineState, ParagraphDraft, TranslationTermEntry } from '../../translation-state';
+import type { TranslationPipelineState, ParagraphDraft, TranslationTermEntry, TranslationBackgroundParagraph, TranslationFailureDetail } from '../../translation-state';
 import type { TranslationHistoryManager } from './history-manager';
 import type { LlmInteractionLogger } from './llm-logger';
 import type { SystemPreferencesService, LlmProviderConfig } from '../../system-preferences';
+import type { TranslationMessageFormat } from '../../../contracts/translation-message-format';
 import { resolveTranslationModel } from '../../translation-pipeline';
-import { batchHyMt2Segments, buildHyMt2Prompt, hasHyMt2GlossaryEcho, hasHyMt2BackgroundEcho, selectTranslationTerms, mergeHyMt2Drafts } from './hy-mt2-messages';
+import { buildIndexTranslatePrompt, detectIndexTranslatePromptEcho } from './index-translate-messages';
+import { classifyTranslationFailure, canFallbackToSingle, TranslationFailure } from './translation-failure';
+import { buildHyMt2Prompt, detectHyMt2PromptEcho } from './hy-mt2-messages';
+import { batchTranslationSegments, hasTranslationGlossaryEcho, hasTranslationBackgroundEcho, selectTranslationTerms, mergeTranslationDrafts } from './translation-prompt-materials';
 
-interface HyMt2Context {
+/** 专用翻译格式的材料边界；背景由当前单元的相邻原文和有效草稿构建。 */
+interface TranslationPromptContext {
+  format: Exclude<TranslationMessageFormat, 'general'>;
+  sourceLang: string;
   targetLang: string;
-  previousParagraphs: ParagraphDraft[];
+  previousParagraphs: TranslationBackgroundParagraph[];
 }
-
-/** 批量段落翻译的分隔符：LLM 必须保持此分隔符以支持本地拆分 */
-const BATCH_SEPARATOR = '\n\n---\n\n';
 
 /** 备选分隔符列表（按优先级尝试拆分） */
 const FALLBACK_SEPARATORS = ['\n\n---\n\n', '\n---\n', '\n\n---', '---\n\n', '---'];
@@ -61,7 +66,7 @@ export async function generateRefinedTranslationText(
   }
 
   const result = await generateText({
-    model: createLanguageModel(provider, route.modelId, route.thinkingEnabled),
+    model: createLanguageModel(provider, route.modelId, { thinkingEnabled: route.thinkingEnabled }),
     system,
     prompt,
     ...(abortSignal ? { abortSignal } : {}),
@@ -84,7 +89,7 @@ export async function runRefinedTranslationToolAgent(
   const provider = getProvider(preferences, route.providerId);
   if (!provider) throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
   const result = await generateText({
-    model: createLanguageModel(provider, route.modelId, route.thinkingEnabled),
+    model: createLanguageModel(provider, route.modelId, { thinkingEnabled: route.thinkingEnabled }),
     system,
     prompt,
     tools,
@@ -103,6 +108,17 @@ export async function runRefinedTranslationToolAgent(
   return { text: result.text.trim(), toolCallCount: result.toolCalls.length, toolCalls: result.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })) };
 }
 
+/** 翻译节点所需的模型、上下文与请求控制选项。 */
+export interface TranslateNodeOptions {
+  preferences: SystemPreferencesService;
+  historyManager: TranslationHistoryManager;
+  paragraphsPerBatch: number;
+  llmLogger?: LlmInteractionLogger;
+  onBatchProgress?: (batchParagraphs: number, totalCompleted: number) => void;
+  modelOverride?: string;
+  abortSignal?: AbortSignal;
+}
+
 /**
  * 翻译节点：批量段落翻译 + 对话历史上下文。
  *
@@ -115,14 +131,10 @@ export async function runRefinedTranslationToolAgent(
  */
 export async function translateNode(
   state: TranslationPipelineState,
-  preferences: SystemPreferencesService,
-  historyManager: TranslationHistoryManager,
-  paragraphsPerBatch: number,
-  llmLogger?: LlmInteractionLogger,
-  onBatchProgress?: (batchParagraphs: number, totalCompleted: number) => void,
-  modelOverride?: string,
-  abortSignal?: AbortSignal,
+  options: TranslateNodeOptions,
 ): Promise<Partial<TranslationPipelineState>> {
+  const { preferences, historyManager, paragraphsPerBatch, onBatchProgress, modelOverride, abortSignal } = options;
+  let { llmLogger } = options;
   const modelRoute = resolveTranslationModel(preferences, modelOverride);
   if (!modelRoute) {
     return { errorMessage: '未找到可用的翻译模型——请在设置中配置并启用一个 chat 模型。' };
@@ -133,340 +145,248 @@ export async function translateNode(
     return { errorMessage: `翻译模型提供商 ${modelRoute.providerId} 未找到。` };
   }
 
-  const model = createLanguageModel(provider, modelRoute.modelId);
-  const useHyMt2 = provider.models.find((m) => m.modelId === modelRoute.modelId)?.translationMessageFormat === 'hy-mt2';
-  const hyMt2: HyMt2Context | undefined = useHyMt2 ? { targetLang: state.targetLang, previousParagraphs: [] } : undefined;
-  console.log(`[translation] translateNode: provider=${provider.type} model=${modelRoute.modelId} paragraphsPerBatch=${paragraphsPerBatch} ${historyManager.summary()}`);
-
-  llmLogger = llmLogger?.withContext({ sourceId: state.sourceId, novelId: state.novelId, chapterId: state.chapterId, unitKind: state.unitKind });
+  const format = provider.models.find((m) => m.modelId === modelRoute.modelId)?.translationMessageFormat ?? 'general';
+  const dedicated = format !== 'general';
+  const model = createLanguageModel(provider, modelRoute.modelId, format === 'bilibili-index-translate' ? { thinkingEnabled: false, chatTemplateThinking: false } : {});
+  const promptContext: TranslationPromptContext | undefined = dedicated
+    ? { format, sourceLang: state.sourceLang, targetLang: state.targetLang, previousParagraphs: [] } : undefined;
+  llmLogger = llmLogger?.withSecrets([provider.apiKey]).withContext({ sourceId: state.sourceId, novelId: state.novelId, chapterId: state.chapterId, unitKind: state.unitKind });
   const systemPrompt = buildTranslationSystemPrompt(state.sourceLang, state.targetLang, '');
   const totalSegments = state.segments.length;
   console.log(`[translation] 开始翻译共 ${totalSegments} 个段落，每批 ${paragraphsPerBatch} 段`);
 
-  const drafts: ParagraphDraft[] = [];
+  const drafts = state.draftParagraphs.filter((draft) => draft.translatedText.trim()
+    && state.segments.some((segment) => segment.paragraphIndex === draft.paragraphIndex && segment.sourceText === draft.sourceText));
   const modelIdStr = `${modelRoute.providerId}:${modelRoute.modelId}`;
 
-  // 按 paragraphsPerBatch 分组段落
-  const batches = useHyMt2 ? batchHyMt2Segments(state.segments, paragraphsPerBatch) : chunkArray(state.segments, paragraphsPerBatch);
-  const completedDrafts = () => useHyMt2 ? mergeHyMt2Drafts(state.segments, drafts) : drafts;
-
-  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-    const batch = batches[batchIdx]!;
-
-    if (state.pauseRequested || abortSignal?.aborted) {
-      console.log(`[translation] 翻译中断: 批 ${batchIdx + 1}/${batches.length}`);
-      return { draftParagraphs: completedDrafts(), pauseRequested: true };
-    }
-
-    const batchStartIdx = batch[0]!.paragraphIndex + 1;
-    const batchEndIdx = batch[batch.length - 1]!.paragraphIndex + 1;
-    console.log(`[translation] 批 ${batchIdx + 1}/${batches.length} (段 ${batchStartIdx}-${batchEndIdx}, ${batch.length} 段)...`);
-
-    try {
-      const batchDrafts = await translateBatch(
-        batch,
-        model,
-        systemPrompt,
-        state.glossary,
-        modelIdStr,
-        historyManager,
-        llmLogger,
-        hyMt2,
-      );
-      drafts.push(...batchDrafts);
-
-      // 仅当本批所有段落都有有效译文时才追加到对话历史
-      // 历史以 EXACT 原始格式存储，保证 KV Cache 前缀匹配
-      const allValid = batchDrafts.every(
-        (d) => d.translatedText && d.translatedText.length > 0,
-      );
-      if (allValid && !useHyMt2) {
-        const batchPrompt = buildBatchPrompt(batch);
-        const batchResponse = batchDrafts.map((d) => d.translatedText).join('\n---\n');
-        historyManager.addEntry(batchPrompt, batchResponse);
-      }
-
-      // 通知外部批次完成（用于实时进度条）
-      if (hyMt2) hyMt2.previousParagraphs = completedDrafts().slice(-2);
-      onBatchProgress?.(batch.length, completedDrafts().length);
-
-      console.log(`[translation] 批 ${batchIdx + 1}/${batches.length} 完成 (${batchDrafts.length} 段译文${allValid && !useHyMt2 ? ', 已入历史' : ''})`);
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[translation] 批 ${batchIdx + 1}/${batches.length} 整体失败:`, errMsg);
-
-      // 批量失败时回退到逐段单独翻译（即时执行，保证顺序）
-      console.log(`[translation] 回退逐段翻译 ${batch.length} 段...`);
-      for (let si = 0; si < batch.length; si++) {
-        const segment = batch[si]!;
-
-        // 回退路径也检查暂停
-        if (state.pauseRequested || abortSignal?.aborted) {
-          console.log(`[translation] 回退中翻译中断: 段索引 ${segment.paragraphIndex}`);
-          return { draftParagraphs: completedDrafts(), pauseRequested: true };
-        }
-
-        console.log(`[translation]   回退段 ${si + 1}/${batch.length} (段索引 ${segment.paragraphIndex}, ${segment.sourceText.length} 字)...`);
-        try {
-          const singleDraft = hyMt2 ? (await translateBatch(
-            [segment], model, systemPrompt, state.glossary, modelIdStr, historyManager, llmLogger, hyMt2,
-          ))[0]! : await translateSingleSegment(
-            segment,
-            model,
-            systemPrompt,
-            state.glossary,
-            modelIdStr,
-            llmLogger,
-            hyMt2,
-          );
-          drafts.push(singleDraft);
-          // 逐段成功时也追加到历史，保持上下文连贯
-          if (!useHyMt2 && singleDraft.translatedText && singleDraft.translatedText.length > 0) {
-            historyManager.addEntry(segment.sourceText, singleDraft.translatedText);
-          }
-          // 通知进度（回退段也算完成）
-          if (hyMt2) hyMt2.previousParagraphs = completedDrafts().slice(-2);
-          onBatchProgress?.(1, completedDrafts().length);
-        } catch (singleError) {
-          const singleMsg = singleError instanceof Error ? singleError.message : String(singleError);
-          console.error(`[translation] 段 ${segment.paragraphIndex} 回退也失败:`, singleMsg);
-          drafts.push({
-            paragraphIndex: segment.paragraphIndex,
-            sourceText: segment.sourceText,
-            translatedText: '',
-            confidence: 0,
-            appliedTermIds: [],
-            modelId: modelIdStr,
-          });
-          if (hyMt2) hyMt2.previousParagraphs = completedDrafts().slice(-2);
-        }
-      }
-    }
-  }
-
-  console.log(`[translation] 翻译全部完成: ${drafts.length} 段译文, ${historyManager.summary()}`);
-  return {
-    draftParagraphs: completedDrafts(),
-    translatorModelId: modelIdStr,
+  const pendingSegments = state.segments.filter((segment) => !drafts.some((draft) => draft.paragraphIndex === segment.paragraphIndex));
+  const batches = dedicated ? batchTranslationSegments(pendingSegments, paragraphsPerBatch) : chunkArray(pendingSegments, Math.max(1, paragraphsPerBatch));
+  const completedDrafts = () => dedicated ? mergeTranslationDrafts(state.segments, drafts) : drafts;
+  const validDrafts = () => completedDrafts().filter((draft) => draft.translatedText.trim());
+  const translationFailures: TranslationFailureDetail[] = [];
+  const recordSuccess = (result: ParagraphDraft[], batch: typeof state.segments, options: { fromFallback?: boolean } = {}) => {
+    const before = validDrafts().length;
+    drafts.push(...result);
+    if (!promptContext) historyManager.addEntry(options.fromFallback ? batch[0]!.sourceText : buildBatchPrompt(batch), result.map((draft) => draft.translatedText).join('\n---\n'));
+    const completed = validDrafts().length;
+    onBatchProgress?.(completed - before, completed);
   };
-}
+  const recordFailure = (batch: typeof state.segments, error: unknown) => {
+    const failure = classifyTranslationFailure(error, { cancelled: abortSignal?.aborted === true });
+    const message = `[${failure.category}] 段落 ${batch.map((s) => s.paragraphIndex).join(', ')}：${failure.message}`;
+    translationFailures.push({ category: failure.category, paragraphIndices: batch.map((s) => s.paragraphIndex), message: failure.message });
+    console.error(`[translation] 最终失败 ${message}`);
+    // 留下空草稿仅供状态诊断；错误路由阻止任何失败单元落库。
+    drafts.push(...batch.map((segment) => ({ ...segment, translatedText: '', confidence: 0, appliedTermIds: [], modelId: modelIdStr })));
+  };
 
-/**
- * 翻译一批段落（一次 LLM 调用）。
- * 失败时先重试 3 次（温度递进），仍失败再回退逐段翻译。
- * 遇到上下文溢出错误时自动裁剪历史后重试。
- */
-async function translateBatch(
-  batch: Array<{ paragraphIndex: number; sourceText: string; id: string }>,
-  model: LanguageModel,
-  systemPrompt: string,
-  glossary: TranslationTermEntry[],
-  modelIdStr: string,
-  historyManager: TranslationHistoryManager,
-  llmLogger?: LlmInteractionLogger,
-  hyMt2?: HyMt2Context,
-): Promise<ParagraphDraft[]> {
-  let lastError: Error | null = null;
-  let includeBackground = true;
-  let includeGlossary = true;
-  const maxRetries = 3;
-  // 温度递进：0.3 → 0.45 → 0.6 → 0.75（每次提高不稳定性以尝试不同输出）
-  const retryTemperatures = [0.3, 0.45, 0.6, 0.75];
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const temperature = retryTemperatures[attempt] ?? 0.3;
-    const batchPrompt = hyMt2 ? buildHyMt2Prompt(batch, hyMt2.targetLang, includeGlossary ? glossary : [], includeBackground ? hyMt2.previousParagraphs : []) : buildBatchPrompt(batch);
-    const historyMessages = hyMt2 ? [] : historyManager.buildHistoryMessages();
-
-    console.log(`[translation] 调用 LLM (尝试 ${attempt + 1}/${maxRetries + 1}, ${batch.length} 段, ${historyMessages.length} 条历史, temp=${temperature})`);
-
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      ...historyMessages,
-      { role: 'user', content: batchPrompt },
-    ];
-
-    const requestSystemPrompt = hyMt2 ? '' : appendTranslationGlossary(systemPrompt, selectTranslationTerms(batch, glossary));
-    const maxOutputTokens = Math.max(batch.reduce((sum, segment) => sum + segment.sourceText.length, 0) * 3, 512);
-    const callStart = Date.now();
-    const logParams = {
-      provider: modelIdStr.slice(0, modelIdStr.indexOf(':')),
-      model: modelIdStr.slice(modelIdStr.indexOf(':') + 1),
-      systemPrompt: requestSystemPrompt, userPrompt: batchPrompt, messages,
-      callId: randomUUID(), attempt: attempt + 1,
-      paragraphIndices: batch.map((segment) => segment.paragraphIndex), temperature, maxOutputTokens,
-    };
-    let responseText = '';
-    let errorMessage: string | undefined;
-    llmLogger?.logCall({ ...logParams, event: 'request', response: '', durationMs: 0 });
+  const batchOptions: TranslationBatchOptions = {
+    model, systemPrompt, glossary: state.glossary, modelIdStr, historyManager,
+    llmLogger, context: promptContext, abortSignal, secrets: [provider.apiKey],
+  };
+  const updateBackground = (paragraphIndex: number) => {
+    if (!promptContext) return;
+    const valid = validDrafts();
+    promptContext.previousParagraphs = state.segments.filter((segment) => segment.paragraphIndex < paragraphIndex).slice(-2)
+      .map((segment) => ({ sourceText: segment.sourceText, translatedText: valid.find((draft) => draft.paragraphIndex === segment.paragraphIndex)?.translatedText ?? '' }));
+  };
+  for (const batch of batches) {
+    if (state.pauseRequested || abortSignal?.aborted) return { draftParagraphs: completedDrafts(), pauseRequested: true };
+    updateBackground(batch[0]!.paragraphIndex);
     try {
-      const result = await generateText({
-        model,
-        ...(hyMt2 ? {} : { system: requestSystemPrompt }),
-        messages,
-        temperature,
-        maxOutputTokens,
-        maxRetries: 0,
-        abortSignal: AbortSignal.timeout(120000),
-      });
-
-      // 打印 DeepSeek 缓存命中信息
-      // @ai-sdk/deepseek 会放在 providerMetadata.deepseek 中；
-      // 用 createOpenAI 时字段在原始响应的 response.body.usage 中
-      try {
-        const raw = result as unknown as Record<string, unknown>;
-        const providerMeta = raw.providerMetadata as Record<string, Record<string, number>> | undefined;
-        let hit: number | undefined;
-        let miss: number | undefined;
-
-        // 路径 1: providerMetadata.deepseek / providerMetadata.<name>
-        if (providerMeta) {
-          for (const key of Object.keys(providerMeta)) {
-            const val = providerMeta[key];
-            if (val && typeof val.promptCacheHitTokens === 'number') {
-              hit = val.promptCacheHitTokens;
-              miss = val.promptCacheMissTokens as number | undefined;
-              break;
-            }
-          }
-        }
-
-        // 路径 2: response.body.usage.prompt_cache_hit_tokens（原始 HTTP 响应）
-        if (typeof hit !== 'number') {
-          const resp = raw.response as Record<string, unknown> | undefined;
-          const body = resp?.body as Record<string, unknown> | undefined;
-          const usage = body?.usage as Record<string, number> | undefined;
-          if (usage) {
-            hit = usage.prompt_cache_hit_tokens;
-            miss = usage.prompt_cache_miss_tokens;
-          }
-        }
-
-        if (typeof hit === 'number' || typeof miss === 'number') {
-          const total = (hit ?? 0) + (miss ?? 0);
-          const rate = total > 0 ? Math.round(((hit ?? 0) / total) * 100) : 0;
-          console.log(`[translation] DS Cache: hit=${hit ?? '?'} miss=${miss ?? '?'} total=${total} rate=${rate}%`);
-        }
-      } catch { /* ignore */ }
-
-      responseText = result.text;
-      if (hyMt2) {
-        const sourceText = batch.map((segment) => segment.sourceText).join('\n');
-        if (hasHyMt2GlossaryEcho(responseText, sourceText, glossary)) {
-          // 不清洗后冒充译文；移除造成回显的参考材料，重新翻译当前正文。
-          includeGlossary = false;
-          includeBackground = false;
-          throw new Error('HY-MT2 返回了术语表，去除参考材料后重试当前待译文本。');
-        }
-        if (hasHyMt2BackgroundEcho(responseText, batch, hyMt2.previousParagraphs)) {
-          includeBackground = false;
-          throw new Error('HY-MT2 重复了前文背景，去除背景后重试当前待译文本。');
-        }
-        const echoedSection = ['【背景信息】', '【待翻译文本】', '参考下面的翻译：']
-          .some((section) => responseText.includes(section) && !sourceText.includes(section));
-        if (echoedSection) {
-          // 小模型可能把背景当成正文；本次请求重试时去除可选背景，保留术语与待译文本。
-          includeBackground = false;
-          throw new Error('HY-MT2 返回了提示词区块，去除背景后重试当前待译文本。');
-        }
-      }
-
-      const drafts = splitBatchResponse(responseText.trim(), batch, glossary, modelIdStr);
-      if (hyMt2 && drafts.some((draft) => hasHyMt2BackgroundEcho(draft.translatedText, [draft], hyMt2.previousParagraphs))) {
-        includeBackground = false;
-        throw new Error('HY-MT2 部分段落重复了前文背景，去除背景后重试当前待译文本。');
-      }
-      return drafts;
+      recordSuccess(await translateBatch(batch, batchOptions), batch);
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      const errMsg = lastError.message;
-      errorMessage = errMsg;
-
-      // 检测是否是上下文超标错误
-      if (!hyMt2 && isContextOverflowError(errMsg) && historyManager.size > 0) {
-        const discardCount = Math.max(2, Math.ceil(historyManager.size / 2));
-        console.warn(`[translation] 上下文超标，舍弃 ${discardCount} 条旧历史后重试 (${historyManager.size} → ${Math.max(0, historyManager.size - discardCount)})`);
-        historyManager.discardOldest(discardCount);
+      if (abortSignal?.aborted) return { draftParagraphs: completedDrafts(), pauseRequested: true };
+      const failure = classifyTranslationFailure(error);
+      // 只有拆分粒度能够修复的失败进入回退；网络/空输出耗尽后直接失败。
+      if (batch.length === 1 || !canFallbackToSingle(failure.category)) {
+        recordFailure(batch, failure);
         continue;
       }
-
-      // 达到最大重试次数，抛出以触发回退
-      if (attempt >= maxRetries) {
-        console.warn(`[translation] 批次翻译 ${maxRetries + 1} 次尝试均失败，回退逐段翻译: ${errMsg}`);
-        throw lastError;
+      for (const segment of batch) {
+        if (state.pauseRequested || abortSignal?.aborted) return { draftParagraphs: completedDrafts(), pauseRequested: true };
+        try {
+          // fallback 日志由下方请求层在真正发起单段请求前写入。
+          updateBackground(segment.paragraphIndex);
+          recordSuccess(await translateBatch([segment], batchOptions, failure), [segment], { fromFallback: true });
+        } catch (singleError) {
+          if (abortSignal?.aborted) return { draftParagraphs: completedDrafts(), pauseRequested: true };
+          recordFailure([segment], singleError);
+        }
       }
-      console.warn(`[translation] 翻译失败，第 ${attempt + 1} 次重试 (temp=${temperature}→${retryTemperatures[attempt + 1]}): ${errMsg}`);
-    } finally {
-      llmLogger?.logCall({ ...logParams, event: 'response', response: responseText, durationMs: Date.now() - callStart, ...(errorMessage ? { error: errorMessage } : {}) });
     }
   }
-
-  throw lastError ?? new Error('翻译批次失败，已达最大重试次数');
+  return {
+    draftParagraphs: completedDrafts(), translatorModelId: modelIdStr,
+    errorMessage: translationFailures.length ? translationFailures.map((failure) => `[${failure.category}] 段落 ${failure.paragraphIndices.join(', ')}：${failure.message}`).join('; ') : null,
+  };
 }
 
-/**
- * 逐段单独翻译（回退策略）。
- */
-async function translateSingleSegment(
-  segment: { paragraphIndex: number; sourceText: string; id: string },
-  model: LanguageModel,
-  systemPrompt: string,
-  glossary: TranslationTermEntry[],
-  modelIdStr: string,
-  llmLogger?: LlmInteractionLogger,
-  hyMt2?: HyMt2Context,
-): Promise<ParagraphDraft> {
-  const userPrompt = hyMt2 ? buildHyMt2Prompt([segment], hyMt2.targetLang, glossary, hyMt2.previousParagraphs) : segment.sourceText;
-  const requestSystemPrompt = hyMt2 ? '' : appendTranslationGlossary(systemPrompt, selectTranslationTerms([segment], glossary));
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [{ role: 'user', content: userPrompt }];
-  const maxOutputTokens = Math.max(segment.sourceText.length * 3, 256);
-  const callStart = Date.now();
-  const logParams = {
-    provider: modelIdStr.slice(0, modelIdStr.indexOf(':')), model: modelIdStr.slice(modelIdStr.indexOf(':') + 1),
-    systemPrompt: requestSystemPrompt, userPrompt, messages, callId: randomUUID(),
-    paragraphIndices: [segment.paragraphIndex], temperature: 0.3, maxOutputTokens,
-  };
-  let responseText = '';
-  let errorMessage: string | undefined;
-  llmLogger?.logCall({ ...logParams, event: 'request', response: '', durationMs: 0 });
-  try {
-    const result = await generateText({ model, ...(hyMt2 ? {} : { system: requestSystemPrompt }), messages, temperature: 0.3, maxOutputTokens, maxRetries: 0, abortSignal: AbortSignal.timeout(60000) });
-    responseText = result.text;
-  } catch (error) {
-    errorMessage = error instanceof Error ? error.message : String(error);
-    throw error;
-  } finally {
-    llmLogger?.logCall({ ...logParams, event: 'response', response: responseText, durationMs: Date.now() - callStart, ...(errorMessage ? { error: errorMessage } : {}) });
+/** 一轮翻译请求所共享的依赖与输出安全策略。 */
+interface TranslationBatchOptions {
+  model: LanguageModel;
+  systemPrompt: string;
+  glossary: TranslationTermEntry[];
+  modelIdStr: string;
+  historyManager: TranslationHistoryManager;
+  llmLogger: LlmInteractionLogger | undefined;
+  context: TranslationPromptContext | undefined;
+  abortSignal: AbortSignal | undefined;
+  secrets: readonly string[];
+}
+
+/** 每次请求最多四次尝试；格式不匹配立即交由调用方决定是否拆分。 */
+async function translateBatch(
+  batch: Array<{ paragraphIndex: number; sourceText: string; id: string }>,
+  options: TranslationBatchOptions,
+  fallbackFrom?: TranslationFailure,
+): Promise<ParagraphDraft[]> {
+  const { model, systemPrompt, glossary, modelIdStr, historyManager, llmLogger, context, abortSignal, secrets } = options;
+  let includeBackground = true;
+  let includeGlossary = true;
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    abortSignal?.throwIfAborted();
+    const terms = includeGlossary ? glossary : [];
+    const background = includeBackground ? context?.previousParagraphs ?? [] : [];
+    const prompt = context?.format === 'bilibili-index-translate'
+      ? buildIndexTranslatePrompt(batch, { sourceLang: context.sourceLang, targetLang: context.targetLang, glossary: terms, previousParagraphs: background })
+      : context ? buildHyMt2Prompt(batch, context.targetLang, terms, background)
+      : fallbackFrom ? batch[0]!.sourceText : buildBatchPrompt(batch);
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      ...(!context && !fallbackFrom ? historyManager.buildHistoryMessages() : []), { role: 'user', content: prompt },
+    ];
+    const requestSystemPrompt = context ? '' : appendTranslationGlossary(systemPrompt, selectTranslationTerms(batch, glossary));
+    const phase = batch.length > 1 ? (attempt === 1 ? 'batch' : 'batch_retry') : (attempt === 1 ? 'single' : 'single_retry');
+    const logParams = {
+      provider: modelIdStr.slice(0, modelIdStr.indexOf(':')), model: modelIdStr.slice(modelIdStr.indexOf(':') + 1),
+      systemPrompt: requestSystemPrompt, userPrompt: prompt, messages, callId: randomUUID(),
+      attempt, maxAttempts, paragraphIndices: batch.map((s) => s.paragraphIndex),
+      // 书库翻译的请求策略：仅 Index 固定为 0，通用与 HY-MT2 沿用 0.3。
+      temperature: context?.format === 'bilibili-index-translate' ? 0 : 0.3,
+      maxOutputTokens: Math.max(batch.reduce((sum, s) => sum + s.sourceText.length, 0) * 3, 512),
+    };
+    if (fallbackFrom && attempt === 1) {
+      console.log(`[translation] 回退逐段翻译：段落 ${batch[0]!.paragraphIndex}`);
+      llmLogger?.logCall({ ...logParams, event: 'fallback', phase: 'fallback', errorCategory: fallbackFrom.category, response: '', durationMs: 0 });
+    }
+    console.log(`[translation] ${phase} 段落 ${logParams.paragraphIndices.join(',')} 尝试 ${attempt}/${maxAttempts}`);
+    const startedAt = Date.now();
+    let responseText = '';
+    let failure: TranslationFailure | undefined;
+    let terminal = false;
+    let finishReason: string | undefined;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    llmLogger?.logCall({ ...logParams, event: 'request', phase, response: '', durationMs: 0 });
+    try {
+      const timeout = AbortSignal.timeout(120000);
+      const result = await generateText({
+        model, ...(context ? {} : { system: requestSystemPrompt }), messages,
+        temperature: logParams.temperature, maxOutputTokens: logParams.maxOutputTokens, maxRetries: 0,
+        abortSignal: abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout,
+      });
+      responseText = result.text;
+      finishReason = result.rawFinishReason;
+      inputTokens = result.usage.inputTokens;
+      outputTokens = result.usage.outputTokens;
+      logDeepSeekCache(result.providerMetadata, result.response.body);
+      if (!responseText.trim()) throw new TranslationFailure('empty_response', '模型返回空响应（含纯空白）。');
+      if (context) {
+        const source = batch.map((s) => s.sourceText).join('\n');
+        const echo = context.format === 'hy-mt2' ? detectHyMt2PromptEcho(responseText, source) : detectIndexTranslatePromptEcho(responseText, source);
+        echo.glossary ||= hasTranslationGlossaryEcho(responseText, source, glossary);
+        echo.background ||= hasTranslationBackgroundEcho(responseText, batch, context.previousParagraphs);
+        const removed: string[] = [];
+        if (echo.glossary) { includeGlossary = false; removed.push('术语'); }
+        if (echo.background) { includeBackground = false; removed.push('背景'); }
+        if (echo.glossary || echo.background || echo.template) {
+          throw new TranslationFailure('prompt_echo', removed.length
+            ? `响应回显${removed.join('及')}；本批后续重试禁用${removed.join('及')}参考。`
+            : '响应回显提示词区块；保留术语和背景材料进行有限重试。');
+        }
+      }
+      const resultDrafts = splitBatchResponse(responseText.trim(), batch, glossary, modelIdStr, context?.format);
+      if (context && resultDrafts.some((draft) => hasTranslationBackgroundEcho(draft.translatedText, [draft], context.previousParagraphs))) {
+        includeBackground = false;
+        throw new TranslationFailure('prompt_echo', '段落回显背景；本批后续重试禁用背景参考。');
+      }
+      return resultDrafts;
+    } catch (error) {
+      failure = classifyTranslationFailure(error, { cancelled: abortSignal?.aborted === true });
+      failure = new TranslationFailure(failure.category, redactSecrets(failure.message, secrets));
+      terminal = attempt === maxAttempts || failure.category === 'format_mismatch' || abortSignal?.aborted === true;
+      if (terminal) throw failure;
+      if (!context && isContextOverflowError(failure.message) && historyManager.size > 0) {
+        historyManager.discardOldest(Math.max(2, Math.ceil(historyManager.size / 2)));
+      }
+      console.warn(`[translation] ${phase} 失败 [${failure.category}]，准备第 ${attempt + 1}/${maxAttempts} 次尝试：${failure.message}`);
+    } finally {
+      const responseLog = {
+        ...logParams, phase, event: 'response', response: responseText,
+        durationMs: Date.now() - startedAt, finishReason, inputTokens, outputTokens,
+        ...(failure ? { error: failure.message, errorCategory: failure.category } : {}),
+      } satisfies Parameters<LlmInteractionLogger['logCall']>[0];
+      llmLogger?.logCall(responseLog);
+      if (failure && terminal && !(batch.length > 1 && canFallbackToSingle(failure.category) && !abortSignal?.aborted)) {
+        llmLogger?.logCall({ ...responseLog, event: 'failure', phase: 'final_failure' });
+      }
+    }
   }
-  const translatedText = stripTranslationNumberPrefix(segment.sourceText, responseText.trim());
+  throw new Error('翻译尝试次数耗尽');
+}
 
-  const appliedTermIds = findAppliedTerms(translatedText, glossary);
-
-  return {
-    paragraphIndex: segment.paragraphIndex,
-    sourceText: segment.sourceText,
-    translatedText,
-    confidence: translatedText.length > 0 ? 0.85 : 0,
-    appliedTermIds,
-    modelId: modelIdStr,
-  };
+/** 保留既有缓存命中诊断；只有提供商确实返回用量时才打印。 */
+function logDeepSeekCache(metadata: unknown, body: unknown): void {
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const usage = record(record(body).usage);
+  const native = Object.values(record(metadata)).map(record).find((value) => typeof value.promptCacheHitTokens === 'number');
+  const hit = native?.promptCacheHitTokens ?? usage.prompt_cache_hit_tokens;
+  const miss = native?.promptCacheMissTokens ?? usage.prompt_cache_miss_tokens;
+  if (typeof hit === 'number' || typeof miss === 'number') {
+    const total = typeof hit === 'number' && typeof miss === 'number' ? hit + miss : undefined;
+    const rate = total !== undefined && total > 0 && typeof hit === 'number' ? Math.round(hit / total * 100) : undefined;
+    console.log(`[translation] DS Cache: hit=${hit ?? 'unavailable'} miss=${miss ?? 'unavailable'} total=${total ?? 'unavailable'} rate=${rate !== undefined ? `${rate}%` : 'unavailable'}`);
+  }
 }
 
 /**
  * 将 LLM 响应按分隔符拆分为各段落译文。
  * 尝试多种分隔符变体，支持带/不带编号前缀的响应。
  * 段落数不匹配时抛出错误以触发回退。
+ * @param format Index 模板明确要求保留编号；HY-MT2 也接受可逐段对齐的纯文本响应。
  */
 function splitBatchResponse(
   responseText: string,
   batch: Array<{ paragraphIndex: number; sourceText: string }>,
   glossary: TranslationTermEntry[],
   modelIdStr: string,
+  format: TranslationMessageFormat = 'general',
 ): ParagraphDraft[] {
   let parts: string[] = [];
   let usedSeparator = '';
+  const numbers = [...responseText.matchAll(/【(\d+)】/g)];
+  if (batch.length === 1 && numbers.length > 1 && !/【\d+】/.test(batch[0]!.sourceText)) {
+    throw new TranslationFailure('format_mismatch', '单段响应包含多个段落编号。');
+  }
+  if (batch.length > 1 && (format === 'bilibili-index-translate' || numbers.length)) {
+    if (numbers.length !== batch.length || numbers.some((match, i) => Number(match[1]) !== i + 1)
+      || responseText.slice(0, numbers[0]?.index ?? 0).trim()) {
+      throw new TranslationFailure('format_mismatch', '非空译文的段落编号缺失、重复或顺序错误。');
+    }
+    parts = numbers.map((match, i) => responseText.slice(match.index! + match[0].length, numbers[i + 1]?.index).replace(/\s*---\s*$/, '').trim());
+    usedSeparator = 'numbered';
+  }
+
+  // HY-MT2 官方模板未要求编号。仅在原段均为单行且译文段数一致时接受空行分段；
+  // 表格、多行段落或任何残缺编号仍走严格校验/回退，避免猜测段落归属。
+  if (!parts.length && format === 'hy-mt2' && batch.length > 1 && batch.every((segment) => !/[\r\n]/.test(segment.sourceText))) {
+    const paragraphs = responseText.split(/\r?\n\s*\r?\n/);
+    if (paragraphs.length === batch.length) { parts = paragraphs; usedSeparator = 'blank-line'; }
+  }
 
   // 依次尝试各种分隔符
-  for (const sep of FALLBACK_SEPARATORS) {
+  for (const sep of parts.length ? [] : FALLBACK_SEPARATORS) {
     const candidate = responseText.split(sep);
     if (candidate.length === batch.length) {
       parts = candidate;
@@ -487,13 +407,13 @@ function splitBatchResponse(
   // 清理各部分：去除编号前缀（原文感知）和首尾空白
   const cleaned = parts.map((p, i) => {
     const sourceText = batch[i]?.sourceText ?? '';
-    return stripTranslationNumberPrefix(sourceText, p);
+    return usedSeparator === 'numbered' ? p.trim() : stripTranslationNumberPrefix(sourceText, p);
   }).filter((p) => p.length > 0);
 
   if (cleaned.length !== batch.length) {
-    throw new Error(
-      `译文段落数不匹配：期望 ${batch.length} 段，LLM 返回 ${cleaned.length} 段 ` +
-      `(分隔符 "${usedSeparator || '无'}" 拆出 ${parts.length} 部分)。将回退逐段翻译。`,
+    throw new TranslationFailure('format_mismatch',
+      `非空译文段落数不匹配：期望 ${batch.length} 段，LLM 返回 ${cleaned.length} 段 ` +
+      `(分隔符 "${usedSeparator || '无'}" 拆出 ${parts.length} 部分)。`,
     );
   }
 
@@ -641,8 +561,11 @@ function getProvider(
   return state.providers.find((p) => p.id === providerId) ?? null;
 }
 
-/** 创建 AI SDK 语言模型 */
-function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: string, thinkingEnabled?: boolean): LanguageModel {
+/** 创建 AI SDK 语言模型。
+ * @param options thinkingEnabled 使用提供商原生开关；chatTemplateThinking 控制 OpenAI 兼容服务的模板参数。
+ */
+function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: string, options: { thinkingEnabled?: boolean | undefined; chatTemplateThinking?: boolean } = {}): LanguageModel {
+  const { thinkingEnabled, chatTemplateThinking } = options;
   const enabledModels = provider.models.filter((m) => m.enabled && m.modelId);
   const modelId = overrideModelId || enabledModels[0]?.modelId || 'gpt-4o';
 
@@ -654,6 +577,12 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
       const factory = createOpenAI({
         apiKey: provider.apiKey,
         baseURL,
+        // Index 官方 OpenAI 兼容客户端的非思考参数，仅用于此格式。
+        ...(chatTemplateThinking !== undefined ? { fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          if (typeof init?.body !== 'string') return fetch(input, init);
+          const body = JSON.parse(init.body) as Record<string, unknown>;
+          return fetch(input, { ...init, body: JSON.stringify({ ...body, chat_template_kwargs: { enable_thinking: chatTemplateThinking } }) });
+        } } : {}),
         ...(provider.organization ? { organization: provider.organization } : {}),
       });
        return factory.chat(modelId);

@@ -8,7 +8,7 @@ import { LlmInteractionLogger } from './llm-logger';
 test('interaction logs are durable before returning, retain raw responses and full model IDs, and isolate task context', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-log-'));
   try {
-    const logger = new LlmInteractionLogger(directory);
+    const logger = new LlmInteractionLogger({ logDir: directory });
     const old = path.join(directory, '2000-01-01.log');
     fs.writeFileSync(old, 'expired');
     const params = { provider: 'test', model: 'model:variant', systemPrompt: '', userPrompt: '原文', response: '  原始响应\n', durationMs: 1 };
@@ -22,7 +22,7 @@ test('interaction logs are durable before returning, retain raw responses and fu
     assert.match(text, /"chapterId":"chapter-two"/);
     assert.equal(fs.existsSync(old), false);
     const disabledPath = path.join(directory, 'disabled');
-    new LlmInteractionLogger(disabledPath, false).logCall(params);
+    new LlmInteractionLogger({ logDir: disabledPath, enabled: false }).logCall(params);
     assert.equal(fs.existsSync(disabledPath), false);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
@@ -33,7 +33,19 @@ test('log write failures are reported without throwing or creating unhandled str
     const file = path.join(directory, 'not-a-directory');
     fs.writeFileSync(file, 'test');
     const warnings = t.mock.method(console, 'warn', () => {});
-    assert.doesNotThrow(() => new LlmInteractionLogger(file).logCall({ provider: 'test', model: 'test', systemPrompt: '', userPrompt: '', response: '', durationMs: 0 }));
+    assert.doesNotThrow(() => new LlmInteractionLogger({ logDir: file }).logCall({ provider: 'test', model: 'test', systemPrompt: '', userPrompt: '', response: '', durationMs: 0 }));
     assert.equal(warnings.mock.callCount(), 1);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('logger redacts provider credentials even when echoed by an API failure or response', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-redaction-'));
+  try {
+    const logger = new LlmInteractionLogger({ logDir: directory }).withSecrets(['test-api-key']).withContext({ runId: 'run' });
+    logger.logCall({ provider: 'test', model: 'test', systemPrompt: '', userPrompt: '', response: 'test-api-key', error: 'Unauthorized test-api-key', durationMs: 1 });
+    const log = fs.readdirSync(directory).map((file) => fs.readFileSync(path.join(directory, file), 'utf8')).join('');
+    assert.doesNotMatch(log, /test-api-key/);
+    assert.match(log, /Unauthorized \[REDACTED\]/);
+    assert.match(log, /InputTokens: unavailable/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
