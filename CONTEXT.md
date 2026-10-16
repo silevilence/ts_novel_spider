@@ -48,9 +48,15 @@
 
 **Manual Chapter Management** (章节管理) — For manual novels, the ability to create, rename, delete, reorder, and move chapters and volumes from the chapter directory. Chapters may live outside any volume (an "unfiled" group). Reordering or moving recomputes the global chapter index. Deleting a volume deletes its chapters with strong confirmation.
 
+## Refined Translation
+
+**Source Sync** (原文同步) — Pulling the library's latest downloaded source text and metadata into an existing refined-translation task, without fetching anything remotely. Unchanged paragraphs keep their translations, added or changed paragraphs become untranslated again, and affected chapters return to review; chapters that no longer exist in the library stay in the task. Only allowed while the task is not running.
+
+**Translation Reuse** (译文复用) — Importing translations from another refined-translation task that covers the same novel with the same source and target language, when creating a task or during a source sync. Only paragraphs whose source text is identical are filled in, existing translations are never overwritten, and a chapter whose paragraphs are all covered skips initial translation and goes straight to review while its title is still translated.
+
 ## Sites
 
-**SyosetuOrg** (syosetu.org 站点) — An independent Japanese novel viewing/aggregation site, operated separately from the HinaProject syosetu.com group and therefore distinct from Syosetu (小説家になろう) and Syosetu18 (ノクターンノベルズ). Novel pages live at `/novel/{id}/` with numeric ids (e.g. 353455). The site sits behind Cloudflare and IP-blocks direct server fetches (HTTP 403 even with a browser UA), so its adapter is parse-only and production capture runs through Browser Transport or a Cloudflare-allowed proxy.
+**SyosetuOrg** (syosetu.org 站点) — An independent Japanese novel viewing/aggregation site, operated separately from the HinaProject syosetu.com group and therefore distinct from Syosetu (小説家になろう) and Syosetu18 (ノクターンノベルズ). Novel pages live at `/novel/{id}/` with numeric ids (e.g. 353455). The site sits behind Cloudflare and IP-blocks direct server fetches (HTTP 403 even with a browser UA), so the planned adapter is parse-only and production capture is intended to run through Browser Transport or a Cloudflare-allowed proxy (ADR-0003). The adapter is **not implemented yet** (see ROADMAP: SyosetuOrg 数据源适配与爬虫研发); the sources currently selectable in the capture workbench are Syosetu, Syosetu18, and Kakuyomu.
 _Avoid_: Syosetu18, なろう系 (confusable with the syosetu.com group)
 
 ## Capture Mechanisms
