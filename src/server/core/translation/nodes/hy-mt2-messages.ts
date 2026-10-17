@@ -1,6 +1,13 @@
 import type { TranslationTermEntry, TranslationBackgroundParagraph } from '../../translation-state';
 import { translationLanguageName, translationTermLines, translationBackground, translationSourceText, hasUnexpectedPromptMarker, type TranslationPromptEcho } from './translation-prompt-materials';
 
+/** 模型可能保留源文区块标题；只清理开头的一层包装，正文中的标记仍交给回显校验。 */
+export function normalizeHyMt2Response(response: string, source: string): string {
+  const text = response.trim();
+  const label = text.match(/^(〖待翻译文本〗|【待翻译文本】)/u)?.[0];
+  return label && !source.includes(label) ? text.slice(label.length).trim() : text;
+}
+
 /** HY-MT2 自己维护模板标记；不把其他翻译格式的区块当作本格式提示词。 */
 export function detectHyMt2PromptEcho(response: string, source: string): TranslationPromptEcho {
   return {

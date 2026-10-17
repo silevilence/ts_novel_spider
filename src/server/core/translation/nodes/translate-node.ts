@@ -14,7 +14,7 @@ import type { TranslationMessageFormat } from '../../../contracts/translation-me
 import { resolveTranslationModel } from '../../translation-pipeline';
 import { buildIndexTranslatePrompt, detectIndexTranslatePromptEcho } from './index-translate-messages';
 import { classifyTranslationFailure, canFallbackToSingle, TranslationFailure } from './translation-failure';
-import { buildHyMt2Prompt, detectHyMt2PromptEcho } from './hy-mt2-messages';
+import { buildHyMt2Prompt, detectHyMt2PromptEcho, normalizeHyMt2Response } from './hy-mt2-messages';
 import { batchTranslationSegments, hasTranslationGlossaryEcho, hasTranslationBackgroundEcho, selectTranslationTerms, mergeTranslationDrafts } from './translation-prompt-materials';
 
 /** 专用翻译格式的材料边界；背景由当前单元的相邻原文和有效草稿构建。 */
@@ -291,12 +291,14 @@ async function translateBatch(
       inputTokens = result.usage.inputTokens;
       outputTokens = result.usage.outputTokens;
       logDeepSeekCache(result.providerMetadata, result.response.body);
-      if (!responseText.trim()) throw new TranslationFailure('empty_response', '模型返回空响应（含纯空白）。');
+      const source = batch.map((s) => s.sourceText).join('\n');
+      // 日志保留原始响应；仅解析副本清理模型附带的源文区块包装。
+      const translationText = context?.format === 'hy-mt2' ? normalizeHyMt2Response(responseText, source) : responseText.trim();
+      if (!translationText) throw new TranslationFailure('empty_response', '模型返回空响应（含纯空白或仅区块标题）。');
       if (context) {
-        const source = batch.map((s) => s.sourceText).join('\n');
-        const echo = context.format === 'hy-mt2' ? detectHyMt2PromptEcho(responseText, source) : detectIndexTranslatePromptEcho(responseText, source);
-        echo.glossary ||= hasTranslationGlossaryEcho(responseText, source, glossary);
-        echo.background ||= hasTranslationBackgroundEcho(responseText, batch, context.previousParagraphs);
+        const echo = context.format === 'hy-mt2' ? detectHyMt2PromptEcho(translationText, source) : detectIndexTranslatePromptEcho(translationText, source);
+        echo.glossary ||= hasTranslationGlossaryEcho(translationText, source, glossary);
+        echo.background ||= hasTranslationBackgroundEcho(translationText, batch, context.previousParagraphs);
         const removed: string[] = [];
         if (echo.glossary) { includeGlossary = false; removed.push('术语'); }
         if (echo.background) { includeBackground = false; removed.push('背景'); }
@@ -306,7 +308,7 @@ async function translateBatch(
             : '响应回显提示词区块；保留术语和背景材料进行有限重试。');
         }
       }
-      const resultDrafts = splitBatchResponse(responseText.trim(), batch, glossary, modelIdStr, context?.format);
+      const resultDrafts = splitBatchResponse(translationText, batch, glossary, modelIdStr, context?.format);
       if (context && resultDrafts.some((draft) => hasTranslationBackgroundEcho(draft.translatedText, [draft], context.previousParagraphs))) {
         includeBackground = false;
         throw new TranslationFailure('prompt_echo', '段落回显背景；本批后续重试禁用背景参考。');

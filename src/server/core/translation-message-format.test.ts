@@ -7,7 +7,7 @@ import { SqliteNovelRepository } from './novel-repository';
 import { SystemPreferencesService, type TranslationMessageFormat } from './system-preferences';
 import { createTranslationPipelineGraph, resolveTranslationModel } from './translation-pipeline';
 import { TranslationHistoryManager } from './translation/nodes/history-manager';
-import { buildHyMt2Prompt } from './translation/nodes/hy-mt2-messages';
+import { buildHyMt2Prompt, normalizeHyMt2Response } from './translation/nodes/hy-mt2-messages';
 import { batchTranslationSegments, hasTranslationGlossaryEcho, TRANSLATION_TEXT_BUDGET } from './translation/nodes/translation-prompt-materials';
 import type { TranslationTermEntry } from './translation-state';
 import { LlmInteractionLogger } from './translation/nodes/llm-logger';
@@ -111,6 +111,78 @@ test('HY-MT2 rejects background replay in one numbered paragraph of a batch', as
 
 const glossary: TranslationTermEntry[] = [{ id: 'term', sourceTerm: '猫', targetTerm: '猫咪', priority: 1, entityType: null }];
 interface ModelRequest { model: string; messages: Array<{ role: string; content: string }> }
+
+test('HY-MT2 accepts a leading source-section label around valid translation and preserves the raw log', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'translation-source-label-'));
+  const logger = new LlmInteractionLogger({ logDir: directory });
+  const requests: ModelRequest[] = [];
+  const translated = '猫咪沿着小路慢慢走回家。';
+  t.mock.method(globalThis, 'fetch', async (_input: unknown, init: RequestInit) => {
+    const request = JSON.parse(String(init.body)) as ModelRequest;
+    requests.push(request);
+    const content = requests.length === 1 ? '猫的故事' : `〖待翻译文本〗\n${translated}`;
+    return Response.json({ id: 'fake', object: 'chat.completion', created: 0, model: request.model, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }] });
+  });
+  const repository = new SqliteNovelRepository(':memory:');
+  try {
+    repository.saveMetadata('manual', { novelId: 'label', title: '猫', author: '', description: '', tags: [], chapterCount: 1, infoPageUrl: '' });
+    repository.ensureSyntheticChapter('manual', 'label', 'chapter', '猫', 1);
+    const graph = createTranslationPipelineGraph({ preferences: preferences('hy-mt2'), repository, historyManager: new TranslationHistoryManager(), paragraphsPerBatch: 1, llmLogger: logger });
+    const result = await graph.invoke({ sourceId: 'manual', novelId: 'label', chapterId: 'chapter', sourceLang: 'ja', targetLang: 'zh-CN', sourceContent: '猫の物語\n\n猫が小道をゆっくり歩いて家に帰った。', glossary });
+    assert.equal(result.errorMessage, null);
+    assert.equal(repository.getChapterTranslation('manual', 'label', 'chapter', 'ja', 'zh-CN')?.status, 'completed');
+    assert.equal(repository.listChapterTranslationParagraphs('manual', 'label', 'chapter')[0]!.translatedText, translated);
+    assert.equal(requests.length, 2);
+    assert.match(requests[1]!.messages[0]!.content, /〖待翻译文本〗/);
+    const logs = fs.readdirSync(directory).map(name => fs.readFileSync(path.join(directory, name), 'utf8')).join('\n');
+    assert.ok(logs.includes(`--- RESPONSE ---\n〖待翻译文本〗\n${translated}`));
+  } finally { logger.close(); repository.close(); fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+for (const label of ['〖待翻译文本〗', '【待翻译文本】']) {
+  test(`HY-MT2 accepts numbered batches wrapped in ${label}`, async (t) => {
+    let calls = 0;
+    t.mock.method(globalThis, 'fetch', async () => {
+      calls++;
+      return Response.json({ id: 'fake', object: 'chat.completion', created: 0, model: 'fake', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: `${label}\n【1】猫的故事\n【2】猫咪来了` } }] });
+    });
+    const repository = new SqliteNovelRepository(':memory:');
+    try {
+      repository.saveMetadata('manual', { novelId: 'batch-label', title: '猫', author: '', description: '', tags: [], chapterCount: 1, infoPageUrl: '' });
+      repository.ensureSyntheticChapter('manual', 'batch-label', 'chapter', '猫', 1);
+      const graph = createTranslationPipelineGraph({ preferences: preferences('hy-mt2'), repository, historyManager: new TranslationHistoryManager(), paragraphsPerBatch: 2 });
+      const result = await graph.invoke({ sourceId: 'manual', novelId: 'batch-label', chapterId: 'chapter', sourceLang: 'ja', targetLang: 'zh-CN', sourceContent: '猫の物語\n\n猫が来た', glossary });
+      assert.equal(result.errorMessage, null);
+      assert.equal(calls, 1);
+      assert.equal(repository.listChapterTranslationParagraphs('manual', 'batch-label', 'chapter')[0]!.translatedText, '猫咪来了');
+    } finally { repository.close(); }
+  });
+}
+
+for (const [response, category] of [
+  ['〖待翻译文本〗', 'empty_response'],
+  ['〖待翻译文本〗\n〖背景信息〗旧背景\n猫咪来了', 'prompt_echo'],
+  ['〖待翻译文本〗\n〖待翻译文本〗\n猫咪来了', 'prompt_echo'],
+  ['猫咪来了\n〖待翻译文本〗\n猫咪睡了', 'prompt_echo'],
+  ['〖待翻译文本〗\n猫 翻译成 猫咪', 'prompt_echo'],
+] as const) {
+  test(`HY-MT2 still rejects empty or contaminated wrapped responses: ${response}`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async () => Response.json({ id: 'fake', object: 'chat.completion', created: 0, model: 'fake', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: response } }] }));
+    const repository = new SqliteNovelRepository(':memory:');
+    try {
+      repository.saveMetadata('manual', { novelId: 'bad-label', title: '猫', author: '', description: '', tags: [], chapterCount: 1, infoPageUrl: '' });
+      repository.ensureSyntheticChapter('manual', 'bad-label', 'chapter', '猫', 1);
+      const graph = createTranslationPipelineGraph({ preferences: preferences('hy-mt2'), repository, historyManager: new TranslationHistoryManager(), paragraphsPerBatch: 1 });
+      const result = await graph.invoke({ sourceId: 'manual', novelId: 'bad-label', chapterId: 'chapter', unitKind: 'volume', sourceLang: 'ja', targetLang: 'zh-CN', sourceContent: '猫が来た', glossary });
+      assert.match(result.errorMessage!, new RegExp(category));
+      assert.equal(repository.getChapterTranslation('manual', 'bad-label', 'chapter', 'ja', 'zh-CN'), null);
+    } finally { repository.close(); }
+  });
+}
+
+test('HY-MT2 keeps section labels that belong to the original source', () => {
+  assert.equal(normalizeHyMt2Response('〖待翻译文本〗猫咪来了', '〖待翻译文本〗猫が来た'), '〖待翻译文本〗猫咪来了');
+});
 
 test('HY-MT2 rejects glossary pairs echoed without a heading instead of saving them as translation', async (t) => {
   const terms: TranslationTermEntry[] = [

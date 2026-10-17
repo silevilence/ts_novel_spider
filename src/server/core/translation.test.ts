@@ -29,6 +29,39 @@ test('translation segmentation keeps an arbitrarily long GFM table in one unit',
 
 // ── SQLite 迁移 + CRUD ──
 
+for (const [chapterCount, withVolumes, totalUnits] of [[35, false, 36], [2, true, 5]] as const) {
+  test(`translation build exposes a stable unit total and recovers legacy totals (${chapterCount} chapters, volumes=${withVolumes})`, () => {
+    const db = new SqliteNovelRepository(':memory:');
+    const preferences = new SystemPreferencesService();
+    const service = new TranslationService(db, preferences);
+    try {
+      db.saveMetadata('manual', { novelId: 'counts', title: '猫の物語', author: '', description: '猫の冒険', tags: [], chapterCount, infoPageUrl: '' });
+      db.saveChapterIndex('manual', 'counts', [
+        ...Array.from({ length: chapterCount }, (_, offset) => ({ id: `c${offset + 1}`, index: offset + 1, title: `章${offset + 1}`, volumeTitle: withVolumes ? `卷${offset + 1}` : null, url: '' })),
+        { id: 'new', index: chapterCount + 1, title: '新章', volumeTitle: '新卷', url: '' },
+      ]);
+      for (let index = 1; index <= chapterCount; index++) {
+        db.saveChapterContent('manual', 'counts', { chapterId: `c${index}`, index, title: `章${index}`, volumeTitle: withVolumes ? `卷${index}` : null, url: '', content: '猫が来た' });
+      }
+      const input = {
+        sourceId: 'manual', novelId: 'counts', status: 'failed' as const, stage: 'failed' as const,
+        progressPercent: 100, message: '', errorMessage: null, startedAt: null, completedAt: null,
+        translatedChapters: 0, reviewedChapters: 0, failedChapters: totalUnits, glossaryVersion: 1, profileVersion: 1,
+      };
+      for (const modelStatsJson of ['[]', '{"runId":"legacy"}', 'invalid']) {
+        db.saveTranslationBuild({ ...input, modelStatsJson });
+        assert.equal(service.getTranslationBuild('manual', 'counts')?.totalUnits, totalUnits);
+      }
+      // 新任务保存固定分母，后续抓取章节、重新创建服务及暂停均不能改变它。
+      db.saveTranslationBuild({ ...input, modelStatsJson: JSON.stringify({ totalUnits }) });
+      db.saveChapterContent('manual', 'counts', { chapterId: 'new', index: chapterCount + 1, title: '新章', volumeTitle: '新卷', url: '', content: '猫が帰った' });
+      const reloaded = new TranslationService(db, preferences);
+      assert.equal(reloaded.getTranslationBuild('manual', 'counts')?.totalUnits, totalUnits);
+      assert.equal(reloaded.cancelTranslation('manual', 'counts')?.totalUnits, totalUnits);
+    } finally { db.close(); }
+  });
+}
+
 test('translation tables are created by migration', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-translation-'));
   const db = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));

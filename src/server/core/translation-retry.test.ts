@@ -307,8 +307,10 @@ test('failed unit preserves previous text, persists reason, continues other unit
     db.saveChapterTranslation({ ...input, translatedTitle: '有效旧标题', status: 'completed', sourceContentHash: 'old', glossaryVersion: 1, profileVersion: 1 });
     db.replaceChapterTranslationParagraphs('manual', 'n', 'c', [{ paragraphIndex: 1, sourceText: '本文', translatedText: '有效旧正文', confidence: 1, appliedTermIds: [], modelId: 'old' }]);
     const service = new TranslationService(db, preferences);
-    service.startTranslation('manual', 'n', undefined, true);
+    const started = service.startTranslation('manual', 'n', undefined, true);
     await awaitCompletion();
+    assert.equal(started.totalUnits, 3);
+    assert.equal(service.getTranslationBuild('manual', 'n')?.totalUnits, 3);
     const failedBuild = db.getTranslationBuild('manual', 'n')!;
     assert.equal(failedBuild.status, 'failed');
     assert.equal(failedBuild.failedChapters, 1);
@@ -322,8 +324,10 @@ test('failed unit preserves previous text, persists reason, continues other unit
     assert.equal(failedBuild.totalTranslatedParagraphs, 1);
     fail = false;
     const before = calls;
-    service.startTranslation('manual', 'n');
+    const resumed = service.startTranslation('manual', 'n');
     await awaitCompletion();
+    assert.equal(resumed.totalUnits, 3);
+    assert.equal(service.getTranslationBuild('manual', 'n')?.totalUnits, 3);
     const complete = db.getTranslationBuild('manual', 'n')!;
     assert.equal(complete.status, 'completed');
     assert.equal(complete.failedChapters, 0);

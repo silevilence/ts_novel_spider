@@ -55,6 +55,7 @@ export interface TranslationBuildState {
   errorMessage: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  totalUnits: number;
   translatedChapters: number;
   failedChapters: number;
   currentChapterParagraphs: number;

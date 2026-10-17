@@ -47,6 +47,7 @@ interface TranslationUnit {
 interface TranslationRunStats {
   runId: string;
   runStartedAt: number;
+  totalUnits: number;
 }
 
 /** 单元调度输入；恢复计数、请求覆盖和检查点恢复均使用具名字段。 */
@@ -105,6 +106,8 @@ export interface TranslationBuild {
   errorMessage: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  /** 本轮元数据、卷标题及章节的总单元数；下方历史命名的计数也按单元累计。 */
+  totalUnits: number;
   translatedChapters: number;
   failedChapters: number;
   currentChapterParagraphs: number;
@@ -271,6 +274,7 @@ export class TranslationService {
       errorMessage: build.errorMessage,
       startedAt: build.startedAt,
       completedAt: build.completedAt,
+      totalUnits: this.#getTotalUnits(sourceId, novelId, build),
       translatedChapters: build.translatedChapters,
       failedChapters: build.failedChapters,
       currentChapterParagraphs: build.currentChapterParagraphs,
@@ -281,6 +285,21 @@ export class TranslationService {
       profileVersion: build.profileVersion,
       updatedAt: build.updatedAt,
     };
+  }
+
+  /** 新任务使用持久化的固定分母；旧记录按同一单元构建规则兼容恢复。 */
+  #getTotalUnits(sourceId: string, novelId: string, build: StoredTranslationBuildRow): number {
+    try {
+      const stats: unknown = JSON.parse(build.modelStatsJson);
+      if (stats && typeof stats === 'object' && 'totalUnits' in stats
+        && typeof stats.totalUnits === 'number' && Number.isSafeInteger(stats.totalUnits) && stats.totalUnits > 0) {
+        return stats.totalUnits;
+      }
+    } catch { /* 旧任务可能没有可用的统计 JSON。 */ }
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    const profile = this.getTranslationProfile(sourceId, novelId);
+    const inferred = snapshot ? TranslationService.buildTranslationUnits(snapshot, profile?.sourceLang ?? 'auto', profile?.targetLang ?? 'zh-CN').length : 0;
+    return Math.max(inferred, build.translatedChapters + build.failedChapters);
   }
 
   getAutoTranslationReadiness(sourceId: string, novelId: string): AutoTranslationReadiness {
@@ -490,6 +509,7 @@ export class TranslationService {
       errorMessage: build.errorMessage,
       startedAt: build.startedAt,
       completedAt: build.completedAt,
+      totalUnits: this.#getTotalUnits(sourceId, novelId, build),
       translatedChapters: build.translatedChapters,
       failedChapters: build.failedChapters,
       currentChapterParagraphs: build.currentChapterParagraphs,
@@ -636,7 +656,7 @@ export class TranslationService {
 
     console.log(`[translation] ${canResume ? '继续翻译' : '开始翻译'}，剩余 ${remainingUnits.length} 单元`);
 
-    const run: TranslationRunStats = { runStartedAt: Date.now(), runId: randomUUID() };
+    const run: TranslationRunStats = { runStartedAt: Date.now(), runId: randomUUID(), totalUnits: allUnits.length };
     const build = this.#repository.saveTranslationBuild({
       sourceId,
       novelId,
@@ -680,6 +700,7 @@ export class TranslationService {
       errorMessage: build.errorMessage,
       startedAt: build.startedAt,
       completedAt: build.completedAt,
+      totalUnits: this.#getTotalUnits(sourceId, novelId, build),
       translatedChapters: build.translatedChapters,
       failedChapters: build.failedChapters,
       currentChapterParagraphs: build.currentChapterParagraphs,

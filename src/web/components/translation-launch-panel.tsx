@@ -86,7 +86,7 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
         {build && detail ? (
           <Stack gap={4}>
             <Group justify="space-between">
-              <Text size="xs" c="dimmed">章节 {build.translatedChapters + build.failedChapters}/{detail.stats.downloaded}</Text>
+              <Text size="xs" c="dimmed">翻译单元 {build.translatedChapters + build.failedChapters}/{build.totalUnits}（含简介、卷标题和章节）</Text>
               <Text size="xs" c="dimmed">{build.progressPercent}%</Text>
             </Group>
             <Progress value={build.progressPercent} size="sm" color="orange" striped={isRunning} animated={isRunning} />
@@ -190,7 +190,7 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
               </Text>
               <Badge variant="light" color="green" size="xs">已译 {build.translatedChapters}</Badge>
               {build.failedChapters > 0 ? <Badge variant="light" color="red" size="xs">失败 {build.failedChapters}</Badge> : null}
-              {detail ? <Badge variant="light" color="gray" size="xs">待译 {detail.stats.downloaded - build.translatedChapters - build.failedChapters}</Badge> : null}
+              <Badge variant="light" color="gray" size="xs">待译 {Math.max(0, build.totalUnits - build.translatedChapters - build.failedChapters)}</Badge>
               {build.startedAt ? <Text size="xs" c="dimmed">{new Date(build.startedAt).toLocaleTimeString('zh-CN')} 起</Text> : null}
             </Group>
           </Paper>
