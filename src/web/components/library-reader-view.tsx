@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Badge, Button, Drawer, Group, Modal, NumberInput, Paper, Progress, SegmentedControl, Slider, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Badge, Button, Drawer, Group, Modal, NumberInput, Paper, Progress, SegmentedControl, Slider, Stack, Text, TextInput, Title } from '@mantine/core';
 import MDEditor from '@uiw/react-md-editor';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -130,6 +130,9 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
             />
           ) : null}
         </Group>
+        {model.translationViewMode !== 'original' && model.readerTranslationNotice ? (
+          <Alert mt="sm" color="yellow" title="译文状态">{model.readerTranslationNotice}</Alert>
+        ) : null}
       </Paper>
 
       <Paper p="md" radius="lg" style={{ background: 'rgba(31,21,16,0.6)', border: '1px solid rgba(168,133,96,0.12)' }}>

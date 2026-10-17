@@ -29,6 +29,55 @@ test('translation segmentation keeps an arbitrarily long GFM table in one unit',
 
 // ── SQLite 迁移 + CRUD ──
 
+test('reader combines successful drafts with retained translations without publishing an incomplete chapter', () => {
+  const db = new SqliteNovelRepository(':memory:');
+  const service = new TranslationService(db, new SystemPreferencesService());
+  const sourceContent = '章題\n\n晴れた\n\n風が吹いた\n\n雨が降った';
+  try {
+    db.saveMetadata('manual', { novelId: 'reading', title: '本', author: '', description: '', tags: [], chapterCount: 1, infoPageUrl: '' });
+    db.saveChapterIndex('manual', 'reading', [{ id: 'c', index: 1, title: '章題', volumeTitle: null, url: '' }]);
+    db.saveChapterContent('manual', 'reading', { chapterId: 'c', index: 1, title: '章題', volumeTitle: null, url: '', content: '晴れた\n\n風が吹いた\n\n雨が降った' });
+    const checkpoint = {
+      sourceId: 'manual', novelId: 'reading', chapterId: 'c', chapterIndex: 1, stage: 'failed' as const, warningMessage: 'test failure',
+      pipelineStateJson: JSON.stringify({ version: 1, sourceContent, sourceLang: 'ja', targetLang: 'zh-CN', glossaryKey: '[]', modelKey: 'test', drafts: [
+        { paragraphIndex: 0, sourceText: '章題', translatedText: '新标题', confidence: 1, appliedTermIds: [], modelId: 'test' },
+        { paragraphIndex: 1, sourceText: '晴れた', translatedText: '天晴了', confidence: 1, appliedTermIds: [], modelId: 'test' },
+      ] }),
+    };
+    db.saveTranslationBuildCheckpoint(checkpoint);
+    // 暂停时可以只有检查点、尚无正式章节记录。
+    let detail = service.getChapterTranslationDetail('manual', 'reading', 'c', 'ja', 'zh-CN')!;
+    assert.equal(detail.translatedTitle, '新标题');
+    assert.deepEqual(detail.paragraphs.map(p => p.translatedText), ['天晴了', null, null]);
+    assert.deepEqual(detail.readingSummary, { totalParagraphs: 3, translatedParagraphs: 1, draftParagraphs: 1, retainedParagraphs: 0 });
+    assert.equal(service.getChapterTranslationDetail('manual', 'reading', 'c', 'ja', 'en'), null);
+    assert.equal(db.getChapterTranslation('manual', 'reading', 'c', 'ja', 'zh-CN'), null);
+
+    db.saveChapterTranslation({ sourceId: 'manual', novelId: 'reading', chapterId: 'c', sourceLang: 'ja', targetLang: 'zh-CN', translatedTitle: '旧标题', status: 'failed', sourceContentHash: 'old', glossaryVersion: 1, profileVersion: 1 });
+    db.replaceChapterTranslationParagraphs('manual', 'reading', 'c', [
+      { paragraphIndex: 1, sourceText: '晴れた', translatedText: '旧晴天', confidence: 1, appliedTermIds: [], modelId: 'old' },
+      { paragraphIndex: 2, sourceText: '風が吹いた', translatedText: '风吹起来了', confidence: 1, appliedTermIds: [], modelId: 'old' },
+      { paragraphIndex: 3, sourceText: '古い原文', translatedText: '不能显示的过期译文', confidence: 1, appliedTermIds: [], modelId: 'old' },
+    ]);
+    const before = db.listChapterTranslationParagraphs('manual', 'reading', 'c');
+    detail = service.getChapterTranslationDetail('manual', 'reading', 'c', 'ja', 'zh-CN')!;
+    assert.equal(detail.status, 'failed');
+    assert.deepEqual(detail.paragraphs.map(p => p.translatedText), ['天晴了', '风吹起来了', null]);
+    assert.deepEqual(detail.readingSummary, { totalParagraphs: 3, translatedParagraphs: 2, draftParagraphs: 1, retainedParagraphs: 1 });
+    assert.deepEqual(db.listChapterTranslationParagraphs('manual', 'reading', 'c'), before);
+    assert.equal(db.getTranslationBuildCheckpoint('manual', 'reading', 'c')?.pipelineStateJson, checkpoint.pipelineStateJson);
+
+    db.saveTranslationBuildCheckpoint({ ...checkpoint, pipelineStateJson: 'invalid JSON' });
+    assert.deepEqual(service.getChapterTranslationDetail('manual', 'reading', 'c', 'ja', 'zh-CN')!.paragraphs.map(p => p.translatedText), ['旧晴天', '风吹起来了', null]);
+    db.saveTranslationBuildCheckpoint(checkpoint);
+    db.saveChapterContent('manual', 'reading', { chapterId: 'c', index: 1, title: '新しい章題', volumeTitle: null, url: '', content: '晴れた\n\n風が吹いた\n\n新しい原文' });
+    detail = service.getChapterTranslationDetail('manual', 'reading', 'c', 'ja', 'zh-CN')!;
+    assert.equal(detail.translatedTitle, null);
+    assert.equal(detail.readingSummary.draftParagraphs, 0);
+    assert.deepEqual(detail.paragraphs.map(p => p.translatedText), ['旧晴天', '风吹起来了', null]);
+  } finally { db.close(); }
+});
+
 for (const [chapterCount, withVolumes, totalUnits] of [[35, false, 36], [2, true, 5]] as const) {
   test(`translation build exposes a stable unit total and recovers legacy totals (${chapterCount} chapters, volumes=${withVolumes})`, () => {
     const db = new SqliteNovelRepository(':memory:');

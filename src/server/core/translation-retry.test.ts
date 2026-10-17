@@ -457,6 +457,12 @@ test('partial unit checkpoints survive service recreation and only failed paragr
     assert.deepEqual(saved.drafts.map((draft) => draft.paragraphIndex), [0, 1, 3]);
     assert.match(checkpoint.warningMessage!, /empty_response.*段落 2/);
     assert.deepEqual(db.listChapterTranslationParagraphs('manual', 'n', 'c'), []);
+    const preview = new TranslationService(db, preferences).getChapterTranslationDetail('manual', 'n', 'c', 'ja', 'zh-CN');
+    assert.equal(preview?.status, 'failed');
+    assert.equal(preview?.translatedTitle, '有效译文-章題');
+    assert.deepEqual(preview?.paragraphs.map((paragraph) => [paragraph.sourceText, paragraph.translatedText]), [
+      ['晴れた', '有效译文-晴れた'], ['FAIL_SOURCE', null], ['風が吹いた', '有效译文-風が吹いた'],
+    ]);
     const stats = writes[0]!;
     assert.match(stats.runId, /^[0-9a-f-]{36}$/);
     assert.equal(typeof stats.runStartedAt, 'number');
@@ -473,6 +479,10 @@ test('partial unit checkpoints survive service recreation and only failed paragr
     assert.equal(db.getTranslationBuild('manual', 'n')?.failedChapters, 0);
     assert.equal(db.listChapterTranslationParagraphs('manual', 'n', 'c').length, 3);
     assert.equal(db.getTranslationBuildCheckpoint('manual', 'n', 'c')!.stage, 'completed');
+    const completedPreview = new TranslationService(db, preferences).getChapterTranslationDetail('manual', 'n', 'c', 'ja', 'zh-CN')!;
+    assert.equal(completedPreview.status, 'completed');
+    assert.equal(completedPreview.translatedTitle, '有效译文-章題');
+    assert.deepEqual(completedPreview.readingSummary, { totalParagraphs: 3, translatedParagraphs: 3, draftParagraphs: 0, retainedParagraphs: 0 });
     assert.notEqual(writes[0]!.runId, stats.runId);
     for (const record of writes) assert.deepEqual(record, writes[0]);
   } finally { db.close(); }

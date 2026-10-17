@@ -37,6 +37,7 @@ import {
   type TranslationBuildPayload,
 } from './api';
 import { SseTaskLogBridge } from './task-log-bridge';
+import { buildChapterTranslationView } from './reader-translation';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
 import type {
   LibraryChapterDetailPayload,
@@ -130,6 +131,7 @@ export interface LibraryModel {
   translationLanguages: { sourceLang: string; targetLang: string } | null;
   /** 翻译：当前书籍的构建状态 */
   translationBuild: TranslationBuildState | null;
+  readerTranslationNotice: string | null;
   /** 翻译：当前书籍的术语列表 */
   translationTerms: StoredTranslationTermRow[];
   pendingTermCount: number;
@@ -184,6 +186,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [translationViewMode, setTranslationViewMode] = useState<TranslationExportMode>('original');
   const [translationLanguages, setTranslationLanguages] = useState<LibraryModel['translationLanguages']>(null);
   const [translationBuild, setTranslationBuild] = useState<TranslationBuildState | null>(null);
+  const [readerTranslationNotice, setReaderTranslationNotice] = useState<string | null>(null);
   const [translationTerms, setTranslationTerms] = useState<StoredTranslationTermRow[]>([]);
   const [translationBusy, setTranslationBusy] = useState(false);
   const [mediaBatchBusy, setMediaBatchBusy] = useState(false);
@@ -231,6 +234,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
           setNovels(payload.novels);
           setDetail(null);
           setChapter(null);
+          setReaderTranslationNotice(null);
           setCurrentTask(null);
         });
         return;
@@ -249,25 +253,16 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
           fetchLibraryChapter(sourceId, novelId, targetLocation.chapterId),
         ]);
 
-        // 翻译模式：加载翻译段落并替换正文
+        let translationNotice: string | null = null;
+        // 翻译模式：展示可用段落，失败或缺译部分保留原文。
         if (translationViewMode !== 'original' && translationLanguages) {
           const transChapter = await fetchLibraryTranslationChapter(
             sourceId, novelId, targetLocation.chapterId,
             translationLanguages.sourceLang, translationLanguages.targetLang,
           );
-          if (transChapter && transChapter.status === 'completed' && transChapter.paragraphs.length > 0) {
-            const content = buildTranslatedContent(transChapter.paragraphs, translationViewMode);
-            chapterPayload.chapter.chapter = {
-              ...chapterPayload.chapter.chapter,
-              content: content ?? chapterPayload.chapter.chapter.content,
-              // 翻译后的标题：译文模式下直接替换，双语模式下用原文【译文】
-              title: transChapter.translatedTitle
-                ? (translationViewMode === 'bilingual'
-                  ? `${chapterPayload.chapter.chapter.title}【${transChapter.translatedTitle}】`
-                  : transChapter.translatedTitle)
-                : chapterPayload.chapter.chapter.title,
-            };
-          }
+          const view = buildChapterTranslationView(chapterPayload.chapter.chapter, transChapter, translationViewMode);
+          chapterPayload.chapter.chapter = { ...chapterPayload.chapter.chapter, content: view.content, title: view.title };
+          translationNotice = view.notice;
         }
 
         const retainedTask = currentTaskRef.current;
@@ -283,6 +278,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         startTransition(() => {
           setDetail(novelPayload);
           setChapter(chapterPayload);
+          setReaderTranslationNotice(translationNotice);
           setCurrentTask(nextTask);
         });
 
@@ -305,6 +301,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       startTransition(() => {
         setDetail(payload);
         setChapter(null);
+        setReaderTranslationNotice(null);
         setCurrentTask(nextTask);
       });
 
@@ -1195,6 +1192,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     setTranslationViewMode,
     translationLanguages,
     translationBuild,
+    readerTranslationNotice,
     translationTerms,
     pendingTermCount: countPendingTranslationTerms(translationTerms),
     translationBusy,
@@ -1208,47 +1206,6 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
     removeTranslationTerms: handleRemoveTranslationTerms,
     importTermsFromGraph: handleImportTermsFromGraph,
   };
-}
-
-/** 翻译编号前缀清洗（前端侧防御副本，规则与服务端 stripTranslationNumberPrefix 一致） */
-function stripNumberPrefix(sourceText: string, translatedText: string): string {
-  const pattern = /^\s*(?:\d+[\.\、\)]\s*|段落\d+[：:]\s*|【\d+】\s*)/;
-  const trimmed = translatedText.trim();
-  const prefixMatch = trimmed.match(pattern);
-  if (!prefixMatch) return trimmed;
-  // 原文若也以同类前缀开头则视为正文一部分，保留
-  if (sourceText.trim().match(pattern)) return trimmed;
-  return trimmed.replace(pattern, '').trim();
-}
-
-/** 根据翻译模式拼接段落内容 */
-function buildTranslatedContent(
-  paragraphs: Array<{ paragraphIndex: number; sourceText: string; translatedText: string | null; confidence: number | null }>,
-  mode: 'translated' | 'bilingual',
-): string | null {
-  if (paragraphs.length === 0) return null;
-
-  if (mode === 'translated') {
-    return paragraphs
-      .map((p) => {
-        const text = p.translatedText ?? p.sourceText;
-        return p.translatedText ? stripNumberPrefix(p.sourceText, text) : text;
-      })
-      .filter((t) => t.length > 0)
-      .join('\n\n') || null;
-  }
-
-  // bilingual
-  return paragraphs
-    .map((p) => {
-      if (p.translatedText && p.translatedText !== p.sourceText) {
-        const cleaned = stripNumberPrefix(p.sourceText, p.translatedText);
-        return `${p.sourceText}\n\n${cleaned}`;
-      }
-      return p.sourceText;
-    })
-    .filter((t) => t.length > 0)
-    .join('\n\n') || null;
 }
 
 function normalizeLibraryTask(task: LibraryTaskSnapshot | null): ApiTaskSnapshot | null {

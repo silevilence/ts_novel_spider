@@ -68,6 +68,8 @@ interface ProcessTranslationUnitsOptions {
   run: TranslationRunStats;
 }
 import { TranslationHistoryManager } from './translation/nodes/history-manager';
+import { splitChapterParagraphs } from './translation/nodes/segment-node';
+import { readTranslationDraftsForPreview } from './translation-checkpoint';
 import { LlmInteractionLogger } from './translation/nodes/llm-logger';
 
 /** 翻译配置（库层面组合全局默认与单本覆盖） */
@@ -131,6 +133,12 @@ export interface TranslationChapterDetail {
   translatedTitle: string | null;
   status: TranslationChapterStatus;
   overallQualityScore: number | null;
+  readingSummary: {
+    totalParagraphs: number;
+    translatedParagraphs: number;
+    draftParagraphs: number;
+    retainedParagraphs: number;
+  };
   paragraphs: Array<{
     paragraphIndex: number;
     sourceText: string;
@@ -362,20 +370,50 @@ export class TranslationService {
     targetLang: string,
   ): TranslationChapterDetail | null {
     const translation = this.#repository.getChapterTranslation(sourceId, novelId, chapterId, sourceLang, targetLang);
-    if (!translation) {
-      return null;
-    }
+    const chapter = this.#repository.getChapter(sourceId, novelId, chapterId);
+    const sourceContent = chapter && typeof chapter.content === 'string' ? `${chapter.title}\n\n${chapter.content}` : null;
+    const preview = sourceContent ? readTranslationDraftsForPreview(this.#repository, {
+      sourceId, novelId, chapterId, sourceContent, sourceLang, targetLang,
+    }) : null;
+    if (!translation && !preview) return null;
 
-    const paragraphs = this.#repository.listChapterTranslationParagraphs(sourceId, novelId, chapterId);
+    const savedParagraphs = translation ? this.#repository.listChapterTranslationParagraphs(sourceId, novelId, chapterId) : [];
+    const status = preview?.stage ?? translation?.status ?? 'pending';
+    let translatedTitle = translation?.translatedTitle ?? null;
+    let draftParagraphs = 0;
+    let retainedParagraphs = 0;
+    let paragraphs: TranslationChapterDetail['paragraphs'] = savedParagraphs;
+    if (sourceContent) {
+      const segments = splitChapterParagraphs(sourceContent).map((text) => text.trim());
+      const draftsByIndex = new Map(preview?.drafts.map((draft) => [draft.paragraphIndex, draft]));
+      const savedByIndex = new Map(savedParagraphs.map((paragraph) => [paragraph.paragraphIndex, paragraph]));
+      const titleDraft = draftsByIndex.get(0);
+      translatedTitle = titleDraft && titleDraft.sourceText === segments[0] ? titleDraft.translatedText
+        : translation?.sourceContentHash === simpleHash(sourceContent) ? translation.translatedTitle : null;
+      // 始终从当前原文构建完整段落列表，不能因缺译而丢失正文。
+      paragraphs = segments.slice(1).map((sourceText, index) => {
+        const paragraphIndex = index + 1;
+        const draft = draftsByIndex.get(paragraphIndex);
+        const saved = savedByIndex.get(paragraphIndex);
+        const matchingDraft = draft?.sourceText === sourceText ? draft : null;
+        const matchingSaved = saved?.sourceText === sourceText && saved.translatedText?.trim() ? saved : null;
+        const selected = matchingDraft ?? matchingSaved;
+        if (matchingDraft) draftParagraphs++;
+        else if (matchingSaved && status !== 'completed') retainedParagraphs++;
+        return { paragraphIndex, sourceText, translatedText: selected?.translatedText ?? null,
+          confidence: selected?.confidence ?? null, appliedTermIds: selected?.appliedTermIds ?? [] };
+      });
+    }
     const qaRecords = this.#repository.listChapterTranslationQa(sourceId, novelId, chapterId);
 
     return {
-      chapterId: translation.chapterId,
-      sourceLang: translation.sourceLang,
-      targetLang: translation.targetLang,
-      translatedTitle: translation.translatedTitle,
-      status: translation.status,
-      overallQualityScore: translation.overallQualityScore,
+      chapterId, sourceLang, targetLang,
+      translatedTitle,
+      status,
+      overallQualityScore: translation?.overallQualityScore ?? null,
+      readingSummary: { totalParagraphs: paragraphs.length,
+        translatedParagraphs: paragraphs.filter((paragraph) => paragraph.translatedText?.trim()).length,
+        draftParagraphs, retainedParagraphs },
       paragraphs: paragraphs.map((p) => ({
         paragraphIndex: p.paragraphIndex,
         sourceText: p.sourceText,

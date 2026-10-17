@@ -1,6 +1,6 @@
 import type { TranslationMessageFormat } from '../../server/contracts/translation-message-format';
 import type { StoredTermExtractionRun, StoredTermTranslationRun, TranslationTermStatus } from '../../server/core/novel-repository';
-import type { TranslationProfile, TranslationProfileInput } from '../../server/core/translation-service';
+import type { TranslationProfile, TranslationProfileInput, TranslationChapterDetail } from '../../server/core/translation-service';
 import type { HealthPayload } from '../../server/routes/health';
 import type {
   ControlLlmProviderModelsPayload,
@@ -726,38 +726,18 @@ export async function fetchLibraryTranslationBuild(
   );
 }
 
+export type ChapterTranslationPayload = TranslationChapterDetail;
+
 export async function fetchLibraryTranslationChapter(
   sourceId: string,
   novelId: string,
   chapterId: string,
   sourceLang: string,
   targetLang: string,
-): Promise<{
-  chapterId: string;
-  status: string;
-  translatedTitle: string | null;
-  overallQualityScore: number | null;
-  paragraphs: Array<{
-    paragraphIndex: number;
-    sourceText: string;
-    translatedText: string | null;
-    confidence: number | null;
-  }>;
-} | null> {
+): Promise<ChapterTranslationPayload | null> {
   const url = `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/chapters/${encodeURIComponent(chapterId)}?sourceLang=${encodeURIComponent(sourceLang)}&targetLang=${encodeURIComponent(targetLang)}`;
   try {
-    return await requestJson(url) as {
-      chapterId: string;
-      status: string;
-      translatedTitle: string | null;
-      overallQualityScore: number | null;
-      paragraphs: Array<{
-        paragraphIndex: number;
-        sourceText: string;
-        translatedText: string | null;
-        confidence: number | null;
-      }>;
-    };
+    return await requestJson<ChapterTranslationPayload>(url);
   } catch {
     return null;
   }

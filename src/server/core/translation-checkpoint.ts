@@ -12,6 +12,22 @@ const checkpointSchema = z.object({
   })),
 });
 
+/** 阅读草稿只校验原文和语言；模型、术语签名仍由恢复执行路径严格校验。 */
+export function readTranslationDraftsForPreview(
+  repository: SqliteNovelRepository,
+  input: { sourceId: string; novelId: string; chapterId: string; sourceContent: string; sourceLang: string; targetLang: string },
+) {
+  const saved = repository.getTranslationBuildCheckpoint(input.sourceId, input.novelId, input.chapterId);
+  if (!saved || saved.stage === 'completed') return null;
+  try {
+    const checkpoint = checkpointSchema.parse(JSON.parse(saved.pipelineStateJson));
+    if (checkpoint.sourceContent !== input.sourceContent || checkpoint.sourceLang !== input.sourceLang
+      || checkpoint.targetLang !== input.targetLang
+      || new Set(checkpoint.drafts.map((draft) => draft.paragraphIndex)).size !== checkpoint.drafts.length) return null;
+    return { stage: saved.stage, drafts: checkpoint.drafts };
+  } catch { return null; }
+}
+
 /** 仅恢复同一原文、语言对、术语和实际模型的有效整段草稿；损坏或旧版检查点忽略。 */
 export function restoreTranslationDrafts(repository: SqliteNovelRepository, state: TranslationPipelineState, modelKey: string): ParagraphDraft[] {
   const saved = repository.getTranslationBuildCheckpoint(state.sourceId, state.novelId, state.chapterId);
