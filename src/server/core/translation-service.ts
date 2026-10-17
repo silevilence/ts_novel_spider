@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type { TranslationTermStatus } from './novel-repository';
 import { LibraryTermTranslationService } from './library-term-translation';
 import type { SqliteNovelRepository } from './novel-repository';
@@ -48,6 +49,19 @@ interface TranslationRunStats {
   runId: string;
   runStartedAt: number;
   totalUnits: number;
+  units: TranslationUnitStatus[];
+}
+
+const unitStatusSchema = z.object({
+  id: z.string(), kind: z.enum(['meta', 'volume', 'chapter']), index: z.number(), title: z.string(),
+  status: z.enum(['translated', 'failed', 'pending']), errorMessage: z.string().nullable(),
+});
+
+export type TranslationUnitStatus = z.infer<typeof unitStatusSchema>;
+export interface TranslationUnitStatuses {
+  /** 旧任务没有单元快照时，按当前原文和已保存的翻译恢复明细。 */
+  scope: 'run' | 'current';
+  units: TranslationUnitStatus[];
 }
 
 /** 单元调度输入；恢复计数、请求覆盖和检查点恢复均使用具名字段。 */
@@ -292,6 +306,39 @@ export class TranslationService {
       glossaryVersion: build.glossaryVersion,
       profileVersion: build.profileVersion,
       updatedAt: build.updatedAt,
+    };
+  }
+
+  getTranslationUnitStatuses(sourceId: string, novelId: string): TranslationUnitStatuses | null {
+    const build = this.#repository.getTranslationBuild(sourceId, novelId);
+    if (build) {
+      try {
+        const stats = z.object({ totalUnits: z.number().int(), units: z.array(unitStatusSchema) }).parse(JSON.parse(build.modelStatsJson));
+        if (stats.units.length === stats.totalUnits && new Set(stats.units.map((unit) => unit.id)).size === stats.units.length) {
+          return { scope: 'run', units: stats.units };
+        }
+      } catch { /* 兼容没有单元快照的旧任务。 */ }
+    }
+    const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+    if (!snapshot) return null;
+    const profile = this.getTranslationProfile(sourceId, novelId)!;
+    const units = TranslationService.buildTranslationUnits(snapshot, profile.sourceLang, profile.targetLang);
+    return {
+      scope: 'current',
+      units: units.map((unit): TranslationUnitStatus => {
+        const saved = this.#repository.getChapterTranslation(sourceId, novelId, unit.id, profile.sourceLang, profile.targetLang);
+        const matchesSource = saved?.sourceContentHash === simpleHash(unit.content);
+        const preview = readTranslationDraftsForPreview(this.#repository, {
+          sourceId, novelId, chapterId: unit.id, sourceContent: unit.content,
+          sourceLang: profile.sourceLang, targetLang: profile.targetLang,
+        });
+        const status = saved?.status === 'completed' && matchesSource ? 'translated'
+          : preview?.stage === 'failed' || (saved?.status === 'failed' && matchesSource) ? 'failed' : 'pending';
+        return {
+          id: unit.id, kind: unit.kind, index: unit.index, title: unit.title, status,
+          errorMessage: status === 'failed' ? preview?.warningMessage ?? null : null,
+        };
+      }),
     };
   }
 
@@ -694,7 +741,13 @@ export class TranslationService {
 
     console.log(`[translation] ${canResume ? '继续翻译' : '开始翻译'}，剩余 ${remainingUnits.length} 单元`);
 
-    const run: TranslationRunStats = { runStartedAt: Date.now(), runId: randomUUID(), totalUnits: allUnits.length };
+    const run: TranslationRunStats = {
+      runStartedAt: Date.now(), runId: randomUUID(), totalUnits: allUnits.length,
+      units: allUnits.map((unit) => ({
+        id: unit.id, kind: unit.kind, index: unit.index, title: unit.title,
+        status: remainingIds.has(unit.id) ? 'pending' : 'translated', errorMessage: null,
+      })),
+    };
     const build = this.#repository.saveTranslationBuild({
       sourceId,
       novelId,
@@ -936,6 +989,9 @@ export class TranslationService {
       } else {
         failed++;
       }
+      const unitStatus = run.units.find((item) => item.id === unit.id)!;
+      unitStatus.status = unitOk ? 'translated' : 'failed';
+      unitStatus.errorMessage = unitError;
 
       // 段落计数（仅 chapter 单元有段落）
       let unitParagraphs = 0;

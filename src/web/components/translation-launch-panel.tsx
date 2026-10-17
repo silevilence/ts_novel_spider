@@ -3,6 +3,7 @@ import { Anchor, Badge, Button, Group, Paper, Progress, ScrollArea, Select, Stac
 import type { LibraryModel, TranslationBuildState } from '../services/library-model';
 import { fetchLlmProvidersPreferences, fetchTranslationPreferences, buildLibraryExportDownloadUrl, type LibraryExportFormat, type TranslationExportMode } from '../services/api';
 import { TranslationGlossaryModal } from './translation-glossary-modal';
+import { TranslationUnitsModal, type TranslationStatusFilter } from './translation-units-modal';
 
 interface TranslationLaunchPanelProps {
   model: LibraryModel;
@@ -13,10 +14,12 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
   const [selectedModel, setSelectedModel] = useState('');
   const [availableModels, setAvailableModels] = useState<Array<{ key: string; label: string }>>([]);
   const [glossaryOpened, setGlossaryOpened] = useState(false);
+  const [unitFilter, setUnitFilter] = useState<TranslationStatusFilter | null>(null);
   const selectionStorageKey = `translation-model:${JSON.stringify([model.location.sourceId, model.location.novelId])}`;
 
   useEffect(() => {
     let active = true;
+    setUnitFilter(null);
     setAvailableModels([]);
     setSelectedModel('');
     Promise.all([
@@ -76,8 +79,8 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
           </div>
           {build ? (
             <Group gap="xs">
-              <Badge variant="light" color="green" size="sm">已译 {build.translatedChapters}</Badge>
-              {build.failedChapters > 0 ? <Badge variant="light" color="red" size="sm">失败 {build.failedChapters}</Badge> : null}
+              <Badge component="button" type="button" onClick={() => setUnitFilter('translated')} aria-label="查看已译章节" style={{ cursor: 'pointer' }} variant="light" color="green" size="sm">已译 {build.translatedChapters}</Badge>
+              {build.failedChapters > 0 ? <Badge component="button" type="button" onClick={() => setUnitFilter('failed')} aria-label="查看失败章节" style={{ cursor: 'pointer' }} variant="light" color="red" size="sm">失败 {build.failedChapters}</Badge> : null}
             </Group>
           ) : null}
         </Group>
@@ -144,7 +147,7 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
                 onClick={() => void model.startTranslation(selectedModel)}
                 loading={model.translationBusy}
                 disabled={!detail || detail.stats.downloaded === 0}>
-                {isPaused ? '继续翻译' : isDone && build?.status === 'completed' ? '继续完善' : '发起翻译'}
+                {isPaused || build?.status === 'failed' ? '继续翻译' : isDone && build?.status === 'completed' ? '继续完善' : '发起翻译'}
               </Button>
               {(isPaused || isDone) ? (
                 <Button variant="subtle" size="compact-sm"
@@ -167,6 +170,20 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
           ) : null}
         </Group>
 
+        {(isPaused || build?.status === 'failed') ? <Text size="xs" c="dimmed">
+          继续翻译会跳过已完成且原文未变的单元，并复用失败章节的有效段落，只补译缺失部分。原文、语言、术语或模型配置变化会使相关检查点失效；“从头开始”会重新翻译全部内容。
+        </Text> : null}
+
+        <Button variant="subtle" size="compact-sm" style={{ alignSelf: 'flex-start' }} disabled={!detail}
+          onClick={() => setUnitFilter(build?.failedChapters ? 'failed' : build?.translatedChapters ? 'translated' : 'pending')}>
+          查看翻译明细
+        </Button>
+        {detail ? <TranslationUnitsModal
+          key={`${detail.sourceId}:${detail.metadata.novelId}`}
+          sourceId={detail.sourceId} novelId={detail.metadata.novelId}
+          status={unitFilter} onStatusChange={setUnitFilter} onClose={() => setUnitFilter(null)}
+          revision={`${build?.startedAt}:${build?.status}:${build?.translatedChapters}:${build?.failedChapters}`} /> : null}
+
         {/* 术语管理入口 */}
         <Button variant="subtle" size="compact-sm" style={{ alignSelf: 'flex-start' }}
           onClick={() => setGlossaryOpened(true)}>
@@ -188,9 +205,9 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
               <Text size="xs" fw={600} c="dimmed">
                 {build.status === 'running' ? '翻译中' : build.status === 'completed' ? '已完成' : build.status === 'failed' ? '已失败' : build.status}
               </Text>
-              <Badge variant="light" color="green" size="xs">已译 {build.translatedChapters}</Badge>
-              {build.failedChapters > 0 ? <Badge variant="light" color="red" size="xs">失败 {build.failedChapters}</Badge> : null}
-              <Badge variant="light" color="gray" size="xs">待译 {Math.max(0, build.totalUnits - build.translatedChapters - build.failedChapters)}</Badge>
+              <Badge component="button" type="button" onClick={() => setUnitFilter('translated')} aria-label="查看已译章节" style={{ cursor: 'pointer' }} variant="light" color="green" size="xs">已译 {build.translatedChapters}</Badge>
+              {build.failedChapters > 0 ? <Badge component="button" type="button" onClick={() => setUnitFilter('failed')} aria-label="查看失败章节" style={{ cursor: 'pointer' }} variant="light" color="red" size="xs">失败 {build.failedChapters}</Badge> : null}
+              <Badge component="button" type="button" onClick={() => setUnitFilter('pending')} aria-label="查看待译章节" style={{ cursor: 'pointer' }} variant="light" color="gray" size="xs">待译 {Math.max(0, build.totalUnits - build.translatedChapters - build.failedChapters)}</Badge>
               {build.startedAt ? <Text size="xs" c="dimmed">{new Date(build.startedAt).toLocaleTimeString('zh-CN')} 起</Text> : null}
             </Group>
           </Paper>

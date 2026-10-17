@@ -4,6 +4,7 @@ import test from 'node:test';
 import JSZip from 'jszip';
 import { MockHtmlSpiderAdapter } from '../adapters/spider/mock-html-spider-adapter';
 import type { SpiderRegistryEntry } from '../core/control-center';
+import type { TranslationUnitStatuses } from '../core/translation-service';
 
 import {
   closeServer,
@@ -21,6 +22,26 @@ function createSyosetuMockRegistry(input: { metadataHtml: string; chapterHtml: s
     }),
   }];
 }
+
+test('translation units endpoint includes metadata, volumes and downloaded chapters only', async () => {
+  const { app, cleanup } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+  try {
+    const baseUrl = await waitForServerListening(server);
+    const response = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/translate/units`);
+    assert.equal(response.status, 200);
+    const detail = await response.json() as TranslationUnitStatuses;
+    assert.equal(detail.scope, 'current');
+    assert.equal(detail.units.filter((unit) => unit.kind === 'meta').length, 1);
+    assert.ok(detail.units.some((unit) => unit.kind === 'volume'));
+    assert.deepEqual(detail.units.filter((unit) => unit.kind === 'chapter').map((unit) => unit.id), ['chapter-1', 'chapter-2']);
+    assert.ok(detail.units.every((unit) => unit.status === 'pending'));
+    assert.equal((await fetch(`${baseUrl}/api/library/novels/manual/missing/translate/units`)).status, 404);
+  } finally {
+    await closeServer(server);
+    cleanup();
+  }
+});
 
 test('library routes expose stored novels, detail stats and chapter reading data', async () => {
   const { app, cleanup } = createLibraryServer();

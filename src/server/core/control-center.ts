@@ -962,6 +962,10 @@ export class ControlCenterService {
     return this.#translation.getTranslationBuild(sourceId, novelId);
   }
 
+  getLibraryTranslationUnits(sourceId: string, novelId: string) {
+    return this.#translation.getTranslationUnitStatuses(sourceId, novelId);
+  }
+
   getLibraryTranslationChapter(
     sourceId: string,
     novelId: string,

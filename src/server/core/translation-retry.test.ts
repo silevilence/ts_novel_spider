@@ -443,7 +443,10 @@ test('partial unit checkpoints survive service recreation and only failed paragr
   const writes: Array<{ runId: string; runStartedAt: number }> = [];
   const saveBuild = db.saveTranslationBuild.bind(db);
   t.mock.method(db, 'saveTranslationBuild', (record: Parameters<typeof db.saveTranslationBuild>[0]) => {
-    if (record.modelStatsJson) writes.push(JSON.parse(record.modelStatsJson) as { runId: string; runStartedAt: number });
+    if (record.modelStatsJson) {
+      const { runId, runStartedAt } = JSON.parse(record.modelStatsJson) as { runId: string; runStartedAt: number };
+      writes.push({ runId, runStartedAt });
+    }
     return saveBuild(record);
   });
   try {
@@ -485,6 +488,82 @@ test('partial unit checkpoints survive service recreation and only failed paragr
     assert.deepEqual(completedPreview.readingSummary, { totalParagraphs: 3, translatedParagraphs: 3, draftParagraphs: 0, retainedParagraphs: 0 });
     assert.notEqual(writes[0]!.runId, stats.runId);
     for (const record of writes) assert.deepEqual(record, writes[0]);
+  } finally { db.close(); }
+});
+
+test('unit details survive restart, distinguish four failed chapters, and resume only their missing paragraphs', async (t) => {
+  const db = repository();
+  const preferences = prefs('bilibili-index-translate');
+  preferences.updateTranslationPreferences({ enableLlmInteractionLog: false, translationConcurrency: 1 });
+  let fail = true;
+  const requests: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_input: unknown, init: RequestInit) => {
+    const prompt = (JSON.parse(String(init.body)) as RequestBody).messages[0]!.content;
+    const source = prompt.includes('【源文】') ? prompt.split('【源文】\n')[1]!.split('\n\n【约束要求】')[0]! : prompt.split('\n\n').at(-1)!;
+    requests.push(source);
+    return completion(fail && source.startsWith('FAIL_') ? '' : `有效译文-${source}`);
+  });
+  const saveBuild = db.saveTranslationBuild.bind(db);
+  t.mock.method(db, 'saveTranslationBuild', (record: Parameters<typeof db.saveTranslationBuild>[0]) => {
+    const stats = JSON.parse(record.modelStatsJson ?? '{}') as { totalUnits?: number; units?: Array<{ status: string }> };
+    if (stats.units) {
+      assert.equal(stats.units.length, stats.totalUnits);
+      assert.equal(stats.units.filter((unit) => unit.status === 'translated').length, record.translatedChapters);
+      assert.equal(stats.units.filter((unit) => unit.status === 'failed').length, record.failedChapters);
+    }
+    return saveBuild(record);
+  });
+  const waitForBuild = async () => {
+    const deadline = Date.now() + 5000;
+    while (db.getTranslationBuild('manual', 'n')?.status === 'running') {
+      assert.ok(Date.now() < deadline, 'translation did not finish');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  try {
+    const chapters = Array.from({ length: 5 }, (_, index) => ({ id: `c${index}`, index: index + 1, title: `章題${index}`, volumeTitle: '巻一', url: '' }));
+    db.saveChapterIndex('manual', 'n', [...chapters, { id: 'not-downloaded', index: 6, title: '未下载', volumeTitle: '巻二', url: '' }]);
+    for (const chapter of chapters) db.saveChapterContent('manual', 'n', {
+      ...chapter, chapterId: chapter.id, content: `晴れた${chapter.id}\n\n${chapter.id === 'c0' ? '晴れ続く' : `FAIL_${chapter.id}`}\n\n風が吹いた${chapter.id}`,
+    });
+    let service = new TranslationService(db, preferences);
+    assert.equal(service.getTranslationUnitStatuses('manual', 'missing'), null);
+    assert.equal(service.getTranslationUnitStatuses('manual', 'n')?.scope, 'current');
+    assert.deepEqual(service.getTranslationUnitStatuses('manual', 'n')?.units.map((unit) => unit.status), Array(7).fill('pending'));
+    service.startTranslation('manual', 'n');
+    assert.deepEqual(service.getTranslationUnitStatuses('manual', 'n')?.units.map((unit) => unit.status), Array(7).fill('pending'));
+    await waitForBuild();
+    service = new TranslationService(db, preferences);
+    const details = service.getTranslationUnitStatuses('manual', 'n')!;
+    assert.equal(details.scope, 'run');
+    assert.deepEqual(details.units.filter((unit) => unit.status === 'translated').map((unit) => unit.kind), ['meta', 'volume', 'chapter']);
+    assert.deepEqual(details.units.filter((unit) => unit.status === 'failed').map((unit) => unit.id), ['c1', 'c2', 'c3', 'c4']);
+    for (const unit of details.units.filter((unit) => unit.status === 'failed')) assert.match(unit.errorMessage!, /empty_response.*段落 2/);
+    assert.equal(details.units.some((unit) => unit.id === 'not-downloaded'), false);
+
+    // 旧版构建没有单元快照，仍能找回章节、简介和卷标题的状态及失败原因。
+    const build = db.getTranslationBuild('manual', 'n')!;
+    saveBuild({ ...build, sourceId: 'manual', novelId: 'n', modelStatsJson: JSON.stringify({ totalUnits: 7 }) });
+    const legacy = service.getTranslationUnitStatuses('manual', 'n')!;
+    assert.equal(legacy.scope, 'current');
+    assert.deepEqual(legacy.units, details.units);
+    saveBuild({ ...build, sourceId: 'manual', novelId: 'n', modelStatsJson: '{broken' });
+    assert.deepEqual(service.getTranslationUnitStatuses('manual', 'n')?.units, details.units);
+
+    fail = false;
+    const before = requests.length;
+    service.startTranslation('manual', 'n');
+    const resumed = service.getTranslationUnitStatuses('manual', 'n')!;
+    assert.equal(resumed.units.filter((unit) => unit.status === 'translated').length, 3);
+    assert.equal(resumed.units.filter((unit) => unit.status === 'pending').length, 4);
+    await waitForBuild();
+    assert.deepEqual(requests.slice(before), ['FAIL_c1', 'FAIL_c2', 'FAIL_c3', 'FAIL_c4']);
+    assert.ok(service.getTranslationUnitStatuses('manual', 'n')!.units.every((unit) => unit.status === 'translated'));
+
+    service.startTranslation('manual', 'n', undefined, true);
+    assert.ok(service.getTranslationUnitStatuses('manual', 'n')!.units.every((unit) => unit.status === 'pending'), 'old translations must not count as this run\'s completed units');
+    await waitForBuild();
+    assert.ok(service.getTranslationUnitStatuses('manual', 'n')!.units.every((unit) => unit.status === 'translated'));
   } finally { db.close(); }
 });
 

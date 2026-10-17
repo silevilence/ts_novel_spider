@@ -1,6 +1,7 @@
 import type { TranslationMessageFormat } from '../../server/contracts/translation-message-format';
 import type { StoredTermExtractionRun, StoredTermTranslationRun, TranslationTermStatus } from '../../server/core/novel-repository';
-import type { TranslationProfile, TranslationProfileInput, TranslationChapterDetail } from '../../server/core/translation-service';
+import type { TranslationProfile, TranslationProfileInput, TranslationChapterDetail, TranslationUnitStatuses } from '../../server/core/translation-service';
+export type { TranslationUnitStatus, TranslationUnitStatuses } from '../../server/core/translation-service';
 import type { HealthPayload } from '../../server/routes/health';
 import type {
   ControlLlmProviderModelsPayload,
@@ -727,6 +728,12 @@ export async function fetchLibraryTranslationBuild(
 }
 
 export type ChapterTranslationPayload = TranslationChapterDetail;
+
+export async function fetchLibraryTranslationUnits(sourceId: string, novelId: string): Promise<TranslationUnitStatuses> {
+  return requestJson<TranslationUnitStatuses>(
+    `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/units`,
+  );
+}
 
 export async function fetchLibraryTranslationChapter(
   sourceId: string,

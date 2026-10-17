@@ -24,5 +24,12 @@ for (const [status, translatedChapters, failedChapters, totalUnits, expectedPend
     assert.ok(text.includes(`翻译单元 ${translatedChapters + failedChapters}/${totalUnits}`));
     assert.ok(text.includes(`待译 ${expectedPending}`));
     assert.doesNotMatch(text, /待译 -|章节 36\/35/);
+    assert.match(markup, /<button[^>]+aria-label="查看已译章节"/);
+    assert.match(markup, /<button[^>]+aria-label="查看待译章节"/);
+    if (failedChapters > 0) assert.match(markup, /<button[^>]+aria-label="查看失败章节"/);
+    if (status === 'failed') {
+      assert.ok(text.includes('继续翻译'));
+      assert.ok(text.includes('只补译缺失部分'));
+    }
   });
 }

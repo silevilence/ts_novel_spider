@@ -24,7 +24,7 @@ export function readTranslationDraftsForPreview(
     if (checkpoint.sourceContent !== input.sourceContent || checkpoint.sourceLang !== input.sourceLang
       || checkpoint.targetLang !== input.targetLang
       || new Set(checkpoint.drafts.map((draft) => draft.paragraphIndex)).size !== checkpoint.drafts.length) return null;
-    return { stage: saved.stage, drafts: checkpoint.drafts };
+    return { stage: saved.stage, drafts: checkpoint.drafts, warningMessage: saved.warningMessage };
   } catch { return null; }
 }
 

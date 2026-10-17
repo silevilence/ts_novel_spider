@@ -783,6 +783,16 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     });
   });
 
+  router.get('/novels/:sourceId/:novelId/translate/units', (request, response) => {
+    const { sourceId, novelId } = request.params;
+    const detail = service.getLibraryTranslationUnits(sourceId, novelId);
+    if (!detail) {
+      response.status(404).json({ message: `Novel ${sourceId}/${novelId} not found.` });
+      return;
+    }
+    response.json(detail);
+  });
+
   router.get('/novels/:sourceId/:novelId/translate/profile', (request, response) => {
     const { sourceId, novelId } = request.params;
     const profile = service.getLibraryTranslationProfile(sourceId, novelId);
