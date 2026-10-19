@@ -1,3 +1,4 @@
+import { withContextBudget, modelContextLimit, contextOutputReserve, textRequestFits, splitTextForContext, fitContextRequest, ContextBudgetExceededError, requestContextTokens, textContextTokens } from '../../llm-context-budget';
 import { redactSecrets } from './redact-secrets';
 import { randomUUID } from 'node:crypto';
 import { generateText, stepCountIs, type ToolSet, type LanguageModel } from 'ai';
@@ -73,8 +74,10 @@ export async function generateRefinedTranslationText(
     throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
   }
 
+  const limit = modelContextLimit(preferences, route);
   const result = await generateText({
     model: createLanguageModel(provider, route.modelId, { thinkingEnabled: route.thinkingEnabled }),
+    ...(limit > 0 ? { maxOutputTokens: contextOutputReserve(limit) } : {}),
     system,
     prompt,
     ...(abortSignal ? { abortSignal } : {}),
@@ -82,6 +85,7 @@ export async function generateRefinedTranslationText(
     ...(route.thinkingEnabled !== undefined ? { providerOptions: refinedThinkingProviderOptions(provider, route.thinkingEnabled) as never } : {}),
   });
   onResponse?.({ text: result.text, finishReason: result.rawFinishReason, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens });
+  if (result.finishReason === 'length') throw new Error('模型输出达到预留 Token 上限，结果不完整；请缩小批次或增大上下文上限。');
   return result.text.trim();
 }
 
@@ -191,6 +195,7 @@ export async function translateNode(
 
   const batchOptions: TranslationBatchOptions = {
     model, systemPrompt, glossary: state.glossary, modelIdStr, historyManager,
+    contextLimit: modelContextLimit(preferences, modelRoute),
     llmLogger, context: promptContext, abortSignal, secrets: [provider.apiKey],
   };
   const updateBackground = (paragraphIndex: number) => {
@@ -233,6 +238,7 @@ export async function translateNode(
 
 /** 一轮翻译请求所共享的依赖与输出安全策略。 */
 interface TranslationBatchOptions {
+  contextLimit: number;
   model: LanguageModel;
   systemPrompt: string;
   glossary: TranslationTermEntry[];
@@ -257,15 +263,42 @@ async function translateBatch(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     abortSignal?.throwIfAborted();
     const terms = includeGlossary ? glossary : [];
-    const background = includeBackground ? context?.previousParagraphs ?? [] : [];
-    const prompt = context?.format === 'bilibili-index-translate'
-      ? buildIndexTranslatePrompt(batch, { sourceLang: context.sourceLang, targetLang: context.targetLang, glossary: terms, previousParagraphs: background })
-      : context ? buildHyMt2Prompt(batch, context.targetLang, terms, background)
-      : fallbackFrom ? batch[0]!.sourceText : buildBatchPrompt(batch);
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    const background = [...(includeBackground ? context?.previousParagraphs ?? [] : [])];
+    const renderPrompt = (segments: typeof batch) => context?.format === 'bilibili-index-translate'
+      ? buildIndexTranslatePrompt(segments, { sourceLang: context.sourceLang, targetLang: context.targetLang, glossary: terms, previousParagraphs: background })
+      : context ? buildHyMt2Prompt(segments, context.targetLang, terms, background)
+      : fallbackFrom ? segments[0]!.sourceText : buildBatchPrompt(segments);
+    const renderSystem = (segments: typeof batch) => context ? '' : appendTranslationGlossary(systemPrompt, selectTranslationTerms(segments, glossary));
+    const outputFor = (segments: typeof batch) => Math.max(segments.reduce((sum, segment) => sum + segment.sourceText.length, 0) * 3, 512);
+    const fits = (segments: typeof batch) => textRequestFits(options.contextLimit, renderSystem(segments), renderPrompt(segments), outputFor(segments));
+    while (background.length && !fits(batch)) background.shift();
+    if (!fits(batch)) {
+      if (batch.length > 1) {
+        const middle = Math.ceil(batch.length / 2);
+        return [...await translateBatch(batch.slice(0, middle), options, fallbackFrom), ...await translateBatch(batch.slice(middle), options, fallbackFrom)];
+      }
+      const segment = batch[0]!;
+      // A table is a structural unit. Never cut its header/rows into malformed Markdown.
+      if (/^\s*\|.*\|\s*$/m.test(segment.sourceText)) throw new ContextBudgetExceededError(options.contextLimit, textContextTokens(renderSystem(batch), renderPrompt(batch)) + outputFor(batch));
+      const pieces = splitTextForContext(segment.sourceText, (sourceText) => fits([{ ...segment, sourceText }]));
+      const translated: ParagraphDraft[] = [];
+      for (const sourceText of pieces) translated.push(...await translateBatch([{ ...segment, sourceText }], { ...options, context: context ? { ...context, previousParagraphs: [] } : undefined }, fallbackFrom));
+      return [{ ...translated[0]!, ...segment, translatedText: translated.map((draft) => draft.translatedText).join('\n'), appliedTermIds: [...new Set(translated.flatMap((draft) => draft.appliedTermIds))] }];
+    }
+    const prompt = renderPrompt(batch);
+    let messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
       ...(!context && !fallbackFrom ? historyManager.buildHistoryMessages() : []), { role: 'user', content: prompt },
     ];
-    const requestSystemPrompt = context ? '' : appendTranslationGlossary(systemPrompt, selectTranslationTerms(batch, glossary));
+    const requestSystemPrompt = renderSystem(batch);
+    if (options.contextLimit > 0) {
+      const fitted = fitContextRequest({ prompt: [
+        ...(requestSystemPrompt ? [{ role: 'system' as const, content: requestSystemPrompt }] : []),
+        ...messages.map((message) => ({ role: message.role, content: [{ type: 'text' as const, text: message.content }] })),
+      ], maxOutputTokens: outputFor(batch) }, options.contextLimit);
+      const kept = fitted.prompt.filter((message) => message.role !== 'system').length;
+      const removed = messages.length - kept;
+      if (removed) { historyManager.discardOldest(removed / 2); messages = messages.slice(removed); }
+    }
     const phase = batch.length > 1 ? (attempt === 1 ? 'batch' : 'batch_retry') : (attempt === 1 ? 'single' : 'single_retry');
     const logParams = {
       provider: modelIdStr.slice(0, modelIdStr.indexOf(':')), model: modelIdStr.slice(modelIdStr.indexOf(':') + 1),
@@ -273,7 +306,14 @@ async function translateBatch(
       attempt, maxAttempts, paragraphIndices: batch.map((s) => s.paragraphIndex),
       // 书库翻译的请求策略：仅 Index 固定为 0，通用与 HY-MT2 沿用 0.3。
       temperature: context?.format === 'bilibili-index-translate' ? 0 : 0.3,
-      maxOutputTokens: Math.max(batch.reduce((sum, s) => sum + s.sourceText.length, 0) * 3, 512),
+      maxOutputTokens: outputFor(batch),
+      ...(options.contextLimit > 0 ? {
+        contextWindowTokens: options.contextLimit,
+        estimatedInputTokens: requestContextTokens({ prompt: [
+          ...(requestSystemPrompt ? [{ role: 'system' as const, content: requestSystemPrompt }] : []),
+          ...messages.map((message) => ({ role: message.role, content: [{ type: 'text' as const, text: message.content }] })),
+        ] }),
+      } : {}),
     };
     if (fallbackFrom && attempt === 1) {
       console.log(`[translation] 回退逐段翻译：段落 ${batch[0]!.paragraphIndex}`);
@@ -299,6 +339,7 @@ async function translateBatch(
       finishReason = result.rawFinishReason;
       inputTokens = result.usage.inputTokens;
       outputTokens = result.usage.outputTokens;
+      if (result.finishReason === 'length') throw new TranslationFailure('format_mismatch', '模型输出达到预留 Token 上限，不能把截断译文标记为成功。');
       logDeepSeekCache(result.providerMetadata, result.response.body);
       const source = batch.map((s) => s.sourceText).join('\n');
       // 日志保留原始响应；仅解析副本清理模型附带的源文区块包装。
@@ -575,10 +616,11 @@ function getProvider(
 /** 创建 AI SDK 语言模型。
  * @param options thinkingEnabled 使用提供商原生开关；chatTemplateThinking 控制 OpenAI 兼容服务的模板参数。
  */
-function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: string, options: { thinkingEnabled?: boolean | undefined; chatTemplateThinking?: boolean } = {}): LanguageModel {
+function createRawLanguageModel(provider: LlmProviderConfig, overrideModelId?: string, options: { thinkingEnabled?: boolean | undefined; chatTemplateThinking?: boolean } = {}) {
   const { thinkingEnabled, chatTemplateThinking } = options;
   const enabledModels = provider.models.filter((m) => m.enabled && m.modelId);
   const modelId = overrideModelId || enabledModels[0]?.modelId || 'gpt-4o';
+  const contextLimit = provider.models.find((model) => model.modelId === modelId)?.contextWindowTokens ?? 0;
 
   switch (provider.type) {
     case 'openai-compatible': {
@@ -620,7 +662,7 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
     case 'ollama':
       return createOllama({
         baseURL: provider.baseUrl || 'http://localhost:11434/api',
-      })(modelId, thinkingEnabled !== undefined ? { think: thinkingEnabled } : {});
+      })(modelId, { ...(thinkingEnabled !== undefined ? { think: thinkingEnabled } : {}), ...(contextLimit > 0 ? { options: { num_ctx: contextLimit } } : {}) });
 
     default:
       return createOpenAI({
@@ -628,6 +670,10 @@ function createLanguageModel(provider: LlmProviderConfig, overrideModelId?: stri
         baseURL: 'https://api.openai.com/v1',
       }).chat(modelId);
   }
+}
+
+function createLanguageModel(provider: LlmProviderConfig, modelId: string, options: { thinkingEnabled?: boolean | undefined; chatTemplateThinking?: boolean } = {}) {
+  return withContextBudget(createRawLanguageModel(provider, modelId, options), provider.models.find((model) => model.modelId === modelId)?.contextWindowTokens ?? 0);
 }
 
 /** Explicit native thinking controls; omitted switches retain provider defaults. */

@@ -74,6 +74,8 @@ export class LlmInteractionLogger {
     messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
     temperature?: number;
     maxOutputTokens?: number;
+    contextWindowTokens?: number;
+    estimatedInputTokens?: number;
   }): void {
     if (!this.#enabled) return;
     try {
@@ -91,6 +93,7 @@ export class LlmInteractionLogger {
         `ResponseCharacters: ${params.event === 'request' ? 'unavailable' : params.response.length}`,
         `FinishReason: ${params.finishReason ?? 'unavailable'} InputTokens: ${params.inputTokens ?? 'unavailable'} OutputTokens: ${params.outputTokens ?? 'unavailable'}`,
         `Temperature: ${params.temperature ?? ''} MaxOutputTokens: ${params.maxOutputTokens ?? ''}`,
+        ...(params.contextWindowTokens ? [`ContextLimit: ${params.contextWindowTokens} EstimatedInputTokens: ${params.estimatedInputTokens ?? 'unavailable'} ReservedOutputTokens: ${params.maxOutputTokens ?? 'unavailable'}`] : []),
         `Duration: ${params.durationMs}ms`,
         params.error ? `ERROR: ${params.error}` : '',
         '--- SYSTEM ---', params.systemPrompt,

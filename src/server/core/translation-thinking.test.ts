@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { SystemPreferencesService, type LlmProviderConfig } from './system-preferences';
 import { generateRefinedTranslationText } from './translation/nodes/translate-node';
+import { ContextBudgetExceededError } from './llm-context-budget';
 
 const providers: Array<{ type: LlmProviderConfig['type']; response: unknown; check: (body: Record<string, unknown>, enabled: boolean | undefined) => void }> = [
   {
@@ -53,6 +54,21 @@ for (const provider of providers) {
         provider.check(requests.at(-1)!, thinkingEnabled);
       }
       assert.equal(requests.length, 3);
+      preferences.updateLlmProviders(preferences.getLlmState().providers.map((entry) => ({ ...entry, models: entry.models.map((model) => ({ ...model, contextWindowTokens: 12000 })) })));
+      await generateRefinedTranslationText(preferences, { providerId: 'fake', modelId: 'fake', thinkingEnabled: true }, 'Extract terms.', 'Source text.');
+      const bounded = requests.at(-1)!;
+      if (provider.type === 'openai-compatible') assert.equal(bounded.max_tokens ?? bounded.max_completion_tokens, 3000);
+      if (provider.type === 'anthropic') {
+        assert.equal(bounded.max_tokens, 3000, 'SDK thinking tokens must be included in the output reserve');
+        assert.equal((bounded.thinking as { budget_tokens: number }).budget_tokens, 2048);
+      }
+      if (provider.type === 'google-generative-ai') assert.equal((bounded.generationConfig as { maxOutputTokens: number }).maxOutputTokens, 3000);
+      if (provider.type === 'ollama') {
+        assert.equal((bounded.options as { num_predict: number }).num_predict, 3000);
+        assert.equal((bounded.options as { num_ctx: number }).num_ctx, 12000);
+      }
+      await assert.rejects(generateRefinedTranslationText(preferences, { providerId: 'fake', modelId: 'fake' }, 'Extract terms.', 'あ'.repeat(12000)), ContextBudgetExceededError);
+      assert.equal(requests.length, 4, 'oversized mandatory content must be rejected before sending');
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -751,6 +751,9 @@ function parseLlmModels(value: unknown, providerIndex: number): NonNullable<LlmP
       ...(typeof entry.enabled === 'boolean' ? { enabled: entry.enabled } : {}),
       ...(capabilityMode !== undefined ? { capabilityMode } : {}),
       ...(translationMessageFormat !== undefined ? { translationMessageFormat } : {}),
+      ...(entry.contextWindowTokens !== undefined
+        ? { contextWindowTokens: nonNegativeInteger(entry.contextWindowTokens, `providers[${providerIndex}].models[${modelIndex}].contextWindowTokens`) }
+        : {}),
       ...(entry.capabilities !== undefined
         ? { capabilities: parseCapabilityArray(entry.capabilities, `providers[${providerIndex}].models[${modelIndex}].capabilities`) }
         : {}),

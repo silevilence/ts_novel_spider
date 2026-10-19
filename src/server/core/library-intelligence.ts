@@ -1,3 +1,4 @@
+import { withContextBudget, textRequestFits, splitTextForContext, batchForContext } from './llm-context-budget';
 import crypto from 'node:crypto';
 
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -722,7 +723,6 @@ export class LibraryIntelligenceService {
         ? [...neo4jQuery.hits, ...sourceCollection.trace.graphHits]
         : sourceCollection.trace.graphHits,
     };
-    const prompt = buildAssistantPrompt(snapshot, graphState, input.message, sources, input.chapterId);
     const model = resolveCapabilityRoute(
       llmState,
       'chat',
@@ -744,7 +744,15 @@ export class LibraryIntelligenceService {
     }
 
     try {
-      const message = await generateChatReply(model.provider, model.model, prompt);
+      const render = (batch: LibraryAssistantSource[]) => buildAssistantPrompt(snapshot, graphState, input.message, batch, input.chapterId);
+      const parts = sources.flatMap((source) => splitTextForContext(source.excerpt,
+        (excerpt) => textRequestFits(model.model.contextWindowTokens, '', render([{ ...source, excerpt }]), 720))
+        .map((excerpt) => ({ ...source, excerpt })));
+      const replies: string[] = [];
+      for (const batch of batchForContext(parts, (items) => textRequestFits(model.model.contextWindowTokens, '', render(items), 720))) {
+        replies.push(await generateChatReply(model.provider, model.model, render(batch)));
+      }
+      const message = replies.length ? replies.join('\n\n') : await generateChatReply(model.provider, model.model, render([]));
       return {
         mode: 'llm',
         message: message.trim(),
@@ -1639,22 +1647,22 @@ async function generateChatReply(provider: LlmProviderConfig, model: LlmModelCon
         baseURL: buildProviderApiBaseUrl(provider),
         ...(provider.organization ? { organization: provider.organization } : {}),
       });
-      const result = await generateText({ model: factory.chat(model.modelId), prompt, maxOutputTokens: 720 });
+      const result = await generateText({ model: withContextBudget(factory.chat(model.modelId), model.contextWindowTokens), prompt, maxOutputTokens: 720 });
       return result.text;
     }
     case 'anthropic': {
       const factory = createAnthropic({ apiKey: provider.apiKey, baseURL: normalizeBaseUrl(provider.baseUrl) });
-      const result = await generateText({ model: factory(model.modelId), prompt, maxOutputTokens: 720 });
+      const result = await generateText({ model: withContextBudget(factory(model.modelId), model.contextWindowTokens), prompt, maxOutputTokens: 720 });
       return result.text;
     }
     case 'google-generative-ai': {
       const factory = createGoogleGenerativeAI({ apiKey: provider.apiKey, baseURL: normalizeBaseUrl(provider.baseUrl) });
-      const result = await generateText({ model: factory(model.modelId), prompt, maxOutputTokens: 720 });
+      const result = await generateText({ model: withContextBudget(factory(model.modelId), model.contextWindowTokens), prompt, maxOutputTokens: 720 });
       return result.text;
     }
     case 'ollama': {
       const factory = createOllama({ baseURL: normalizeBaseUrl(provider.baseUrl), ...(provider.apiKey ? { apiKey: provider.apiKey } : {}) });
-      const result = await generateText({ model: factory.chat(model.modelId), prompt, maxOutputTokens: 720 });
+      const result = await generateText({ model: withContextBudget(factory.chat(model.modelId, model.contextWindowTokens > 0 ? { options: { num_ctx: model.contextWindowTokens } } : {}), model.contextWindowTokens), prompt, maxOutputTokens: 720 });
       return result.text;
     }
   }

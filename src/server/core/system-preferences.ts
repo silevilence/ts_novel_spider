@@ -1,3 +1,4 @@
+import { withContextBudget, assertModelInputBudget } from './llm-context-budget';
 import { isTranslationMessageFormat, type TranslationMessageFormat } from '../contracts/translation-message-format';
 export type { TranslationMessageFormat } from '../contracts/translation-message-format';
 import crypto from 'node:crypto';
@@ -964,6 +965,8 @@ async function validateModelWithAiSdk(options: {
   fetchImpl: typeof fetch;
 }): Promise<void> {
   const validationMode = selectValidationMode(options.detectedCapabilities);
+  if (validationMode !== 'chat') assertModelInputBudget(options.model.contextWindowTokens, validationMode === 'embedding'
+    ? ['ping'] : { query: 'Which document is about rain?', documents: ['A sunny walk at the beach.', 'A rainy afternoon in the city.'] });
 
   switch (options.provider.type) {
     case 'ollama': {
@@ -993,7 +996,7 @@ async function validateModelWithAiSdk(options: {
       }
 
       await generateText({
-        model: provider.chat(options.model.modelId),
+        model: withContextBudget(provider.chat(options.model.modelId, options.model.contextWindowTokens > 0 ? { options: { num_ctx: options.model.contextWindowTokens } } : {}), options.model.contextWindowTokens),
         prompt: 'Reply with the single word PONG.',
         maxOutputTokens: 16,
       });
@@ -1026,7 +1029,7 @@ async function validateModelWithAiSdk(options: {
       }
 
       await generateText({
-        model: provider.chat(options.model.modelId),
+        model: withContextBudget(provider.chat(options.model.modelId), options.model.contextWindowTokens),
         prompt: 'Reply with the single word PONG.',
         maxOutputTokens: 16,
       });
@@ -1044,7 +1047,7 @@ async function validateModelWithAiSdk(options: {
       });
 
       await generateText({
-        model: provider(options.model.modelId),
+        model: withContextBudget(provider(options.model.modelId), options.model.contextWindowTokens),
         prompt: 'Reply with the single word PONG.',
         maxOutputTokens: 16,
       });
@@ -1070,7 +1073,7 @@ async function validateModelWithAiSdk(options: {
       }
 
       await generateText({
-        model: provider(options.model.modelId),
+        model: withContextBudget(provider(options.model.modelId), options.model.contextWindowTokens),
         prompt: 'Reply with the single word PONG.',
         maxOutputTokens: 16,
       });

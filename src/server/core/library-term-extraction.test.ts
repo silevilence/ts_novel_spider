@@ -12,6 +12,25 @@ import { SystemPreferencesService } from './system-preferences';
 import { buildGlossaryExtractionPrompt, buildGlossarySourceWindows, parseGlossaryCandidates } from './glossary-extraction';
 import { RefinedTranslationService } from './refined-translation';
 import { LocalExportEngine } from './export-engine';
+import { textRequestFits } from './llm-context-budget';
+
+test('extraction splits source to the selected model budget without losing source text', async () => {
+  const { repository, preferences, cleanup } = fixture('日本語の原文。'.repeat(1200));
+  const prompts: string[] = [];
+  preferences.updateLlmProviders(preferences.getLlmState().providers.map((provider) => ({ ...provider, models: provider.models.map((model) => ({ ...model, contextWindowTokens: 3000 })) })));
+  const service = new LibraryTermExtractionService(repository, preferences, async (_p, _route, system, prompt) => {
+    assert.ok(textRequestFits(3000, system, prompt));
+    prompts.push(prompt);
+    return '{"terms":[]}';
+  });
+  try {
+    service.start('test', 'novel');
+    await waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(service.getRun('test', 'novel')?.status, 'completed');
+    assert.ok(prompts.length > 1);
+    assert.equal(prompts.join(''), '【第 1 章 序章】\n' + '日本語の原文。'.repeat(1200));
+  } finally { cleanup(); }
+});
 
 function fixture(content = 'アリスは王都に住む。') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'library-terms-'));

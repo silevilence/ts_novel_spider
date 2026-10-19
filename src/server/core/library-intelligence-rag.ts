@@ -1,3 +1,4 @@
+import { withContextBudget, textRequestFits, splitTextForContext, estimateContextTokens, batchForContext, modelInputFits } from './llm-context-budget';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -1402,6 +1403,20 @@ async function extractChunkWithLlm(
   chunk: ChunkPlan,
   route: ResolvedCapabilityRoute,
 ): Promise<ChunkExtraction> {
+  const limit = route.model.contextWindowTokens;
+  const fits = (content: string) => textRequestFits(limit, '',
+    buildPromptedJsonExtractionPrompt(buildChunkExtractionPrompt(snapshot, { ...chunk, content }), 2)
+      + JSON.stringify(z.toJSONSchema(chunkExtractionSchema)), 1400);
+  if (limit > 0 && !fits(chunk.content)) {
+    const extracted: ChunkExtraction[] = [];
+    for (const content of splitTextForContext(chunk.content, fits)) extracted.push(await extractChunkWithLlm(snapshot, { ...chunk, content }, route));
+    return {
+      summary: extracted.map((part) => part.summary).join('\n'),
+      eventSummary: extracted.map((part) => part.eventSummary).join('\n'),
+      entities: extracted.flatMap((part) => part.entities), relations: extracted.flatMap((part) => part.relations),
+      keywordHints: [...new Set(extracted.flatMap((part) => part.keywordHints))], usedLlm: true,
+    };
+  }
   const prompt = buildChunkExtractionPrompt(snapshot, chunk);
   const heuristicFallback = buildFallbackChunkExtractionObject(extractChunkHeuristically(snapshot, chunk));
 
@@ -3101,7 +3116,24 @@ async function rerankDocuments(
   route: ResolvedCapabilityRoute,
 ): Promise<Map<number, number>> {
   const documents = candidates.map((entry) => `${entry.chunk.chapterTitle}\n${entry.chunk.summary}\n${entry.chunk.eventSummary}\n${entry.chunk.content.slice(0, 360)}`);
+  const limit = route.model.contextWindowTokens;
+  if (!modelInputFits(limit, { query, documents })) {
+    const parts = documents.flatMap((document, index) => splitTextForContext(document,
+      (text) => modelInputFits(limit, { query, documents: [text] })).map((text) => ({ index, text })));
+    const scores = new Map<number, number>();
+    for (const batch of batchForContext(parts, (items) => modelInputFits(limit, { query, documents: items.map((item) => item.text) }))) {
+      const ranking = await rerankDocumentBatch(query, batch.map((part) => part.text), route);
+      for (const [index, score] of ranking) {
+        const original = batch[index]?.index;
+        if (original !== undefined) scores.set(original, Math.max(scores.get(original) ?? -Infinity, score));
+      }
+    }
+    return scores;
+  }
+  return rerankDocumentBatch(query, documents, route);
+}
 
+async function rerankDocumentBatch(query: string, documents: string[], route: ResolvedCapabilityRoute): Promise<Map<number, number>> {
   if (route.provider.type === 'ollama') {
     const provider = createOllama({
       baseURL: normalizeBaseUrl(route.provider.baseUrl),
@@ -3170,6 +3202,26 @@ async function embedValues(
 }
 
 async function embedValueBatch(values: string[], route: ResolvedCapabilityRoute): Promise<number[][]> {
+  const limit = route.model.contextWindowTokens;
+  if (modelInputFits(limit, values)) return embedRawValueBatch(values, route);
+  const parts = values.flatMap((value, index) => splitTextForContext(value,
+    (text) => modelInputFits(limit, [text])).map((text) => ({ index, text })));
+  const sums: number[][] = values.map(() => []);
+  const weights = values.map(() => 0);
+  for (const batch of batchForContext(parts, (items) => modelInputFits(limit, items.map((part) => part.text)), EMBEDDING_BATCH_SIZE)) {
+    const vectors = await embedRawValueBatch(batch.map((part) => part.text), route);
+    if (vectors.length !== batch.length) throw new Error('Embedding provider returned an unexpected vector count.');
+    batch.forEach((part, index) => {
+      const weight = Math.max(1, estimateContextTokens(part.text));
+      const sum = sums[part.index]!;
+      vectors[index]!.forEach((value, dimension) => { sum[dimension] = (sum[dimension] ?? 0) + value * weight; });
+      weights[part.index]! += weight;
+    });
+  }
+  return sums.map((sum, index) => sum.map((value) => value / weights[index]!));
+}
+
+async function embedRawValueBatch(values: string[], route: ResolvedCapabilityRoute): Promise<number[][]> {
   switch (route.provider.type) {
     case 'openai-compatible': {
       const provider = createOpenAI({
@@ -3211,7 +3263,7 @@ async function embedSingleValue(value: string, route: ResolvedCapabilityRoute): 
   return embedding;
 }
 
-function createLanguageModel(provider: LlmProviderConfig, model: LlmModelConfig) {
+function createRawLanguageModel(provider: LlmProviderConfig, model: LlmModelConfig) {
   switch (provider.type) {
     case 'openai-compatible': {
       const factory = createOpenAI({
@@ -3232,9 +3284,13 @@ function createLanguageModel(provider: LlmProviderConfig, model: LlmModelConfig)
     }
     case 'ollama': {
       const factory = createOllama({ baseURL: normalizeBaseUrl(provider.baseUrl), ...(provider.apiKey ? { apiKey: provider.apiKey } : {}) });
-      return factory.chat(model.modelId);
+      return factory.chat(model.modelId, model.contextWindowTokens > 0 ? { options: { num_ctx: model.contextWindowTokens } } : {});
     }
   }
+}
+
+function createLanguageModel(provider: LlmProviderConfig, model: LlmModelConfig) {
+  return withContextBudget(createRawLanguageModel(provider, model), model.contextWindowTokens);
 }
 
 function splitParagraphs(content: string): string[] {

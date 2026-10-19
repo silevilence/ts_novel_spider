@@ -4,6 +4,8 @@
  * 维护 FIFO 队列存储已翻译的 (原文, 译文) 对，为 LLM 提供上下文参考。
  * 支持按条目数或 Token 数截断，使用批量裁剪策略保留近期稳定前缀以维持 KV Cache 命中。
  */
+import { estimateContextTokens } from '../../llm-context-budget';
+
 export interface HistoryEntry {
   sourceText: string;
   translatedText: string;
@@ -89,25 +91,25 @@ export class TranslationHistoryManager {
     this.#entries.splice(0, removeCount);
     this.#evictedCount += removeCount;
 
-    // 递归检查（Token 超标时可能需更激进裁剪）
-    if (this.#maxContextTokens > 0 && this.#estimateTotalTokens() > this.#maxContextTokens) {
+    // Continue until the bound holds, including a single very large history entry.
+    while (this.#maxContextTokens > 0 && this.#entries.length && this.#estimateTotalTokens() > this.#maxContextTokens) {
       const secondRemove = Math.max(1, Math.ceil(this.#entries.length / 2));
       this.#entries.splice(0, secondRemove);
       this.#evictedCount += secondRemove;
     }
   }
 
-  /** 估算当前历史的总 Token 数（中/日文约 2 字=1 token，英文约 4 字=1 token） */
+  /** History-only memory bound; the request layer additionally reserves instructions, source and output. */
   #estimateTotalTokens(): number {
-    let totalChars = 0;
+    let totalTokens = 0;
     for (const entry of this.#entries) {
-      totalChars += entry.sourceText.length + entry.translatedText.length;
+      totalTokens += estimateContextTokens(entry.sourceText) + estimateContextTokens(entry.translatedText);
     }
-    return Math.ceil(totalChars / 3.5);
+    return totalTokens;
   }
 }
 
 /** 估算一段文本的 Token 数 */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.5);
+  return estimateContextTokens(text);
 }

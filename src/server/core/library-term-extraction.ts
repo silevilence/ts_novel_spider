@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { splitTextForContext, textRequestFits, modelContextLimit, contextOutputReserve, textContextTokens } from './llm-context-budget';
 import type { SqliteNovelRepository, StoredTermExtractionRun } from './novel-repository';
 import type { SystemPreferencesService } from './system-preferences';
 import { resolveCapabilityRoute } from './library-intelligence';
@@ -54,8 +55,10 @@ export class LibraryTermExtractionService {
     if (!resolved || (override && (!route || resolved.source !== 'novel')) || !resolved.provider.isConfigured || !resolved.model.isConfigured || !resolved.model.resolvedCapabilities.includes('chat')) {
       throw new Error('术语提取模型不可用，请检查单本配置、全局翻译偏好或默认对话模型。');
     }
-    const windows = buildGlossarySourceWindows(chapters);
     const sourceLang = local?.sourceLang ?? global.sourceLang;
+    const windows = buildGlossarySourceWindows(chapters).flatMap((window) => splitTextForContext(window.source,
+      (source) => textRequestFits(resolved.model.contextWindowTokens, buildGlossaryExtractionPrompt(sourceLang), source))
+      .map((source) => ({ ...window, source })));
     // Model changes are allowed when retrying failures; only changed source invalidates completed work.
     const sourceFingerprint = createHash('sha256').update(JSON.stringify({ sourceLang, windows })).digest('hex');
     const resumable = previous && previous.status !== 'completed' && previous.sourceFingerprint === sourceFingerprint;
@@ -99,10 +102,12 @@ export class LibraryTermExtractionService {
         for (let attempt = 1; attempt <= MAX_EXTRACTION_ATTEMPTS; attempt++) {
           const secrets = this.#preferences.getLlmState().providers.filter((provider) => provider.id === route.providerId).map((provider) => provider.apiKey);
           const batchLogger = logger.withSecrets(secrets).withContext({ batchIndex: index + 1, chapterIds: window.chapterIds });
+          const contextLimit = modelContextLimit(this.#preferences, route);
           const logParams = {
             provider: route.providerId, model: route.modelId, callId: randomUUID(), attempt, maxAttempts: MAX_EXTRACTION_ATTEMPTS,
             systemPrompt: buildGlossaryExtractionPrompt(sourceLang), userPrompt: window.source,
             phase: attempt === 1 ? 'batch' as const : 'batch_retry' as const,
+            ...(contextLimit > 0 ? { contextWindowTokens: contextLimit, estimatedInputTokens: textContextTokens(buildGlossaryExtractionPrompt(sourceLang), window.source), maxOutputTokens: contextOutputReserve(contextLimit) } : {}),
             ...(!route.thinkingEnabled ? { temperature: 0.2 } : {}),
           };
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]);

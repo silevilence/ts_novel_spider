@@ -12,13 +12,15 @@ import { NetworkProxyService } from '../core/network-proxy';
 import { SqliteNovelRepository } from '../core/novel-repository';
 import { SystemPreferencesService } from '../core/system-preferences';
 
-function createTestServer() {
+function createTestServer(persistPreferences = false) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-spider-routes-'));
+  const preferencesFilePath = path.join(tempDir, 'system-preferences.json');
   const repository = new SqliteNovelRepository(path.join(tempDir, 'novels.db'));
   const networkProxy = new NetworkProxyService({
     fetchImpl: async () => new Response('proxy-ok', { status: 200 }),
   });
   const systemPreferences = new SystemPreferencesService({
+    ...(persistPreferences ? { storageFilePath: preferencesFilePath } : {}),
     fetchImpl: async (input, init) => {
       const url = String(input);
 
@@ -270,6 +272,7 @@ function createTestServer() {
 
   return {
     app,
+    preferencesFilePath,
     controlCenter,
     repository,
     cleanup: () => {
@@ -280,6 +283,55 @@ function createTestServer() {
     },
   };
 }
+
+test('LLM model context token limit survives saving and reopening settings', async () => {
+  const { app, preferencesFilePath, cleanup } = createTestServer(true);
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}/api/control/preferences/llm-providers`;
+    const saveLimit = (contextWindowTokens: unknown) => fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        providers: [{
+          id: 'ollama',
+          type: 'ollama',
+          baseUrl: 'http://127.0.0.1:11434',
+          models: [{ id: 'hy-mt2', modelId: 'kaelri/hy-mt2:1.8b', contextWindowTokens }],
+        }],
+      }),
+    });
+    type Payload = { providers: Array<{ models: Array<{ contextWindowTokens: number }> }> };
+    for (const limit of [8192, 32768, 0, undefined]) {
+      const response = await saveLimit(limit);
+      assert.equal(response.status, 200);
+      const saved = await response.json() as Payload;
+      assert.equal(saved.providers[0].models[0].contextWindowTokens, limit ?? 0);
+
+      const reopened = await fetch(url);
+      const payload = await reopened.json() as Payload;
+      assert.equal(reopened.status, 200);
+      assert.equal(payload.providers[0].models[0].contextWindowTokens, limit ?? 0);
+
+      const restored = new SystemPreferencesService({ storageFilePath: preferencesFilePath });
+      assert.equal(restored.getLlmState().providers[0].models[0].contextWindowTokens, limit ?? 0);
+    }
+
+    for (const invalidLimit of [-1, 1.5, 'invalid']) {
+      const response = await saveLimit(invalidLimit);
+      assert.equal(response.status, 400);
+      const payload = await response.json() as { message: string };
+      assert.match(payload.message, /contextWindowTokens.*non-negative integer/);
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    cleanup();
+  }
+});
 
 test('control-center routes expose sources, preview and task lifecycle', async () => {
   const { app, cleanup } = createTestServer();

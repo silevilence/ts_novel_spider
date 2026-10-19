@@ -1,5 +1,6 @@
 import { buildGlossaryExtractionPrompt, buildGlossarySourceWindows, parseGlossaryCandidates, GLOSSARY_EXTRACTION_SOURCE_LIMIT } from './glossary-extraction';
 import crypto from 'node:crypto';
+import { modelContextLimit, textRequestFits, splitTextForContext, batchForContext, contextOutputReserve } from './llm-context-budget';
 
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 
@@ -235,15 +236,13 @@ export class RefinedTranslationService {
     // Extraction is one bounded prompt over a local snapshot. A tool agent may repeatedly
     // read all chapters and spend up to eight tool steps, which turns a short glossary pass
     // into minutes of work before any candidate is added.
-    const response = await this.#generateText(
-      this.#preferences,
-      route,
-      buildGlossaryExtractionPrompt(task.sourceLang),
-      source,
-      signal,
-    );
-    signal?.throwIfAborted();
-    const candidates = parseGlossaryCandidates(response);
+    const system = buildGlossaryExtractionPrompt(task.sourceLang);
+    const candidates: ReturnType<typeof parseGlossaryCandidates> = [];
+    for (const part of splitTextForContext(source, (text) => textRequestFits(modelContextLimit(this.#preferences, route), system, text))) {
+      const response = await this.#generateText(this.#preferences, route, system, part, signal);
+      signal?.throwIfAborted();
+      candidates.push(...parseGlossaryCandidates(response));
+    }
     const existing = new Map(this.listTerms(taskId).map((term) => [term.sourceTerm, term]));
     let added = 0;
     for (const candidate of candidates) {
@@ -274,7 +273,6 @@ export class RefinedTranslationService {
     const selected = new Set((input.paragraphIndices ?? []).filter((index) => Number.isInteger(index) && index >= 0));
     const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
     const visibleRows = selected.size ? rows.filter((row) => selected.has(row.paragraphIndex)) : rows;
-    const material = `章节标题：${chapter.title}\n当前标题译文：${chapter.translatedTitle ?? '（未译）'}\n\n${visibleRows.map((row) => `段落 #${row.paragraphIndex + 1}（paragraphIndex=${row.paragraphIndex}）\n原文：${row.sourceText}\n当前译文：${row.translatedText ?? '（未译）'}`).join('\n\n')}`;
     const history = (input.history ?? []).slice(-8).map((item) => `${item.role === 'user' ? '用户' : 'Agent'}：${item.content}`).join('\n');
     const locator = `当前工具定位信息：task_id=${taskId}，chapter_id=${chapterId}，章节序号=${chapter.chapterIndex}。工具已经绑定到此任务和章节，不需要也不能自行传 task_id。`;
     const editInstruction = input.mode === 'read'
@@ -285,7 +283,22 @@ export class RefinedTranslationService {
       `章节：${chapter.title}\n用户问题：${input.message}\n${history ? `历史对话：\n${history}\n` : ''}当前选中段落索引：${[...selected].join(', ') || '全部'}。`,
       createRefinedTranslationTools(this, { taskId, chapterIds: [chapterId], writable: input.mode !== 'read', requireWriteApproval: input.mode !== 'read' }),
     );
-    const response = toolResult?.text || await this.#generateText(this.#preferences, route, `你是精翻工作区的章节 Agent。${input.mode === 'read' ? '你处于只读模式：不能提出或执行任何写入。直接以自然语言回答用户问题。' : '你处于编辑模式。仅返回 JSON：{"reply":"给用户的简短说明","edits":[{"paragraphIndex":0,"translatedText":"修改后的完整译文"}]}。只提交确有必要的段落修改；不要修改未提供的段落。'}\n${locator}`, `章节：${chapter.title}\n用户问题：${input.message}\n${history ? `历史对话：\n${history}\n` : ''}可用段落：\n${material}`);
+    const limit = modelContextLimit(this.#preferences, route);
+    const system = `你是精翻工作区的章节 Agent。${input.mode === 'read' ? '你处于只读模式：不能提出或执行任何写入。直接以自然语言回答用户问题。' : '你处于编辑模式。仅返回 JSON：{"reply":"给用户的简短说明","edits":[{"paragraphIndex":0,"translatedText":"修改后的完整译文"}]}。只提交确有必要的段落修改；不要修改未提供的段落。'}\n${locator}`;
+    const historyEntries = [...(input.history ?? []).slice(-8)];
+    const render = (batch: typeof visibleRows) => `章节：${chapter.title}\n当前标题译文：${chapter.translatedTitle ?? '（未译）'}\n用户问题：${input.message}\n历史对话：\n${historyEntries.map((entry) => entry.role + '：' + entry.content).join('\n')}\n可用段落：\n${batch.map((row) => `段落 #${row.paragraphIndex + 1}（paragraphIndex=${row.paragraphIndex}）\n原文：${row.sourceText}\n当前译文：${row.translatedText ?? '（未译）'}`).join('\n\n')}`;
+    while (historyEntries.length && !textRequestFits(limit, system, render(visibleRows))) historyEntries.shift();
+    let response = toolResult?.text ?? '';
+    if (!response) {
+      const replies: string[] = [];
+      const batches = visibleRows.length ? batchForContext(visibleRows, (batch) => textRequestFits(limit, system, render(batch))) : [[]];
+      for (const batch of batches) replies.push(await this.#generateText(this.#preferences, route, system, render(batch)));
+      if (input.mode === 'read') response = replies.join('\n\n');
+      else {
+        const parsed = replies.map(parseChapterAgentResponse);
+        response = JSON.stringify({ reply: parsed.map((entry) => entry.reply).join('\n\n'), edits: parsed.flatMap((entry) => entry.edits) });
+      }
+    }
     if (input.mode === 'read') return { reply: response.trim(), mode: input.mode, appliedParagraphIndices: [] as number[], proposedEdits: [] as RefinedChapterAgentEdit[] };
     const toolEdits = toolResult?.toolCalls.flatMap((call) => {
       if (call.toolName !== 'write_translation_segment' || !call.input || typeof call.input !== 'object') return [];
@@ -604,6 +617,34 @@ export class RefinedTranslationService {
     }
   }
   #resolveRoute(task: StoredRefinedTranslationTaskRow, kind: 'translationModels' | 'omissionModel' | 'reviewModel') { const configured = kind === 'translationModels' ? task.modelConfig.translationModels[0] ?? null : task.modelConfig[kind]; return configured ?? resolveTranslationModel(this.#preferences) ?? null; }
+  /** Split plain translation losslessly; only relevant glossary entries and fitting recent context travel with each part. */
+  async #translateText(route: { providerId: string; modelId: string }, instruction: string, source: string, glossary: string, context = '', signal?: AbortSignal): Promise<string> {
+    const limit = modelContextLimit(this.#preferences, route);
+    const history = context.split('\n\n').filter(Boolean);
+    const systemFor = (text: string) => `${instruction}\n术语表：\n${(limit > 0 ? relevantGlossary(glossary, text) : glossary) || '（无）'}\n前文上下文：\n${history.join('\n\n') || '（无）'}`;
+    const fits = (text: string) => textRequestFits(limit, systemFor(text), text)
+      && (!limit || text.length * 3 <= contextOutputReserve(limit));
+    while (history.length && !fits(source)) history.shift();
+    const parts = splitTextForContext(source, fits);
+    if (parts.length > 1 && /^\s*\|.*\|\s*$/m.test(source)) throw new Error('表格超过模型上下文预算，无法安全拆分；请增大模型上下文上限。');
+    const translations: string[] = [];
+    for (const part of parts) {
+      signal?.throwIfAborted();
+      translations.push(await this.#generateText(this.#preferences, route, systemFor(part), part, signal));
+    }
+    return translations.join('\n');
+  }
+  /** A long unchanged paragraph is skippable only if every budgeted piece is skippable. */
+  async #canKeepOriginal(route: { providerId: string; modelId: string }, source: string, signal: AbortSignal): Promise<boolean> {
+    const system = '判断原文是否可不翻译并原样保留。只能回答 YES 或 NO。';
+    const limit = modelContextLimit(this.#preferences, route);
+    for (const part of splitTextForContext(source, (text) => textRequestFits(limit, system, text))) {
+      signal.throwIfAborted();
+      const answer = await this.#generateText(this.#preferences, route, system, part, signal);
+      if (!/^yes\b/i.test(answer)) return false;
+    }
+    return true;
+  }
   #resolveSegmentRoute(task: StoredRefinedTranslationTaskRow, paragraphIndex: number) { const routes = task.modelConfig.translationModels; return routes.length ? routes[paragraphIndex % routes.length] ?? null : resolveTranslationModel(this.#preferences) ?? null; }
   #findNextChapter(taskId: string) { return this.#repository.listRefinedTranslationChapters(taskId).find((chapter) => chapter.status !== 'reviewed' && chapter.status !== 'failed' && chapter.status !== 'needs_attention') ?? null; }
   #resumeRemainingAutomaticWork(taskId: string, reason: string): boolean {
@@ -657,7 +698,7 @@ export class RefinedTranslationService {
     const source = task.sourceMetadata;
     const translated = task.translatedMetadata;
     const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
-    const translate = async (kind: string, text: string) => this.#generateText(this.#preferences, route, `将小说${kind}从${task.sourceLang}翻译为${task.targetLang}。只输出译文，不添加说明。专有名词必须遵循术语表：\n${glossary || '（空）'}`, text, signal);
+    const translate = async (kind: string, text: string) => this.#translateText(route, `将小说${kind}从${task.sourceLang}翻译为${task.targetLang}。只输出译文，不添加说明。专有名词必须遵循术语表。`, text, glossary, '', signal);
     try {
       const update: Partial<typeof translated> = {};
       if (!translated.title && source.title.trim()) update.title = await translate('标题', source.title);
@@ -676,7 +717,7 @@ export class RefinedTranslationService {
     if (!chapter.translatedTitle?.trim() && chapter.title.trim() && !signal.aborted) {
       try {
         const route = this.#resolveSegmentRoute(task, 0);
-        if (route) { const translatedTitle = await this.#generateText(this.#preferences, route, `将章节标题翻译为${task.targetLang}，只输出标题译文。\n术语表：\n${glossary || '（空）'}`, chapter.title, signal); if (!signal.aborted) this.#repository.updateRefinedTranslationChapterTitle(taskId, chapterId, translatedTitle); }
+        if (route) { const translatedTitle = await this.#translateText(route, `将章节标题翻译为${task.targetLang}，只输出标题译文。`, chapter.title, glossary, '', signal); if (!signal.aborted) this.#repository.updateRefinedTranslationChapterTitle(taskId, chapterId, translatedTitle); }
       } catch (error) { if (signal.aborted) return; this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章标题翻译失败，正文将继续：${toMessage(error)}`); }
     }
     const pending = this.#repository.listRefinedTranslationSegments(taskId, chapterId).filter((segment) => segment.status !== 'translated' && segment.status !== 'skipped');
@@ -697,7 +738,7 @@ export class RefinedTranslationService {
           signal,
         );
         if (signal.aborted) return;
-        const text = toolResult?.text || await this.#generateText(this.#preferences, route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。\n术语表：\n${glossary || '（无）'}\n前文上下文：\n${context || '（当前为本章开头）'}`, segment.sourceText, signal);
+        const text = toolResult?.text || await this.#translateText(route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。`, segment.sourceText, glossary, context, signal);
         if (!signal.aborted) this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: text || null, status: text ? 'translated' : 'pending' });
       } catch (error) { if (!signal.aborted) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: null, status: 'failed' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${segment.paragraphIndex + 1} 段失败：${toMessage(error)}`); } }
     }
@@ -769,13 +810,11 @@ export class RefinedTranslationService {
             continue;
           }
         }
-        const rawText = await this.#generateText(
-          this.#preferences,
-          route,
-          `你是文学翻译的审核修订 Agent。只允许修改当前给出的一个段落：禁止重翻整章、禁止改动章节标题、禁止改动其他段落或术语表。依据审核意见进行最小必要修改；若意见不应采纳，保留当前译文。\n术语表：\n${glossary || '（无）'}\n前文上下文：\n${this.#translationContext(taskId, chapterId, paragraphIndex) || '（当前为本章开头）'}\n只返回 JSON：{"translatedText":"修订后的完整当前段译文；不修改时返回当前译文","reviewFeedback":[{"reviewId":"...","decision":"accepted|partially_accepted|rejected","reason":"针对该意见的简短处理说明"}]}。reviewFeedback 必须覆盖每条 reviewId。`,
-          `当前段原文：${segment.sourceText}\n当前段译文：${segment.translatedText ?? '（缺失）'}\n审核意见：\n${activeReviews.map((review, index) => `${index + 1}. reviewId=${review.id}；意见：${review.suggestion}`).join('\n')}`,
-          signal,
-        );
+        const material = `当前段原文：${segment.sourceText}\n当前段译文：${segment.translatedText ?? '（缺失）'}\n审核意见：\n${activeReviews.map((review, index) => `${index + 1}. reviewId=${review.id}；意见：${review.suggestion}`).join('\n')}`;
+        const references = this.#translationContext(taskId, chapterId, paragraphIndex).split('\n\n').filter(Boolean);
+        const systemFor = () => `你是文学翻译的审核修订 Agent。只允许修改当前给出的一个段落：禁止重翻整章、禁止改动章节标题、禁止改动其他段落或术语表。依据审核意见进行最小必要修改；若意见不应采纳，保留当前译文。\n术语表：\n${relevantGlossary(glossary, material) || '（无）'}\n前文上下文：\n${references.join('\n\n') || '（当前为本章开头）'}\n只返回 JSON：{"translatedText":"修订后的完整当前段译文；不修改时返回当前译文","reviewFeedback":[{"reviewId":"...","decision":"accepted|partially_accepted|rejected","reason":"针对该意见的简短处理说明"}]}。reviewFeedback 必须覆盖每条 reviewId。`;
+        while (references.length && !textRequestFits(modelContextLimit(this.#preferences, route), systemFor(), material)) references.shift();
+        const rawText = await this.#generateText(this.#preferences, route, systemFor(), material, signal);
         if (signal.aborted) break;
         const hasStructuredResponse = /\{[\s\S]*"translatedText"[\s\S]*\}/.test(rawText);
         const revision = parseRevisionResponse(rawText);
@@ -826,7 +865,7 @@ export class RefinedTranslationService {
       const safeToCopy = /^\s*(?:https?:\/\/\S+|[\d０-９.,%\-+ ]+)\s*$/.test(segment.sourceText);
       if (safeToCopy) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: segment.sourceText, status: 'skipped' }); continue; }
       if (route) {
-        try { const answer = await this.#generateText(this.#preferences, route, '判断原文是否可不翻译并原样保留。只能回答 YES 或 NO。', segment.sourceText, signal); if (signal.aborted) return { retranslate: false, failed: false }; if (/^yes\b/i.test(answer)) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: segment.sourceText, status: 'skipped' }); continue; } } catch (error) { if (signal.aborted) return { retranslate: false, failed: false }; this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${segment.paragraphIndex + 1} 段遗漏判定失败，将回到初翻：${toMessage(error)}`); }
+        try { const keepOriginal = await this.#canKeepOriginal(route, segment.sourceText, signal); if (signal.aborted) return { retranslate: false, failed: false }; if (keepOriginal) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: segment.sourceText, status: 'skipped' }); continue; } } catch (error) { if (signal.aborted) return { retranslate: false, failed: false }; this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${segment.paragraphIndex + 1} 段遗漏判定失败，将回到初翻：${toMessage(error)}`); }
       }
       retranslate = true;
     }
@@ -853,9 +892,32 @@ export class RefinedTranslationService {
         signal,
       );
       if (signal.aborted) return { needsRevision: false, reviewRound, maxReviewRounds: task.modelConfig.maxReviewRounds };
-      const response = toolResult?.text || await this.#generateText(this.#preferences, route, `审核文学翻译。术语表：\n${glossary || '（无）'}\n相邻章节译文（仅作一致性参考）：\n${adjacent || '（无）'}\n用户已拒绝的修改方向（除非出现新的严重错误，不要再次提出相同方向）：\n${rejectedDirections || '（无）'}\n仅返回 JSON：{"score":0-100,"severity":"low|medium|high","issues":[{"paragraphIndex":0,"sourceExcerpt":"该段原文的连续短句","translationExcerpt":"该段当前译文的连续短句","suggestion":"简明说明问题与修改理由","replacementText":"可直接替换的完整目标译文；无法安全给出则为 null","forceChange":false}],"scores":{"fluency":0,"consistency":0,"termAccuracy":0,"format":0}}。paragraphIndex 只是提示；服务端只会以 sourceExcerpt 与 translationExcerpt 的唯一双锚点定位。每条意见必须给出这两个连续短句；无法可靠定位则不要输出该意见。`, content, signal);
+      const limit = modelContextLimit(this.#preferences, route);
+      const references = adjacent.split('\n\n').filter(Boolean);
+      const systemFor = (material: string) => `审核文学翻译。术语表：\n${relevantGlossary(glossary, material) || '（无）'}\n相邻章节译文（仅作一致性参考）：\n${references.join('\n\n') || '（无）'}\n用户已拒绝的修改方向（除非出现新的严重错误，不要再次提出相同方向）：\n${rejectedDirections || '（无）'}\n仅返回 JSON：{"score":0-100,"severity":"low|medium|high","issues":[{"paragraphIndex":0,"sourceExcerpt":"该段原文的连续短句","translationExcerpt":"该段当前译文的连续短句","suggestion":"简明说明问题与修改理由","replacementText":"可直接替换的完整目标译文；无法安全给出则为 null","forceChange":false}],"scores":{"fluency":0,"consistency":0,"termAccuracy":0,"format":0}}。paragraphIndex 只是提示；服务端只会以 sourceExcerpt 与 translationExcerpt 的唯一双锚点定位。每条意见必须给出这两个连续短句；无法可靠定位则不要输出该意见。`;
+      const renderRows = (batch: typeof rows) => batch.map((row) => `【${row.paragraphIndex + 1}】原文：${row.sourceText}\n译文：${row.translatedText ?? '（缺失）'}`).join('\n');
+      while (references.length && !textRequestFits(limit, systemFor(content), content)) references.shift();
+      const reviews: ReturnType<typeof parseReviewJson>[] = [];
+      if (toolResult?.text) reviews.push(parseReviewJson(toolResult.text));
+      else {
+        const batches = batchForContext(rows, (batch) => {
+          const material = renderRows(batch);
+          return textRequestFits(limit, systemFor(material), material);
+        });
+        for (const batch of batches) {
+          signal.throwIfAborted();
+          const material = renderRows(batch);
+          reviews.push(parseReviewJson(await this.#generateText(this.#preferences, route, systemFor(material), material, signal)));
+        }
+      }
+      const parsed = (reviews.length ? reviews : [parseReviewJson('{}')]).reduce((combined, review) => ({
+        ...combined, score: Math.min(combined.score, review.score),
+        severity: combined.severity === 'high' || review.severity === 'high' ? 'high' : combined.severity === 'medium' || review.severity === 'medium' ? 'medium' : 'low',
+        issues: [...combined.issues, ...review.issues],
+        scores: { fluency: Math.min(combined.scores.fluency ?? combined.score, review.scores.fluency ?? review.score), consistency: Math.min(combined.scores.consistency ?? combined.score, review.scores.consistency ?? review.score), termAccuracy: Math.min(combined.scores.termAccuracy ?? combined.score, review.scores.termAccuracy ?? review.score), format: Math.min(combined.scores.format ?? combined.score, review.scores.format ?? review.score) },
+      }));
       if (signal.aborted) return { needsRevision: false, reviewRound, maxReviewRounds: task.modelConfig.maxReviewRounds };
-      const parsed = parseReviewJson(response); const needsRevision = parsed.score < 80 || parsed.issues.some((issue) => issue.forceChange);
+      const needsRevision = parsed.score < 80 || parsed.issues.some((issue) => issue.forceChange);
       const superseded = this.#repository.supersedeOpenRefinedTranslationReviews(taskId, chapterId);
       if (superseded) this.#log(taskId, 'info', `第 ${chapter.chapterIndex} 章上一轮 ${superseded} 条未处理审核意见已由本轮复审归档替代。`);
       const issues = parsed.issues.length || !needsRevision ? parsed.issues : [{ paragraphIndex: 0, sourceExcerpt: rows[0]?.sourceText ?? '', translationExcerpt: rows[0]?.translatedText ?? '', suggestion: '审核评分未达标，请重新润色本章译文。', replacementText: null, forceChange: true }];
@@ -897,3 +959,11 @@ function parseChapterAgentResponse(text: string): { reply: string; edits: Array<
   } catch { return { reply: text.trim(), edits: [] }; }
 }
 function parseGlossarySuggestion(text: string): { status: RefinedTranslationTermStatus; entityType: string | null; priority: number; suggestion: string | null } { try { const match = text.match(/\{[\s\S]*\}/); const value = JSON.parse(match?.[0] ?? '{}') as Record<string, unknown>; return { status: value.status === 'excluded' ? 'excluded' : 'pending', entityType: typeof value.entityType === 'string' ? value.entityType : null, priority: typeof value.priority === 'number' ? Math.max(0, Math.min(10, Math.round(value.priority))) : 0, suggestion: typeof value.suggestion === 'string' ? value.suggestion : null }; } catch { return { status: 'pending', entityType: null, priority: 0, suggestion: null }; } }
+
+/** Filter reference terms by the material being processed; mandatory instructions are never cropped. */
+function relevantGlossary(glossary: string, text: string): string {
+  return glossary.split('\n').filter((line) => {
+    const [source, target] = line.split(' = ');
+    return Boolean(source && (text.includes(source) || (target && text.includes(target))));
+  }).join('\n');
+}

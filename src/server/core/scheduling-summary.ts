@@ -1,3 +1,4 @@
+import { withContextBudget, textRequestFits, splitTextForContext, batchForContext } from './llm-context-budget';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -63,8 +64,15 @@ export class SchedulingSummaryService {
     }
 
     const snapshot = this.#repository.getSnapshot(input.sourceId, input.novelId);
-    const prompt = buildSchedulingSummaryPrompt(snapshot?.metadata.title ?? input.novelId, input.chapters);
-    const summary = (await generateChatText(resolved.provider, resolved.model, prompt)).trim();
+    const render = (chapters: StoredChapterRecord[]) => buildSchedulingSummaryPrompt(snapshot?.metadata.title ?? input.novelId, chapters);
+    const limit = resolved.model.contextWindowTokens;
+    const chapters = input.chapters.flatMap((chapter) => splitTextForContext(chapter.content?.replace(/\s+/g, ' ').trim().slice(0, 1800) ?? '',
+      (content) => textRequestFits(limit, '', render([{ ...chapter, content }]), 480)).map((content) => ({ ...chapter, content })));
+    const summaries: string[] = [];
+    for (const batch of batchForContext(chapters, (items) => textRequestFits(limit, '', render(items), 480))) {
+      summaries.push((await generateChatText(resolved.provider, resolved.model, render(batch))).trim());
+    }
+    const summary = summaries.join('\n\n');
 
     if (!summary) {
       throw new Error('更新总结为空。');
@@ -154,17 +162,17 @@ async function generateChatText(provider: LlmProviderConfig, model: LlmModelConf
         baseURL: buildProviderApiBaseUrl(provider),
         ...(provider.organization ? { organization: provider.organization } : {}),
       });
-      const result = await generateText({ model: factory.chat(model.modelId), prompt, maxOutputTokens: 480 });
+      const result = await generateText({ model: withContextBudget(factory.chat(model.modelId), model.contextWindowTokens), prompt, maxOutputTokens: 480 });
       return result.text;
     }
     case 'anthropic': {
       const factory = createAnthropic({ apiKey: provider.apiKey, baseURL: normalizeBaseUrl(provider.baseUrl) });
-      const result = await generateText({ model: factory(model.modelId), prompt, maxOutputTokens: 480 });
+      const result = await generateText({ model: withContextBudget(factory(model.modelId), model.contextWindowTokens), prompt, maxOutputTokens: 480 });
       return result.text;
     }
     case 'google-generative-ai': {
       const factory = createGoogleGenerativeAI({ apiKey: provider.apiKey, baseURL: normalizeBaseUrl(provider.baseUrl) });
-      const result = await generateText({ model: factory(model.modelId), prompt, maxOutputTokens: 480 });
+      const result = await generateText({ model: withContextBudget(factory(model.modelId), model.contextWindowTokens), prompt, maxOutputTokens: 480 });
       return result.text;
     }
     case 'ollama': {
@@ -172,7 +180,7 @@ async function generateChatText(provider: LlmProviderConfig, model: LlmModelConf
         baseURL: normalizeBaseUrl(provider.baseUrl),
         ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
       });
-      const result = await generateText({ model: factory.chat(model.modelId), prompt, maxOutputTokens: 480 });
+      const result = await generateText({ model: withContextBudget(factory.chat(model.modelId, model.contextWindowTokens > 0 ? { options: { num_ctx: model.contextWindowTokens } } : {}), model.contextWindowTokens), prompt, maxOutputTokens: 480 });
       return result.text;
     }
   }

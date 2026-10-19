@@ -7,6 +7,44 @@ import { SqliteNovelRepository } from './novel-repository';
 import { SystemPreferencesService, type TranslationMessageFormat } from './system-preferences';
 import { createTranslationPipelineGraph, resolveTranslationModel } from './translation-pipeline';
 import { TranslationHistoryManager } from './translation/nodes/history-manager';
+import { requestContextTokens } from './llm-context-budget';
+
+for (const format of ['general', 'hy-mt2', 'bilibili-index-translate'] as const) {
+  test(`${format} fits full requests and output, trims history and reassembles split paragraphs`, async (t) => {
+    const limit = 3000;
+    const prefs = preferences(format);
+    prefs.updateLlmProviders(prefs.getLlmState().providers.map((provider) => ({ ...provider, models: provider.models.map((model) => ({ ...model, contextWindowTokens: limit })) })));
+    let calls = 0;
+    t.mock.method(globalThis, 'fetch', async (_input: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as ModelRequest & { max_tokens?: number; max_completion_tokens?: number };
+      const output = body.max_tokens ?? body.max_completion_tokens;
+      assert.ok(output && output > 0);
+      const input = requestContextTokens({ prompt: body.messages.map((message) => message.role === 'system'
+        ? { role: 'system' as const, content: message.content }
+        : { role: message.role as 'user' | 'assistant', content: [{ type: 'text' as const, text: message.content }] }) });
+      assert.ok(input + output <= limit, `${input} + ${output} > ${limit}`);
+      assert.doesNotMatch(JSON.stringify(body.messages), /OLD_HISTORY/);
+      calls++;
+      return Response.json({ id: 'test', object: 'chat.completion', created: 0, model: body.model, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: `译文${calls}` } }] });
+    });
+    const repository = new SqliteNovelRepository(':memory:');
+    try {
+      repository.saveMetadata('manual', { novelId: 'budget', title: 'title', author: '', description: '', tags: [], chapterCount: 1, infoPageUrl: '' });
+      repository.ensureSyntheticChapter('manual', 'budget', 'chapter', 'title', 1);
+      const history = new TranslationHistoryManager();
+      history.addEntry('OLD_HISTORY'.repeat(2000), 'old'.repeat(2000));
+      const graph = createTranslationPipelineGraph({ preferences: prefs, repository, historyManager: history, paragraphsPerBatch: 4 });
+      const source = '猫が歩く。'.repeat(350);
+      const result = await graph.invoke({ sourceId: 'manual', novelId: 'budget', chapterId: 'chapter', sourceLang: 'ja', targetLang: 'zh-CN', sourceContent: `title\n\n${source}`, glossary: [] });
+      assert.equal(result.errorMessage, null);
+      assert.ok(calls > 2);
+      const paragraphs = repository.listChapterTranslationParagraphs('manual', 'budget', 'chapter');
+      assert.equal(paragraphs.length, 1);
+      assert.equal(paragraphs[0]!.sourceText, source);
+      assert.ok(paragraphs[0]!.translatedText.includes(`译文${calls}`));
+    } finally { repository.close(); }
+  });
+}
 import { buildHyMt2Prompt, normalizeHyMt2Response } from './translation/nodes/hy-mt2-messages';
 import { batchTranslationSegments, hasTranslationGlossaryEcho, TRANSLATION_TEXT_BUDGET } from './translation/nodes/translation-prompt-materials';
 import type { TranslationTermEntry } from './translation-state';

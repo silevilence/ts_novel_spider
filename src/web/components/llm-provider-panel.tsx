@@ -933,15 +933,17 @@ function ModelEditModal({ providerId, modelId, draft, serverState, opened, onClo
             allowDeselect={false}
           />
 
-          {resolvedCaps.includes('chat') ? (
             <NumberInput
-              label="上下文 Token 上限（0=不限制）"
+              label="上下文 Token 总上限（0=不限制）"
+              description={resolvedCaps.includes('chat')
+                ? '所有调用均计入提示词、术语、历史和正文，并预留输出空间；超限时裁剪历史或拆批。'
+                : '限制嵌入或重排请求的输入大小，超限时自动拆批。'}
               min={0}
+              allowDecimal={false}
               value={model.contextWindowTokens ?? 0}
               onChange={(v: number | string) => onUpdateModel(modelId, 'contextWindowTokens', typeof v === 'number' ? v : 0)}
               hideControls
             />
-          ) : null}
 
           <Paper
             p="md"

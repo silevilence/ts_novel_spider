@@ -11,6 +11,55 @@ import { SqliteNovelRepository } from './novel-repository';
 import { OfflineLibraryAssetService } from './offline-library';
 import { RefinedTranslationService } from './refined-translation';
 import { SystemPreferencesService } from './system-preferences';
+import { textRequestFits } from './llm-context-budget';
+
+test('refined review and chapter chat split by paragraph while preserving indices and edit approval', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'refined-context-'));
+  const repository = new SqliteNovelRepository(':memory:');
+  const preferences = new SystemPreferencesService();
+  preferences.updateLlmProviders([{ id: 'fake', type: 'openai-compatible', baseUrl: 'http://fake.invalid/v1', apiKey: 'fake', models: [{ id: 'm', modelId: 'm', capabilities: ['chat'], contextWindowTokens: 8000 }] }]);
+  const paragraphs = Array.from({ length: 12 }, (_, i) => `${i}：` + '日本語の本文。'.repeat(40));
+  repository.createRefinedTranslationTask({
+    id: 'budget', sourceId: 'test', novelId: 'n', name: '预算', novelTitle: '书', author: '', sourceLang: 'ja', targetLang: 'zh-CN',
+    modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'm' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'm' }, concurrency: 1, maxReviewRounds: 1 },
+    chapters: [{ id: 'c', index: 1, title: '章节', volumeTitle: null, content: paragraphs.join('\n\n'), paragraphs }], terms: [],
+  });
+  paragraphs.forEach((paragraph, index) => repository.updateRefinedTranslationSegment('budget', 'c', index, `译文${index}：${paragraph}`, 'translated'));
+  const reviewed: number[] = [];
+  let reviewCalls = 0;
+  let chatCalls = 0;
+  const service = new RefinedTranslationService(repository, preferences,
+    new LocalExportEngine({ outputRoot: path.join(directory, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(directory, 'assets') }) }),
+    async (_prefs, _route, system, prompt) => {
+      assert.ok(textRequestFits(8000, system, prompt));
+      assert.doesNotMatch(prompt, /OLD_HISTORY/);
+      if (system.includes('章节 Agent')) {
+        chatCalls++;
+        const indices = [...prompt.matchAll(/paragraphIndex=(\d+)/g)].map((match) => Number(match[1]));
+        return JSON.stringify({ reply: '建议', edits: indices.map((paragraphIndex) => ({ paragraphIndex, translatedText: `修订${paragraphIndex}` })) });
+      }
+      reviewCalls++;
+      reviewed.push(...[...prompt.matchAll(/【(\d+)】原文/g)].map((match) => Number(match[1]) - 1));
+      return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
+    });
+  try {
+    const chat = await service.chatAboutChapter('budget', 'c', { mode: 'edit_review', message: '修订本章', history: [{ role: 'user', content: 'OLD_HISTORY'.repeat(1000) }] });
+    assert.ok(chatCalls > 1);
+    assert.equal(chat.proposedEdits.length, paragraphs.length);
+    assert.ok(repository.listRefinedTranslationSegments('budget', 'c').every((row) => row.translatedText?.startsWith('译文')));
+    repository.updateRefinedTranslationChapterReview('budget', 'c', { reviewRound: 0, reviewScore: null, status: 'translated' });
+    repository.updateRefinedTranslationTask('budget', { stage: 'reviewing', status: 'paused' });
+    repository.saveRefinedTranslationCheckpoint('budget', 'reviewing', { chapterId: 'c' });
+    service.resume('budget');
+    await waitFor(() => repository.getRefinedTranslationTask('budget')?.status !== 'running');
+    assert.ok(reviewCalls > 1);
+    assert.deepEqual(reviewed, paragraphs.map((_, index) => index));
+    assert.equal(repository.getRefinedTranslationChapter('budget', 'c')?.status, 'reviewed');
+  } finally {
+    repository.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('refined translation task owns its source snapshot and supports recycle-bin recovery', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-novel-refined-'));

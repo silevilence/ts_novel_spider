@@ -7,6 +7,29 @@ import { SqliteNovelRepository } from './novel-repository';
 import { LibraryTermTranslationService } from './library-term-translation';
 import { TranslationService } from './translation-service';
 import { SystemPreferencesService } from './system-preferences';
+import { textRequestFits } from './llm-context-budget';
+
+test('term batches respect full prompt budget and preserve every ID', async () => {
+  const { repository, preferences, add, cleanup } = fixture();
+  preferences.updateLlmProviders(preferences.getLlmState().providers.map((provider) => ({ ...provider, models: provider.models.map((model) => ({ ...model, contextWindowTokens: 3000 })) })));
+  const ids = Array.from({ length: 20 }, (_, index) => add(`名前${index}`, { note: '非常に長い備考'.repeat(8) }).id);
+  const submitted: string[] = [];
+  let calls = 0;
+  const service = new LibraryTermTranslationService(repository, preferences, async (_p, _route, system, prompt) => {
+    calls++;
+    assert.ok(textRequestFits(3000, system, prompt));
+    submitted.push(...(JSON.parse(prompt) as { terms: Array<{ id: string }> }).terms.map((term) => term.id));
+    return translatePrompt(prompt);
+  });
+  try {
+    service.start('test', 'novel');
+    await waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(service.getRun('test', 'novel')?.status, 'completed');
+    assert.ok(calls > 1);
+    assert.equal(submitted.length, ids.length);
+    assert.deepEqual(new Set(submitted), new Set(ids));
+  } finally { cleanup(); }
+});
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'term-translation-'));
