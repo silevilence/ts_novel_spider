@@ -9,6 +9,12 @@ export interface LlmLogContext {
   novelId?: string;
   chapterId?: string;
   unitKind?: string;
+  operation?: string;
+  /** 批次编号从 1 开始；跨章节窗口保留全部来源章节。 */
+  batchIndex?: number;
+  totalBatches?: number;
+  chapterIds?: string[];
+  thinkingEnabled?: boolean;
 }
 
 /** 日志实例配置；路径、开关、上下文和脱敏凭据使用具名字段。 */

@@ -648,7 +648,7 @@ function TranslationDefaultsPanel({ onNotice }: { onNotice: (notice: NoticeInput
       />
       <Checkbox
         label="保存翻译模型交互日志"
-        description="保存完整请求、原始响应和失败原因至 .data/llm-logs，保留 7 天；对后续启动的翻译任务生效。"
+        description="保存完整请求、原始响应和失败原因至 .data/llm-logs，保留 7 天；对后续启动的翻译和书库术语提取任务生效。"
         checked={enableLlmInteractionLog}
         onChange={(event) => setEnableLlmInteractionLog(event.currentTarget.checked)}
       />

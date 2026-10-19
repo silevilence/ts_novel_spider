@@ -341,6 +341,10 @@ export interface StoredTermExtractionRun {
   id: string; sourceId: string; novelId: string;
   status: 'running' | 'completed' | 'cancelled' | 'failed';
   totalBatches: number; completedBatches: number; candidates: number; added: number;
+  /** Optional for legacy run_json rows, which have no resumable window checkpoints. */
+  sourceFingerprint?: string;
+  completedBatchIndexes?: number[];
+  failedBatches?: Array<{ index: number; errorMessage: string }>;
   startedAt: string; updatedAt: string; errorMessage: string | null;
 }
 
@@ -2857,7 +2861,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const rows = this.#database.prepare('SELECT run_json FROM novel_term_extraction_runs').all() as Array<{ run_json: string }>;
     for (const row of rows) {
       const run = JSON.parse(row.run_json) as StoredTermExtractionRun;
-      if (run.status === 'running') this.saveTermExtractionRun({ ...run, status: 'failed', errorMessage: '服务重启，术语提取已中断；可重新提取，已有候选会保留。', updatedAt: new Date().toISOString() });
+      if (run.status === 'running') this.saveTermExtractionRun({ ...run, status: 'failed', errorMessage: '服务重启，术语提取已中断；可继续提取，已有候选和批次检查点会保留。', updatedAt: new Date().toISOString() });
     }
   }
 

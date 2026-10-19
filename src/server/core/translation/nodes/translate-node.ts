@@ -52,13 +52,21 @@ export function stripTranslationNumberPrefix(sourceText: string, translatedText:
   return trimmed.replace(TRANSLATION_PREFIX_PATTERN, '').trim();
 }
 
-/** Lightweight task-scoped generation entry point used by the refined workspace. */
+export interface RefinedTextGenerationResponse {
+  text: string;
+  finishReason: string | undefined;
+  inputTokens: number | undefined;
+  outputTokens: number | undefined;
+}
+
+/** Lightweight task-scoped generation entry point; optionally exposes raw output and usage for diagnostics. */
 export async function generateRefinedTranslationText(
   preferences: SystemPreferencesService,
   route: { providerId: string; modelId: string; thinkingEnabled?: boolean },
   system: string,
   prompt: string,
   abortSignal?: AbortSignal,
+  onResponse?: (response: RefinedTextGenerationResponse) => void,
 ): Promise<string> {
   const provider = getProvider(preferences, route.providerId);
   if (!provider) {
@@ -73,6 +81,7 @@ export async function generateRefinedTranslationText(
     ...(!route.thinkingEnabled ? { temperature: 0.2 } : {}),
     ...(route.thinkingEnabled !== undefined ? { providerOptions: refinedThinkingProviderOptions(provider, route.thinkingEnabled) as never } : {}),
   });
+  onResponse?.({ text: result.text, finishReason: result.rawFinishReason, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens });
   return result.text.trim();
 }
 

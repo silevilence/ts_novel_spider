@@ -179,7 +179,7 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
           查看翻译明细
         </Button>
         {detail ? <TranslationUnitsModal
-          key={`${detail.sourceId}:${detail.metadata.novelId}`}
+          key={`units:${detail.sourceId}:${detail.metadata.novelId}`}
           sourceId={detail.sourceId} novelId={detail.metadata.novelId}
           status={unitFilter} onStatusChange={setUnitFilter} onClose={() => setUnitFilter(null)}
           revision={`${build?.startedAt}:${build?.status}:${build?.translatedChapters}:${build?.failedChapters}`} /> : null}
@@ -191,7 +191,7 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
         </Button>
 
         <TranslationGlossaryModal
-          key={`${detail?.sourceId}:${detail?.metadata.novelId}`}
+          key={`glossary:${detail?.sourceId}:${detail?.metadata.novelId}`}
           opened={glossaryOpened}
           onClose={() => setGlossaryOpened(false)}
           model={model}

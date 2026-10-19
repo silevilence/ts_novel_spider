@@ -228,18 +228,18 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
               <Button size="compact-sm" loading={actionBusy} disabled={!sourceId || !novelId || run?.status === 'running'} onClick={() => {
                 if (!sourceId || !novelId) return;
                 void perform(async () => { const result = await startLibraryTermExtraction(sourceId, novelId); setRun(result.run); });
-              }}>AI 提取候选</Button>
+              }}>{run && (run.status === 'failed' || run.status === 'cancelled') ? '继续提取 / 重试失败批次' : 'AI 提取候选'}</Button>
               {run?.status === 'running' ? <Button size="compact-sm" variant="outline" color="red" disabled={actionBusy} onClick={() => {
                 if (!sourceId || !novelId) return;
                 void perform(async () => { const result = await cancelLibraryTermExtraction(sourceId, novelId); setRun(result.run); });
               }}>取消提取</Button> : null}
             </Group>
-            <Text size="xs" c="dimmed">提取在后台分批执行，关闭浮窗后仍会继续。修改模型后请先保存。</Text>
+            <Text size="xs" c="dimmed">提取在后台分批执行，关闭浮窗后仍会继续。失败批次自动尝试 3 次后跳过，不影响后续批次；继续提取会跳过原文未变的已成功批次。修改模型后请先保存。</Text>
             {loadError ? <Alert color="red">{loadError}</Alert> : null}
             {run ? <Stack gap={4}>
               <Text size="sm" fw={600}>{run.status === 'running' ? '正在提取候选' : run.status === 'completed' ? '提取完成' : run.status === 'cancelled' ? '提取已取消' : '提取失败'}</Text>
-              <Progress value={run.totalBatches ? run.completedBatches / run.totalBatches * 100 : 0} animated={run.status === 'running'} />
-              <Text size="xs">已跑 {run.completedBatches}/{run.totalBatches} 批 · 识别 {run.candidates} 条候选 · 本次新增 {run.added} 条</Text>
+              <Progress value={run.totalBatches ? (run.completedBatches + (run.failedBatches?.length ?? 0)) / run.totalBatches * 100 : 0} animated={run.status === 'running'} />
+              <Text size="xs">成功 {run.completedBatches}/{run.totalBatches} 批 · 失败 {run.failedBatches?.length ?? 0} 批 · 识别 {run.candidates} 条候选 · 累计新增 {run.added} 条</Text>
               {run.errorMessage ? <Text size="xs" c="red">{run.errorMessage}</Text> : null}
             </Stack> : null}
           </Stack>

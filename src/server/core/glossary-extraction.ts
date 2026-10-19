@@ -1,3 +1,5 @@
+import { jsonrepair } from 'jsonrepair';
+
 export const GLOSSARY_EXTRACTION_SOURCE_LIMIT = 18_000;
 
 export function buildGlossaryExtractionPrompt(sourceLang: string): string {
@@ -31,11 +33,16 @@ export function buildGlossarySourceWindows(chapters: GlossarySourceChapter[], li
   return windows;
 }
 
-export function parseGlossaryCandidates(text: string): Array<{ sourceTerm: string; entityType: string | null; priority: number; suggestion: string | null }> {
+export function parseGlossaryCandidates(text: string, strict = false): Array<{ sourceTerm: string; entityType: string | null; priority: number; suggestion: string | null }> {
   try {
     const match = text.match(/\{[\s\S]*\}/);
-    const payload = JSON.parse(match?.[0] ?? '{}') as { terms?: unknown };
-    if (!Array.isArray(payload.terms)) return [];
+    const json = match?.[0] ?? text;
+    let payload: unknown;
+    try { payload = JSON.parse(json); }
+    catch { payload = JSON.parse(jsonrepair(json)); }
+    if (!payload || typeof payload !== 'object' || !('terms' in payload) || !Array.isArray(payload.terms)) {
+      throw new Error('提取模型未返回有效的 terms 数组。');
+    }
     const seen = new Set<string>();
     return payload.terms.flatMap((item) => {
       if (!item || typeof item !== 'object') return [];
@@ -45,5 +52,8 @@ export function parseGlossaryCandidates(text: string): Array<{ sourceTerm: strin
       seen.add(sourceTerm);
       return [{ sourceTerm, entityType: typeof value.entityType === 'string' ? value.entityType : null, priority: typeof value.priority === 'number' ? Math.max(0, Math.min(10, Math.round(value.priority))) : 0, suggestion: typeof value.suggestion === 'string' ? value.suggestion : null }];
     });
-  } catch { return []; }
+  } catch (error) {
+    if (strict) throw error;
+    return [];
+  }
 }

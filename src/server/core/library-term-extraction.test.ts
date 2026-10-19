@@ -20,6 +20,7 @@ function fixture(content = 'アリスは王都に住む。') {
   repository.saveChapterIndex('test', 'novel', [{ id: 'c1', index: 1, title: '序章', url: '' }]);
   repository.saveChapterContent('test', 'novel', { chapterId: 'c1', index: 1, title: '序章', url: '', content });
   const preferences = new SystemPreferencesService({ storageFilePath: path.join(directory, 'preferences.json') });
+  preferences.updateTranslationPreferences({ enableLlmInteractionLog: false });
   preferences.updateLlmProviders([{ id: 'fake', type: 'openai-compatible', enabled: true, baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'fake', models: ['local', 'global', 'default'].map((id) => ({ id, modelId: id, enabled: true, capabilityMode: 'manual', capabilities: ['chat'] })) }]);
   preferences.updateModelGateway({ chat: { providerId: 'fake', modelId: 'default' } });
   const cleanup = () => { repository.close(); fs.rmSync(directory, { recursive: true, force: true }); };
@@ -201,7 +202,7 @@ test('malformed responses fail visibly and preserve prior completed batches for 
     const rerun = new LibraryTermExtractionService(repository, preferences, async () => '{"terms":[{"sourceTerm":"原文"}]}');
     rerun.start('test', 'novel');
     await waitFor(() => rerun.getRun('test', 'novel')?.status === 'completed');
-    assert.equal(rerun.getRun('test', 'novel')?.added, 0);
+    assert.equal(rerun.getRun('test', 'novel')?.added, 1);
     assert.equal(repository.listTranslationTerms('test', 'novel').length, 1);
   } finally { cleanup(); }
 });
@@ -218,6 +219,207 @@ test('invalid extraction routes and unavailable source are rejected before a run
     repository.moveNovelToTrash('test', 'novel');
     assert.throws(() => extraction.start('test', 'novel'), /回收站/);
   } finally { cleanup(); }
+});
+
+test('a failed extraction window does not stop later windows and retry skips persisted successes', async () => {
+  const { repository, preferences, cleanup } = fixture('原文'.repeat(20_000));
+  const calls: string[] = [];
+  const extraction = new LibraryTermExtractionService(repository, preferences, async (_preferences, _route, _prompt, source) => {
+    calls.push(source);
+    if (source === calls[1]) return 'bad JSON';
+    return '{"terms":[{"sourceTerm":"原文"}]}';
+  });
+  try {
+    extraction.start('test', 'novel');
+    await waitFor(() => extraction.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(extraction.getRun('test', 'novel')?.completedBatches, 2, 'later windows must still run');
+    assert.equal(calls.length, 5, 'a failed window gets three attempts before continuing');
+    assert.deepEqual(extraction.getRun('test', 'novel')?.completedBatchIndexes, [0, 2]);
+    assert.equal(extraction.getRun('test', 'novel')?.failedBatches?.[0]?.index, 1);
+    new TranslationService(repository, preferences).updateTranslationProfile('test', 'novel', { termExtractionModel: { providerId: 'fake', modelId: 'local' } });
+    const retried: string[] = [];
+    const restarted = new LibraryTermExtractionService(repository, preferences, async (_preferences, _route, _prompt, source) => {
+      retried.push(source);
+      return '{"terms":[]}';
+    });
+    restarted.start('test', 'novel');
+    await waitFor(() => restarted.getRun('test', 'novel')?.status !== 'running');
+    assert.deepEqual(retried, [calls[1]], 'only the failed window should be retried after a service restart');
+    assert.equal(restarted.getRun('test', 'novel')?.completedBatches, 3);
+    assert.equal(restarted.getRun('test', 'novel')?.status, 'completed');
+    assert.equal(restarted.getRun('test', 'novel')?.errorMessage, null);
+  } finally { cleanup(); }
+});
+
+test('extraction repairs JSON syntax and retries invalid terms payloads without counting failures as success', async () => {
+  const { repository, preferences, cleanup } = fixture();
+  let calls = 0;
+  const extraction = new LibraryTermExtractionService(repository, preferences, async () => {
+    calls++;
+    return calls === 1 ? '{"result":[]}' : '```json\n{"terms":[{"sourceTerm":"アリス" "priority":15}]}\n```';
+  });
+  try {
+    extraction.start('test', 'novel');
+    await waitFor(() => extraction.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(calls, 2);
+    assert.equal(extraction.getRun('test', 'novel')?.status, 'completed');
+    assert.equal(extraction.getRun('test', 'novel')?.completedBatches, 1);
+    assert.equal(repository.listTranslationTerms('test', 'novel')[0]?.priority, 10);
+    assert.throws(() => parseGlossaryCandidates('not JSON', true));
+    assert.throws(() => parseGlossaryCandidates('{"terms":null}', true), /terms 数组/);
+  } finally { cleanup(); }
+});
+
+for (const changeSource of [false, true]) {
+  test(`cancelled extraction ${changeSource ? 'invalidates checkpoints when source changes' : 'resumes persisted successes and ignores late responses'}`, async () => {
+    const { repository, preferences, cleanup } = fixture('原文'.repeat(10_000));
+    let finish: ((value: string) => void) | undefined;
+    let calls = 0;
+    const extraction = new LibraryTermExtractionService(repository, preferences, async () => {
+      if (++calls === 1) return '{"terms":[]}';
+      return new Promise<string>((resolve) => { finish = resolve; });
+    });
+    try {
+      extraction.start('test', 'novel');
+      await waitFor(() => calls === 2);
+      extraction.cancel('test', 'novel');
+      if (changeSource) repository.saveChapterContent('test', 'novel', { chapterId: 'c1', index: 1, title: '序章', url: '', content: '新文'.repeat(10_000) });
+      let resumedCalls = 0;
+      const resumed = new LibraryTermExtractionService(repository, preferences, async () => { resumedCalls++; return '{"terms":[]}'; });
+      resumed.start('test', 'novel');
+      finish?.('{"terms":[{"sourceTerm":"晚到词"}]}');
+      await waitFor(() => resumed.getRun('test', 'novel')?.status !== 'running');
+      assert.equal(resumedCalls, changeSource ? 2 : 1);
+      assert.equal(resumed.getRun('test', 'novel')?.completedBatches, 2);
+      assert.equal(repository.listTranslationTerms('test', 'novel').length, 0);
+    } finally { cleanup(); }
+  });
+}
+
+test('legacy extraction records remain readable and a new run creates durable window checkpoints', async () => {
+  const { repository, preferences, directory, cleanup } = fixture();
+  const file = path.join(directory, 'extraction-checkpoint.db');
+  const db = new SqliteNovelRepository(file);
+  try {
+    db.saveMetadata('test', { novelId: 'novel', title: '书', author: '', description: '', tags: [], chapterCount: 0, infoPageUrl: '' });
+    db.saveChapterIndex('test', 'novel', [{ id: 'c1', index: 1, title: '序章', url: '' }]);
+    db.saveChapterContent('test', 'novel', { chapterId: 'c1', index: 1, title: '序章', url: '', content: '原文'.repeat(10_000) });
+    const now = new Date().toISOString();
+    db.saveTermExtractionRun({ id: 'legacy', sourceId: 'test', novelId: 'novel', status: 'failed', totalBatches: 2, completedBatches: 1, candidates: 0, added: 0, errorMessage: 'old failure', startedAt: now, updatedAt: now });
+    let calls = 0;
+    const extraction = new LibraryTermExtractionService(db, preferences, async () => ++calls === 1 ? '{"terms":[]}' : '{}');
+    extraction.start('test', 'novel');
+    await waitFor(() => extraction.getRun('test', 'novel')?.status !== 'running');
+    db.close();
+    const reopened = new SqliteNovelRepository(file);
+    try {
+      let resumedCalls = 0;
+      const resumed = new LibraryTermExtractionService(reopened, preferences, async () => { resumedCalls++; return '{"terms":[]}'; });
+      resumed.start('test', 'novel');
+      await waitFor(() => resumed.getRun('test', 'novel')?.status !== 'running');
+      assert.equal(resumedCalls, 1);
+      assert.equal(resumed.getRun('test', 'novel')?.completedBatches, 2);
+      assert.equal(repository.getTermExtractionRun('test', 'novel'), null);
+    } finally { reopened.close(); }
+  } finally { db.close(); cleanup(); }
+});
+
+for (const enabled of [true, false]) {
+  test(`extraction interaction logging ${enabled ? 'records retry failures and redacts credentials' : 'honors the disabled preference'}`, async () => {
+    const { repository, preferences, directory, cleanup } = fixture('原文 fake');
+    const logDir = path.join(directory, 'llm-logs');
+    preferences.updateTranslationPreferences({ enableLlmInteractionLog: enabled });
+    let calls = 0;
+    const extraction = new LibraryTermExtractionService(repository, preferences, async () => {
+      calls++;
+      if (enabled) {
+        const entries = fs.readdirSync(logDir).map((file) => fs.readFileSync(path.join(logDir, file), 'utf8')).join('');
+        assert.match(entries, new RegExp(`Attempt: ${calls}/3`), 'request must be written before generation');
+      }
+      if (calls === 1) return '  {"wrong":"fake"}\n';
+      if (calls === 2) throw new Error('Unauthorized fake');
+      throw new DOMException('timed out fake', 'TimeoutError');
+    }, { logDir });
+    try {
+      const run = extraction.start('test', 'novel');
+      await waitFor(() => extraction.getRun('test', 'novel')?.status !== 'running');
+      assert.equal(calls, 3);
+      assert.equal(extraction.getRun('test', 'novel')?.status, 'failed');
+      if (!enabled) {
+        assert.equal(fs.existsSync(logDir), false);
+        return;
+      }
+      const entries = fs.readdirSync(logDir).map((file) => fs.readFileSync(path.join(logDir, file), 'utf8')).join('');
+      assert.match(entries, /"operation":"term_extraction"/);
+      assert.ok(entries.includes(`"runId":"${run.id}"`));
+      assert.match(entries, /"sourceId":"test","novelId":"novel"/);
+      assert.match(entries, /"batchIndex":1,"chapterIds":\["c1"\]/);
+      assert.match(entries, /"thinkingEnabled":false/);
+      assert.match(entries, /Model: default/);
+      assert.match(entries, /Phase: batch_retry/);
+      assert.match(entries, /Event: failure[\s\S]*Phase: final_failure/);
+      assert.match(entries, /ErrorCategory: format_mismatch/);
+      assert.match(entries, /ErrorCategory: api_error/);
+      assert.match(entries, /ErrorCategory: timeout/);
+      assert.match(entries, /--- RESPONSE ---\n  \{"wrong":"\[REDACTED\]"\}\n/);
+      assert.match(entries, /Unauthorized \[REDACTED\]/);
+      assert.match(entries, /InputTokens: unavailable/);
+      assert.doesNotMatch(entries, /fake/);
+      assert.equal((entries.match(/Event: request/g) ?? []).length, 3);
+      assert.equal((entries.match(/Event: response/g) ?? []).length, 3);
+      assert.equal((entries.match(/Event: failure/g) ?? []).length, 1);
+      const callIds = [...entries.matchAll(/Event: request Call: (.+)/g)].map((match) => match[1]);
+      assert.equal(new Set(callIds).size, 3);
+      for (const id of callIds) assert.ok(entries.includes(`Event: response Call: ${id}`));
+    } finally { cleanup(); }
+  });
+}
+
+test('extraction logs cancellation without retrying and retains the request context', async () => {
+  const { repository, preferences, directory, cleanup } = fixture();
+  const logDir = path.join(directory, 'llm-logs');
+  preferences.updateTranslationPreferences({ enableLlmInteractionLog: true });
+  let calls = 0;
+  const extraction = new LibraryTermExtractionService(repository, preferences, async (_preferences, _route, _system, _prompt, signal) => {
+    calls++;
+    return new Promise<string>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }));
+  }, { logDir });
+  try {
+    extraction.start('test', 'novel');
+    extraction.cancel('test', 'novel');
+    const readLog = () => fs.readdirSync(logDir).map((file) => fs.readFileSync(path.join(logDir, file), 'utf8')).join('');
+    await waitFor(() => readLog().includes('Phase: final_failure'));
+    assert.equal(calls, 1);
+    assert.match(readLog(), /ErrorCategory: cancelled/);
+    assert.equal(extraction.getRun('test', 'novel')?.status, 'cancelled');
+  } finally { cleanup(); }
+});
+
+test('extraction logs raw SDK responses, finish reason and usage from a local fake provider', async () => {
+  const { repository, preferences, directory, cleanup } = fixture();
+  const logDir = path.join(directory, 'llm-logs');
+  preferences.updateTranslationPreferences({ enableLlmInteractionLog: true });
+  const server = http.createServer((_request, response) => {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ id: 'test', object: 'chat.completion', created: 1, model: 'default', choices: [{ index: 0, message: { role: 'assistant', content: '  {"terms":[]}\n' }, finish_reason: 'stop' }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } }));
+  });
+  server.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  try {
+    preferences.updateLlmProviders([{ id: 'fake', type: 'openai-compatible', enabled: true, baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, apiKey: 'test-key', models: [{ id: 'default', modelId: 'default', enabled: true, capabilityMode: 'manual', capabilities: ['chat'] }] }]);
+    const extraction = new LibraryTermExtractionService(repository, preferences, undefined, { logDir });
+    extraction.start('test', 'novel');
+    await waitFor(() => extraction.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(extraction.getRun('test', 'novel')?.status, 'completed');
+    const log = fs.readdirSync(logDir).map((file) => fs.readFileSync(path.join(logDir, file), 'utf8')).join('');
+    assert.match(log, /FinishReason: stop InputTokens: 11 OutputTokens: 7/);
+    assert.match(log, /--- RESPONSE ---\n  \{"terms":\[\]\}\n/);
+    assert.doesNotMatch(log, /test-key|Event: failure/);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    cleanup();
+  }
 });
 
 test('extraction uses the saved per-novel thinking switch even with an inherited model', async () => {
