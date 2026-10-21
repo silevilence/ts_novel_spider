@@ -122,7 +122,9 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                 onChange={(v) => v && model.handleSourceChange(v)}
               />
               <TextInput
-                label="作品编号"
+                label="作品编号或 URL"
+                error={model.targetError}
+                description={model.targetHint}
                 value={model.novelId}
                 onChange={(e) => model.setNovelId(e.target.value)}
                 placeholder={model.selectedSource?.defaultNovelId ?? '输入作品编号'}
@@ -207,7 +209,7 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                     size="compact-xs"
                     leftSection={<IconSearch size={12} />}
                     onClick={() => void model.handlePreviewSubmit()}
-                    disabled={model.isBusy || model.novelId.trim().length === 0}
+                    disabled={model.isBusy || !!model.targetError || model.novelId.trim().length === 0}
                     loading={model.previewBusy}
                   >
                     {previewActionLabel}
@@ -217,7 +219,7 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                     size="compact-xs"
                     leftSection={<IconSend size={12} />}
                     onClick={() => void model.handleCreateTask(model.selectedChapterIds.length > 0 ? model.selectedChapterIds : undefined)}
-                    disabled={model.isBusy || model.novelId.trim().length === 0}
+                    disabled={model.isBusy || !!model.targetError || model.novelId.trim().length === 0}
                     loading={model.taskBusy}
                   >
                     下发采集
@@ -261,7 +263,7 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                     size="compact-sm"
                     leftSection={<IconSearch size={16} />}
                     onClick={() => void model.handlePreviewSubmit()}
-                    disabled={model.isBusy || model.novelId.trim().length === 0}
+                    disabled={model.isBusy || !!model.targetError || model.novelId.trim().length === 0}
                     loading={model.previewBusy}
                   >
                     {previewActionLabel}
@@ -271,7 +273,7 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
                     size="compact-sm"
                     leftSection={<IconSend size={16} />}
                     onClick={() => void model.handleCreateTask(model.selectedChapterIds.length > 0 ? model.selectedChapterIds : undefined)}
-                    disabled={model.isBusy || model.novelId.trim().length === 0}
+                    disabled={model.isBusy || !!model.targetError || model.novelId.trim().length === 0}
                     loading={model.taskBusy}
                   >
                     下发采集任务

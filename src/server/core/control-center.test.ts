@@ -258,3 +258,13 @@ test('queued browser tasks can be aborted before their serialized run starts', a
     cleanup();
   }
 });
+
+
+test('control center rejects URL-shaped targets before network or background task creation', async () => {
+  const { service, cleanup } = createService();
+  try {
+    await assert.rejects(service.previewNovel({ sourceId: 'mock-html', novelId: 'https://evil.test/demo' }), /不支持/);
+    assert.throws(() => service.createTask({ sourceId: 'mock-html', novelId: 'https://evil.test/demo' }), /不支持/);
+    assert.equal(service.listTasks().length, 0);
+  } finally { cleanup(); }
+});

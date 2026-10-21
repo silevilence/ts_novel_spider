@@ -1,3 +1,4 @@
+import { resolveNovelTarget } from '../../server/contracts/novel-target';
 import { startTransition, useEffect, useEffectEvent, useRef, useState } from 'react';
 
 import {
@@ -47,6 +48,8 @@ export interface ControlCenterModel {
   selectedSource: ControlSourcesPayload['sources'][number] | null;
   selectedSourceId: string;
   novelId: string;
+  targetHint: string | null;
+  targetError: string | null;
   selectedChapterIds: string[];
   currentTask: ApiTaskSnapshot | null;
   recentTasks: ApiTaskSnapshot[];
@@ -84,7 +87,10 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [sources, setSources] = useState<ControlSourcesPayload['sources']>([]);
   const [selectedSourceId, setSelectedSourceId] = useState('');
-  const [novelId, setNovelId] = useState('');
+  const [novelId, setNovelIdState] = useState('');
+  const [targetHint, setTargetHint] = useState<string | null>(null);
+  const [targetError, setTargetError] = useState<string | null>(null);
+  const previewGeneration = useRef(0);
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([]);
   const [currentTask, setCurrentTask] = useState<ApiTaskSnapshot | null>(null);
   const [recentTasks, setRecentTasks] = useState<ApiTaskSnapshot[]>([]);
@@ -118,11 +124,13 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
   });
 
   const refreshPreview = useEffectEvent(async (sourceId: string, targetNovelId: string) => {
+    const generation = ++previewGeneration.current;
     setPreviewBusy(true);
     setPreviewError(null);
 
     try {
       const payload = await fetchNovelPreview(sourceId, targetNovelId, captureKind);
+      if (generation !== previewGeneration.current) return;
       hydratePreview(payload);
       publishNotice({
         tone: 'success',
@@ -130,11 +138,12 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
         message: `${payload.metadata.title} 共 ${payload.metadata.chapterCount} 章，待采集 ${defaultSelectedChapterIds(payload.chapters).length} 章。`,
       });
     } catch (error) {
+      if (generation !== previewGeneration.current) return;
       const message = error instanceof Error ? error.message : 'Preview request failed.';
       setPreviewError(message);
       publishNotice({ tone: 'error', title: '目录解析失败', message });
     } finally {
-      setPreviewBusy(false);
+      if (generation === previewGeneration.current) setPreviewBusy(false);
     }
   });
 
@@ -168,7 +177,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
         const defaultSource = sourcesPayload.sources[0];
         if (defaultSource) {
           setSelectedSourceId(defaultSource.sourceId);
-          setNovelId(defaultSource.defaultNovelId);
+          setNovelIdState(defaultSource.defaultNovelId);
         }
 
         const activeTask = tasksPayload.tasks.find((task) => isActiveTaskStatus(task.status));
@@ -258,7 +267,10 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
       return;
     }
 
-    await refreshPreview(selectedSourceId, trimmedNovelId);
+    try {
+      const target = resolveNovelTarget(selectedSourceId, trimmedNovelId);
+      await refreshPreview(target.sourceId, target.novelId);
+    } catch (error) { setTargetError((error as Error).message); }
   }
 
   async function submitTask(target: TaskSubmissionTarget, chapterIds?: string[]) {
@@ -296,11 +308,10 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
       return;
     }
 
-    await submitTask({
-      sourceId: selectedSourceId,
-      novelId: trimmedNovelId,
-      kind: captureKind,
-    }, chapterIds);
+    try {
+      const target = resolveNovelTarget(selectedSourceId, trimmedNovelId);
+      await submitTask({ ...target, kind: captureKind }, chapterIds);
+    } catch (error) { setTargetError((error as Error).message); }
   }
 
   async function handlePickTask(taskId: string) {
@@ -338,11 +349,41 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     }
   }
 
+  function invalidatePreview() {
+    previewGeneration.current += 1;
+    setPreviewBusy(false);
+    setPreview(null);
+    setPreviewError(null);
+    setSelectedChapterIds([]);
+  }
+
+  function setNovelId(value: string) {
+    invalidatePreview();
+    setNovelIdState(value);
+    setTargetHint(null);
+    setTargetError(null);
+    if (!value.trim()) return;
+    try {
+      const target = resolveNovelTarget(selectedSourceId, value);
+      if (target.fromUrl) {
+        const source = sources.find((item) => item.sourceId === target.sourceId);
+        if (!source) throw new Error('此站点尚未启用。');
+        setSelectedSourceId(target.sourceId);
+        if (captureKind === 'browser' && !source.transports.includes('browser')) setCaptureKindState('direct');
+        setTargetHint(`已识别：${source.label} · ${target.novelId}，点击解析目录继续。`);
+      }
+      setNovelIdState(target.novelId);
+    } catch (error) { setTargetError((error as Error).message); }
+  }
+
   function handleSourceChange(nextSourceId: string) {
+    invalidatePreview();
+    setTargetHint(null);
+    setTargetError(null);
     const nextSource = sources.find((source) => source.sourceId === nextSourceId);
     if (captureKind === 'browser' && !nextSource?.transports.includes('browser')) setCaptureKindState('direct');
     setSelectedSourceId(nextSourceId);
-    setNovelId(nextSource?.defaultNovelId ?? '');
+    setNovelIdState(nextSource?.defaultNovelId ?? '');
     setPreview(null);
     setSelectedChapterIds([]);
   }
@@ -396,6 +437,8 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     selectedSource,
     selectedSourceId,
     novelId,
+    targetHint,
+    targetError,
     selectedChapterIds,
     currentTask,
     recentTasks,
@@ -413,6 +456,7 @@ export function useControlCenterModel(onNotice: (notice: NoticeInput) => void): 
     setChapterConcurrency,
     setChapterRetryCount,
     setCaptureKind: (value) => {
+      invalidatePreview();
       setCaptureKindState(value);
       setPreview(null);
       setSelectedChapterIds([]);

@@ -1,3 +1,4 @@
+import { resolveNovelTarget } from '../contracts/novel-target';
 import { LibraryTermExtractionService } from './library-term-extraction';
 import type { TranslationTermStatus } from './novel-repository';
 import crypto from 'node:crypto';
@@ -1292,6 +1293,7 @@ export class ControlCenterService {
   }
 
   async previewNovel(input: PreviewNovelInput): Promise<PreviewNovelResult> {
+    input = { ...input, ...resolveNovelTarget(input.sourceId, input.novelId) };
     const source = this.getSource(input.sourceId);
     const spider = this.getSpider(source, input.kind ?? 'direct', null, input.novelId);
     const previousSnapshot = this.#repository.getSnapshot(source.descriptor.sourceId, input.novelId);
@@ -1309,6 +1311,7 @@ export class ControlCenterService {
   }
 
   createTask(input: TaskExecutionInput): CrawlTaskSnapshot {
+    input = { ...input, ...resolveNovelTarget(input.sourceId, input.novelId) };
     const source = this.getSource(input.sourceId);
     const kind = input.kind ?? 'direct';
     if (kind === 'browser' && !source.createBrowserSpider) throw new Error(`Source ${input.sourceId} does not support browser transport.`);
