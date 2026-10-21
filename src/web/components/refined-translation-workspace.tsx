@@ -97,8 +97,8 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
   const [reuseTasks, setReuseTasks] = useState<RefinedTask[]>([]);
   const [reuseTaskId, setReuseTaskId] = useState<string | null>(null);
   const [recycleBin, setRecycleBin] = useState(false);
-  const [novelOptions, setNovelOptions] = useState<Array<{ value: string; label: string }>>([]);
-  const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [novelOptions, setNovelOptions] = useState<Array<{ value: string; label: string; translationOnly?: boolean }>>([]);
+  const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string; translationOnly?: boolean }>>([]);
   const [modelKeys, setModelKeys] = useState<Record<string, string>>({});
   const [modelThinking, setModelThinking] = useState<Record<string, boolean>>({});
   const [translationModelKeys, setTranslationModelKeys] = useState<string[]>([]);
@@ -157,7 +157,7 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
 
   useEffect(() => { void loadTasks(); }, [recycleBin]);
   useEffect(() => {
-    void fetchLlmProvidersPreferences().then((providers) => setModelOptions(providers.providers.flatMap((provider) => provider.enabled ? provider.models.filter((model) => model.enabled && model.isConfigured && model.resolvedCapabilities.includes('chat')).map((model) => ({ value: `${provider.id}\u0000${model.modelId}`, label: `${provider.label} / ${model.modelId}` })) : [])));
+    void fetchLlmProvidersPreferences().then((providers) => setModelOptions(providers.providers.flatMap((provider) => provider.enabled ? provider.models.filter((model) => model.enabled && model.isConfigured && model.resolvedCapabilities.includes('chat')).map((model) => ({ value: `${provider.id}\u0000${model.modelId}`, label: `${provider.label} / ${model.modelId}${model.translationMessageFormat !== 'general' ? ' · 专用翻译' : ''}`, translationOnly: model.translationMessageFormat !== 'general' })) : [])));
   }, []);
   useEffect(() => { if (selectedId) void loadDetail(selectedId); }, [selectedId]);
   useEffect(() => {
@@ -177,7 +177,7 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
       setReuseTasks(availableTasks.tasks);
       setReuseTaskId(null);
       setNovelOptions(result.novels.filter((item) => item.downloadedChapters > 0).map((item) => ({ value: `${item.sourceId}\u0000${item.metadata.novelId}`, label: `${item.metadata.title}（已采集 ${item.downloadedChapters} 章）` })));
-      setModelOptions(providers.providers.flatMap((provider) => provider.enabled ? provider.models.filter((model) => model.enabled && model.isConfigured && model.resolvedCapabilities.includes('chat')).map((model) => ({ value: `${provider.id}\u0000${model.modelId}`, label: `${provider.label} / ${model.modelId}` })) : []));
+      setModelOptions(providers.providers.flatMap((provider) => provider.enabled ? provider.models.filter((model) => model.enabled && model.isConfigured && model.resolvedCapabilities.includes('chat')).map((model) => ({ value: `${provider.id}\u0000${model.modelId}`, label: `${provider.label} / ${model.modelId}${model.translationMessageFormat !== 'general' ? ' · 专用翻译' : ''}`, translationOnly: model.translationMessageFormat !== 'general' })) : []));
       setCreateOpen(true);
     } catch (error) {
       onNotify({ tone: 'error', title: '无法加载创建配置', message: error instanceof Error ? error.message : '请稍后重试。' });
@@ -328,7 +328,7 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
           setReuseTaskId(value); const donor = reuseTasks.find((task) => task.id === value); if (donor) { setNewSourceLang(donor.sourceLang); setNewTargetLang(donor.targetLang); }
         }} />
         <Text size="xs" c="dimmed">未选择时自动继承全局翻译模型。可分别覆盖任务内各自动步骤。</Text>
-        <SimpleGrid cols={2}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Stack key={key} gap={4}><Select label={label} data={modelOptions} clearable value={modelKeys[key] ?? null} onChange={(value) => setModelKeys((current) => ({ ...current, [key]: value ?? '' }))} /><Checkbox size="xs" label="启用模型思考" checked={modelThinking[key] ?? false} disabled={!modelKeys[key]} onChange={(event) => { const enabled = event.currentTarget.checked; setModelThinking((current) => ({ ...current, [key]: enabled })); }} /></Stack>)}</SimpleGrid><Stack gap={4}><MultiSelect label="正文初翻模型池" description="按段落轮转分配，配合任务并发数执行。" data={modelOptions} value={translationModelKeys} onChange={setTranslationModelKeys} clearable /><Checkbox size="xs" label="正文初翻启用模型思考" checked={translationThinking} disabled={!translationModelKeys.length} onChange={(event) => setTranslationThinking(event.currentTarget.checked)} /></Stack><Text size="xs" c="dimmed">仅在所选模型支持原生思考时开启；翻译、审核等步骤可分别设置。</Text>
+        <SimpleGrid cols={2}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Stack key={key} gap={4}><Select label={label} data={modelOptions.filter((option) => !option.translationOnly)} clearable value={modelKeys[key] ?? null} onChange={(value) => setModelKeys((current) => ({ ...current, [key]: value ?? '' }))} /><Checkbox size="xs" label="启用模型思考" checked={modelThinking[key] ?? false} disabled={!modelKeys[key]} onChange={(event) => { const enabled = event.currentTarget.checked; setModelThinking((current) => ({ ...current, [key]: enabled })); }} /></Stack>)}</SimpleGrid><Stack gap={4}><MultiSelect label="正文初翻模型池" description="按段落轮转分配，配合任务并发数执行。" data={modelOptions} value={translationModelKeys} onChange={setTranslationModelKeys} clearable /><Checkbox size="xs" label="普通初翻模型启用思考（专用翻译模型始终关闭）" checked={translationThinking} disabled={!translationModelKeys.some((key) => !modelOptions.find((option) => option.value === key)?.translationOnly)} onChange={(event) => setTranslationThinking(event.currentTarget.checked)} /></Stack><Text size="xs" c="dimmed">仅在所选模型支持原生思考时开启；翻译、审核等步骤可分别设置。</Text>
         <Button disabled={!newSource} onClick={() => {
           const [sourceId, novelId] = newSource.split('\u0000');
           if (!sourceId || !novelId) return;
@@ -336,7 +336,7 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
             const [providerId, modelId] = (modelKeys[key] ?? '').split('\u0000');
             return providerId && modelId ? { providerId, modelId, ...(modelThinking[key] ? { thinkingEnabled: true } : {}) } : null;
           };
-          const translationModels = translationModelKeys.flatMap((key) => { const [providerId, modelId] = key.split('\u0000'); return providerId && modelId ? [{ providerId, modelId, ...(translationThinking ? { thinkingEnabled: true } : {}) }] : []; });
+          const translationModels = translationModelKeys.flatMap((key) => { const [providerId, modelId] = key.split('\u0000'); return providerId && modelId ? [{ providerId, modelId, ...(translationThinking && !modelOptions.find((option) => option.value === key)?.translationOnly ? { thinkingEnabled: true } : {}) }] : []; });
           void createRefinedTask({ sourceId, novelId, ...(reuseTaskId ? { reuseTaskId } : {}), ...(newName.trim() ? { name: newName.trim() } : {}), ...(newSourceLang.trim() ? { sourceLang: newSourceLang.trim() } : {}), ...(newTargetLang.trim() ? { targetLang: newTargetLang.trim() } : {}), modelConfig: { termExtractionModel: route('termExtractionModel'), termTranslationModel: route('termTranslationModel'), translationModels, omissionModel: route('omissionModel'), reviewModel: route('reviewModel') } }).then(({ task }) => {
             setCreateOpen(false); setNewName(''); setNewSourceLang(''); setNewTargetLang(''); setModelKeys({}); setModelThinking({}); setTranslationModelKeys([]); setTranslationThinking(false); setSelectedId(task.id); void loadTasks();
             onNotify({ tone: 'success', title: '精翻任务已创建', message: '已将正文和术语候选快照到独立任务。' });

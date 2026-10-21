@@ -13,10 +13,17 @@ import { RefinedTranslationService } from './refined-translation';
 import { SystemPreferencesService } from './system-preferences';
 import { textRequestFits } from './llm-context-budget';
 
+/** Existing fake generators now have explicit, valid provider routes too. */
+function createTestPreferences(options: ConstructorParameters<typeof SystemPreferencesService>[0] = {}) {
+  const preferences = new SystemPreferencesService(options);
+  preferences.updateLlmProviders([{ id: 'fake', type: 'openai-compatible', baseUrl: 'http://fake.invalid/v1', apiKey: 'fake', models: ['model', 'old-translation', 'new-translation', 'old-review', 'new-review', 'omission'].map((modelId) => ({ id: modelId, modelId, capabilities: ['chat'] })) }]);
+  return preferences;
+}
+
 test('refined review and chapter chat split by paragraph while preserving indices and edit approval', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'refined-context-'));
   const repository = new SqliteNovelRepository(':memory:');
-  const preferences = new SystemPreferencesService();
+  const preferences = createTestPreferences();
   preferences.updateLlmProviders([{ id: 'fake', type: 'openai-compatible', baseUrl: 'http://fake.invalid/v1', apiKey: 'fake', models: [{ id: 'm', modelId: 'm', capabilities: ['chat'], contextWindowTokens: 8000 }] }]);
   const paragraphs = Array.from({ length: 12 }, (_, i) => `${i}：` + '日本語の本文。'.repeat(40));
   repository.createRefinedTranslationTask({
@@ -114,7 +121,7 @@ test('refined translation can extract glossary candidates when the copied source
     });
     const service = new RefinedTranslationService(
       repository,
-      new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
+      createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }),
       new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }),
       async () => '{"terms":[{"sourceTerm":"アリス","entityType":"character","priority":9,"suggestion":"主角姓名"},{"sourceTerm":"王都","entityType":"location","priority":7,"suggestion":"城市名"}]}',
     );
@@ -140,7 +147,7 @@ test('glossary setup does not re-run a tool agent for candidates that extraction
     });
     let toolAgentCalls = 0;
     const result = '{"terms":[{"sourceTerm":"アリス","entityType":"character","priority":9,"suggestion":"角色名"},{"sourceTerm":"フェロモン","entityType":"concept","priority":8,"suggestion":"设定用语"}]}';
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => result, async () => { toolAgentCalls += 1; return { text: result, toolCallCount: 1, toolCalls: [] }; });
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => result, async () => { toolAgentCalls += 1; return { text: result, toolCallCount: 1, toolCalls: [] }; });
 
     service.resume('task-glossary-fast');
     await waitFor(() => repository.getRefinedTranslationTask('task-glossary-fast')?.status === 'paused');
@@ -163,7 +170,7 @@ test('glossary translation falls back when the tool agent replies with narration
       terms: [{ sourceTerm: 'フェロモン', targetTerm: null, entityType: 'concept', priority: 8, suggestion: '设定用语', status: 'confirmed' }],
     });
     repository.updateRefinedTranslationTask('task-glossary-translation', { stage: 'glossary_translation', status: 'paused' });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => '费洛蒙', async () => ({ text: '术语「フェロモン」的译法已更新为「费洛蒙」。', toolCallCount: 1, toolCalls: [{ toolName: 'read_glossary', input: {} }] }));
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => '费洛蒙', async () => ({ text: '术语「フェロモン」的译法已更新为「费洛蒙」。', toolCallCount: 1, toolCalls: [{ toolName: 'read_glossary', input: {} }] }));
 
     service.resume('task-glossary-translation');
     await waitFor(() => repository.getRefinedTranslationTask('task-glossary-translation')?.status === 'paused');
@@ -185,7 +192,7 @@ test('chapter agent carries task locators and requires approval before applying 
     });
     let prompt = '';
     let agentReadMaterial: unknown = null;
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system, input) => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system, input) => {
       prompt = `${system}\n${input}`;
       return system.includes('仅返回 JSON') ? '{"reply":"已调整语气","edits":[{"paragraphIndex":0,"translatedText":"修改后的译文"}]}' : '只读分析结果';
     }, async (_preferences, _route, system, input, tools) => {
@@ -251,7 +258,7 @@ test('resolving a final manual review never restarts automatic checking or revie
     repository.updateRefinedTranslationTask('task-manual-review', { stage: 'reviewing', status: 'needs_attention' });
     const issue = repository.createRefinedTranslationReview({ taskId: 'task-manual-review', chapterId: 'c1', reviewRound: 5, severity: 'high', paragraphIndices: [0], scores: { fluency: 65 }, suggestion: '修正语气', replacementText: null, forceChange: true, resolved: false, resolution: 'open', resolutionNote: null });
     let automaticModelCalls = 0;
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
       automaticModelCalls += 1;
       return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
     });
@@ -287,7 +294,7 @@ test('refined translation retries failed paragraphs with the configured concurre
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
     const service = new RefinedTranslationService(
       repository,
-      new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
+      createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }),
       new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }),
       async (_preferences, _route, system) => {
         if (system.includes('审核文学翻译')) return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
@@ -330,7 +337,7 @@ test('refined translation export excludes incomplete chapters when requested', a
     repository.updateRefinedTranslationSegment('task-export', 'complete', 0, '完成译文', 'translated');
     const service = new RefinedTranslationService(
       repository,
-      new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
+      createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }),
       new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }),
     );
 
@@ -362,7 +369,7 @@ test('refined translation pauses for both glossary confirmations, translates met
     });
     const service = new RefinedTranslationService(
       repository,
-      new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
+      createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }),
       new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }),
       async (_preferences, _route, system) => {
         if (system.includes('评估小说术语')) return '{"status":"pending","entityType":"character","priority":8,"suggestion":"保留角色名"}';
@@ -420,7 +427,7 @@ test('refined translation revises only review-linked segments in a dedicated age
     const initialTranslationPrompts: string[] = [];
     const service = new RefinedTranslationService(
       repository,
-      new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
+      createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }),
       new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }),
       async (_preferences, _route, system, prompt) => {
         if (system.includes('审核文学翻译')) return prompt.includes('按审核意见修订的译文')
@@ -469,7 +476,7 @@ test('review round cap keeps unresolved opinions for final review and continues 
       chapters: [{ id: 'c1', index: 1, title: '第一章', volumeTitle: null, content: '甲', paragraphs: ['甲'] }, { id: 'c2', index: 2, title: '第二章', volumeTitle: null, content: '乙', paragraphs: ['乙'] }], terms: [],
     });
     repository.updateRefinedTranslationTask('task-review-cap', { stage: 'translating', status: 'paused' });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system, prompt) => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system, prompt) => {
       if (system.includes('审核文学翻译')) { const source = prompt.includes('【1】原文：甲') ? '甲' : '乙'; return `{"score":60,"severity":"high","issues":[{"paragraphIndex":0,"sourceExcerpt":"${source}","translationExcerpt":"译文","suggestion":"请润色。","replacementText":null,"forceChange":true}],"scores":{"fluency":60}}`; }
       return '译文';
     });
@@ -495,7 +502,7 @@ test('reading task detail resumes a stale needs-attention task when later chapte
     });
     repository.updateRefinedTranslationChapterReview('task-stale-recovery', 'c1', { reviewRound: 1, reviewScore: 90, status: 'reviewed' });
     repository.updateRefinedTranslationTask('task-stale-recovery', { stage: 'translating', status: 'needs_attention' });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system) => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system) => {
       if (system.includes('审核文学翻译')) return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
       return '译文';
     });
@@ -522,7 +529,7 @@ test('task detail reports the active chapter review round instead of a historica
     repository.updateRefinedTranslationChapterReview('task-current-round', 'c2', { reviewRound: 1, reviewScore: 85, status: 'pending' });
     repository.updateRefinedTranslationTask('task-current-round', { stage: 'reviewing', status: 'paused' });
     repository.saveRefinedTranslationCheckpoint('task-current-round', 'reviewing', { chapterId: 'c2' });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }));
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }));
 
     assert.equal(service.getTaskDetail('task-current-round')?.progress.currentRound, 1);
   } finally {
@@ -546,7 +553,7 @@ test('updated task model configuration is used by the next model call', async ()
     const firstTranslationStarted = new Promise<void>((resolve) => { releaseFirstTranslation = resolve; });
     let waitForRelease: (() => void) | null = null;
     const allowFirstTranslation = new Promise<void>((resolve) => { waitForRelease = resolve; });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, route, system) => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, route, system) => {
       routes.push({ modelId: route.modelId, thinkingEnabled: route.thinkingEnabled });
       if (route.modelId === 'old-translation') { releaseFirstTranslation?.(); await allowFirstTranslation; return '译文'; }
       if (system.includes('审核文学翻译')) return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
@@ -584,7 +591,7 @@ test('pausing an automatic refined translation prevents later model calls and ke
     let releaseFirstCall: (() => void) | null = null;
     const firstCallStarted = new Promise<void>((resolve) => { announceFirstCall = resolve; });
     const allowFirstCallToFinish = new Promise<void>((resolve) => { releaseFirstCall = resolve; });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
       modelCalls += 1;
       if (modelCalls === 1) {
         announceFirstCall?.();
@@ -625,7 +632,7 @@ test('automatic refined translation passes its cancellation signal to the text g
     let releaseCall: (() => void) | null = null;
     const callStarted = new Promise<void>((resolve) => { announceCall = resolve; });
     const allowCallToFinish = new Promise<void>((resolve) => { releaseCall = resolve; });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (...args: unknown[]) => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (...args: unknown[]) => {
       receivedSignal = args[4] instanceof AbortSignal ? args[4] : undefined;
       announceCall?.();
       await allowCallToFinish;
@@ -664,7 +671,7 @@ test('automatic refined translation passes its cancellation signal to the tool a
     const allowCallToFinish = new Promise<void>((resolve) => { releaseCall = resolve; });
     const service = new RefinedTranslationService(
       repository,
-      new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }),
+      createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }),
       new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }),
       async () => 'fallback should not run',
       async (...args: unknown[]) => {
@@ -706,7 +713,7 @@ test('pausing during the omission check cancels the request and preserves the pa
     let releaseCall: (() => void) | null = null;
     const callStarted = new Promise<void>((resolve) => { announceCall = resolve; });
     const allowCallToFinish = new Promise<void>((resolve) => { releaseCall = resolve; });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (...args: unknown[]) => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (...args: unknown[]) => {
       modelCalls += 1;
       receivedSignal = args[4] instanceof AbortSignal ? args[4] : undefined;
       announceCall?.();
@@ -748,7 +755,7 @@ test('deleting an automatic refined translation during review prevents later mod
     let releaseReviewCall: (() => void) | null = null;
     const reviewCallStarted = new Promise<void>((resolve) => { announceReviewCall = resolve; });
     const allowReviewCallToFinish = new Promise<void>((resolve) => { releaseReviewCall = resolve; });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async () => {
       modelCalls += 1;
       announceReviewCall?.();
       await allowReviewCallToFinish;
@@ -782,7 +789,7 @@ test('refined translation continues with later chapters after a paragraph failur
       terms: [],
     });
     repository.updateRefinedTranslationTask('task-isolation', { stage: 'translating', status: 'paused' });
-    const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system, prompt) => {
+    const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(tempDir, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(tempDir, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(tempDir, 'assets') }) }), async (_preferences, _route, system, prompt) => {
       if (system.includes('审核文学翻译')) return '{"score":90,"severity":"low","issues":[],"scores":{"fluency":90}}';
       if (prompt === 'bad') throw new Error('simulated model failure');
       return '译文';
@@ -817,7 +824,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 function createSourceSyncFixture(generateText: ConstructorParameters<typeof RefinedTranslationService>[3] = async () => { throw new Error('Unexpected model call'); }) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'refined-source-sync-'));
   const repository = new SqliteNovelRepository(':memory:');
-  const service = new RefinedTranslationService(repository, new SystemPreferencesService({ storageFilePath: path.join(directory, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(directory, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(directory, 'assets') }) }), generateText);
+  const service = new RefinedTranslationService(repository, createTestPreferences({ storageFilePath: path.join(directory, 'preferences.json') }), new LocalExportEngine({ outputRoot: path.join(directory, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(directory, 'assets') }) }), generateText);
   const novelId = repository.createManualNovel('测试原书').metadata.novelId;
   const chapter = repository.saveManualChapter(novelId, { title: '第一章', content: '原文甲\n\n原文乙\n\n原文甲' }).chapter;
   const create = (reuseTaskId?: string) => service.createTask('manual', novelId, { sourceLang: 'ja', targetLang: 'zh-CN', ...(reuseTaskId ? { reuseTaskId } : {}), modelConfig: { translationModels: [{ providerId: 'fake', modelId: 'model' }], reviewModel: { providerId: 'fake', modelId: 'model' } } });

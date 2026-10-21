@@ -1,3 +1,4 @@
+import { refinedModelFormat } from '../../refined-translation-models';
 import { withContextBudget, modelContextLimit, contextOutputReserve, textRequestFits, splitTextForContext, fitContextRequest, ContextBudgetExceededError, requestContextTokens, textContextTokens } from '../../llm-context-budget';
 import { redactSecrets } from './redact-secrets';
 import { randomUUID } from 'node:crypto';
@@ -74,18 +75,22 @@ export async function generateRefinedTranslationText(
     throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
   }
 
+  const index = refinedModelFormat(preferences, route) === 'bilibili-index-translate';
+  if (index && system) throw new Error('Index 专用翻译模型不能执行对话或结构化任务。');
+  if (index) route = { ...route, thinkingEnabled: false };
   const limit = modelContextLimit(preferences, route);
   const result = await generateText({
-    model: createLanguageModel(provider, route.modelId, { thinkingEnabled: route.thinkingEnabled }),
+    model: createLanguageModel(provider, route.modelId, { thinkingEnabled: route.thinkingEnabled, ...(index ? { chatTemplateThinking: false } : {}) }),
     ...(limit > 0 ? { maxOutputTokens: contextOutputReserve(limit) } : {}),
-    system,
+    ...(system ? { system } : {}),
     prompt,
-    ...(abortSignal ? { abortSignal } : {}),
+    abortSignal: abortSignal ? AbortSignal.any([abortSignal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
     ...(!route.thinkingEnabled ? { temperature: 0.2 } : {}),
     ...(route.thinkingEnabled !== undefined ? { providerOptions: refinedThinkingProviderOptions(provider, route.thinkingEnabled) as never } : {}),
   });
   onResponse?.({ text: result.text, finishReason: result.rawFinishReason, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens });
   if (result.finishReason === 'length') throw new Error('模型输出达到预留 Token 上限，结果不完整；请缩小批次或增大上下文上限。');
+  if (!result.text.trim()) throw new TranslationFailure('empty_response', '模型返回空文本。');
   return result.text.trim();
 }
 
@@ -99,6 +104,7 @@ export async function runRefinedTranslationToolAgent(
   firstToolName: string = 'read_current_translation',
   abortSignal?: AbortSignal,
 ): Promise<{ text: string; toolCallCount: number; toolCalls: Array<{ toolName: string; input: unknown }> }> {
+  if (refinedModelFormat(preferences, route) !== 'general') throw new Error('专用翻译模型不能调用工具。');
   const provider = getProvider(preferences, route.providerId);
   if (!provider) throw new Error(`精翻模型提供商 ${route.providerId} 不可用。`);
   const result = await generateText({

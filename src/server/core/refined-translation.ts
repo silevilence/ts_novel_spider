@@ -1,3 +1,6 @@
+import { refinedModelFormat, resolveRefinedChatRoute, validateRefinedModelRoles } from './refined-translation-models';
+import { buildIndexTranslatePrompt, detectIndexTranslatePromptEcho } from './translation/nodes/index-translate-messages';
+import { hasTranslationGlossaryEcho, hasTranslationBackgroundEcho } from './translation/nodes/translation-prompt-materials';
 import { buildGlossaryExtractionPrompt, buildGlossarySourceWindows, parseGlossaryCandidates, GLOSSARY_EXTRACTION_SOURCE_LIMIT } from './glossary-extraction';
 import crypto from 'node:crypto';
 import { modelContextLimit, textRequestFits, splitTextForContext, batchForContext, contextOutputReserve } from './llm-context-budget';
@@ -120,6 +123,7 @@ export class RefinedTranslationService {
       translationModels: preferences.translationModels.flatMap((route) => { const item = toRoute(route); return item ? [item] : []; }),
       omissionModel: null, reviewModel: null, concurrency: preferences.translationConcurrency, maxReviewRounds: DEFAULT_MAX_REVIEW_ROUNDS, ...input.modelConfig,
     };
+    Object.assign(modelConfig, validateRefinedModelRoles(this.#preferences, modelConfig));
     const termMap = new Map<string, { sourceTerm: string; targetTerm: string | null; entityType: string | null; priority: number; suggestion: string | null }>();
     for (const term of this.#repository.listTranslationTerms(sourceId, novelId, 'confirmed')) termMap.set(term.sourceTerm, { sourceTerm: term.sourceTerm, targetTerm: term.targetTerm, entityType: term.entityType, priority: term.priority, suggestion: null });
     for (const entity of this.#repository.listKnowledgeGraphEntities(sourceId, novelId)) if (!termMap.has(entity.name)) termMap.set(entity.name, { sourceTerm: entity.name, targetTerm: null, entityType: entity.entityType, priority: Math.round(entity.prominence * GRAPH_ENTITY_PRIORITY_SCALE), suggestion: '来自知识图谱实体，建议人工确认。' });
@@ -162,6 +166,7 @@ export class RefinedTranslationService {
 
   updateTaskConfiguration(taskId: string, input: { name?: string | undefined; sourceLang?: string | undefined; targetLang?: string | undefined; modelConfig?: RefinedTranslationModelConfig | undefined }): StoredRefinedTranslationTaskRow | null {
     if (!this.#editable(taskId)) return null;
+    if (input.modelConfig) input = { ...input, modelConfig: validateRefinedModelRoles(this.#preferences, input.modelConfig) };
     const updated = this.#repository.updateRefinedTranslationTask(taskId, input);
     if (updated) this.#touch(taskId, '任务配置已更新；尚未发起的模型调用将使用新配置，进行中的单次调用保持原配置。');
     return updated;
@@ -228,7 +233,7 @@ export class RefinedTranslationService {
     if (!this.#editable(taskId)) throw new Error('回收站任务仅可查看与导出。');
     const task = this.#repository.getRefinedTranslationTask(taskId);
     if (!task) throw new Error('精翻任务不存在。');
-    const route = task.modelConfig.termExtractionModel ?? this.#resolveRoute(task, 'translationModels');
+    const route = this.#chatRoute(task.modelConfig.termExtractionModel);
     if (!route) throw new Error('未配置术语提取模型；请先在任务配置中选择模型。');
     const source = buildGlossarySourceWindows(this.#repository.listRefinedTranslationChapters(taskId)
       .map((chapter) => ({ id: chapter.chapterId, index: chapter.chapterIndex, title: chapter.title, content: chapter.sourceContent })), GLOSSARY_EXTRACTION_SOURCE_LIMIT, 1)[0]?.source ?? '';
@@ -261,14 +266,14 @@ export class RefinedTranslationService {
     return { terms, candidates: candidates.length, added, total: terms.length };
   }
   updateGlossaryTerm(taskId: string, termId: string, input: Parameters<RefinedTranslationService['updateTerm']>[2]) { return this.updateTerm(taskId, termId, input); }
-  async suggestGlossaryRevision(taskId: string, termId: string, feedback: string): Promise<string> { const task = this.#repository.getRefinedTranslationTask(taskId); const term = this.listTerms(taskId).find((item) => item.id === termId); if (!task || !term) throw new Error('术语或任务不存在。'); const route = task.modelConfig.termTranslationModel ?? this.#resolveRoute(task, 'translationModels'); if (!route) throw new Error('未配置可用的术语翻译模型。'); return this.#generateText(this.#preferences, route, `根据用户意见修改术语译法。只输出建议译文。用户意见：${feedback}`, `原术语：${term.sourceTerm}\n当前译文：${term.targetTerm ?? '（空）'}`); }
-  async suggestSegmentRevision(taskId: string, chapterId: string, paragraphIndex: number, feedback: string): Promise<string> { const task = this.#repository.getRefinedTranslationTask(taskId); const segment = this.#repository.listRefinedTranslationSegments(taskId, chapterId).find((item) => item.paragraphIndex === paragraphIndex); if (!task || !segment) throw new Error('段落或任务不存在。'); const route = this.#resolveSegmentRoute(task, paragraphIndex); if (!route) throw new Error('未配置可用的正文初翻模型。'); return this.#generateText(this.#preferences, route, `根据用户意见修改文学译文。只输出修改后的译文。用户意见：${feedback}`, `原文：${segment.sourceText}\n当前译文：${segment.translatedText ?? '（空）'}`); }
+  async suggestGlossaryRevision(taskId: string, termId: string, feedback: string): Promise<string> { const task = this.#repository.getRefinedTranslationTask(taskId); const term = this.listTerms(taskId).find((item) => item.id === termId); if (!task || !term) throw new Error('术语或任务不存在。'); const route = this.#chatRoute(task.modelConfig.termTranslationModel); if (!route) throw new Error('未配置可用的术语翻译模型。'); return this.#generateText(this.#preferences, route, `根据用户意见修改术语译法。只输出建议译文。用户意见：${feedback}`, `原术语：${term.sourceTerm}\n当前译文：${term.targetTerm ?? '（空）'}`); }
+  async suggestSegmentRevision(taskId: string, chapterId: string, paragraphIndex: number, feedback: string): Promise<string> { const task = this.#repository.getRefinedTranslationTask(taskId); const segment = this.#repository.listRefinedTranslationSegments(taskId, chapterId).find((item) => item.paragraphIndex === paragraphIndex); if (!task || !segment) throw new Error('段落或任务不存在。'); const route = this.#resolveRoute(task, 'reviewModel'); if (!route) throw new Error('未配置可用的正文初翻模型。'); return this.#generateText(this.#preferences, route, `根据用户意见修改文学译文。只输出修改后的译文。用户意见：${feedback}`, `原文：${segment.sourceText}\n当前译文：${segment.translatedText ?? '（空）'}`); }
   async chatAboutChapter(taskId: string, chapterId: string, input: { message: string; mode: RefinedChapterAgentMode; paragraphIndices?: number[]; history?: Array<{ role: 'user' | 'assistant'; content: string }> }) {
     const task = this.#repository.getRefinedTranslationTask(taskId);
     const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId);
     if (!task || !chapter) throw new Error('任务或章节不存在。');
     if (input.mode !== 'read' && (!this.#editable(taskId) || task.status === 'running')) throw new Error(task.status === 'running' ? '任务正在自动处理；请先暂停后再允许 Agent 编辑。' : '回收站任务仅支持只读问答。');
-    const route = this.#resolveRoute(task, 'translationModels') ?? this.#resolveRoute(task, 'reviewModel');
+    const route = this.#resolveRoute(task, 'reviewModel');
     if (!route) throw new Error('未配置可用的章节 Agent 模型。');
     const selected = new Set((input.paragraphIndices ?? []).filter((index) => Number.isInteger(index) && index >= 0));
     const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
@@ -391,6 +396,7 @@ export class RefinedTranslationService {
       if (pendingTerms.length) throw new Error(`请先确认或排除全部术语译法（仍有 ${pendingTerms.length} 条待确认）。`);
     }
     const next: Partial<Record<RefinedTranslationStage, RefinedTranslationStage>> = { glossary_setup: 'glossary_translation', glossary_translation: 'translating' };
+    this.#validateStart(task);
     const stage = next[task.stage];
     if (!stage) return task;
     const updated = this.#repository.updateRefinedTranslationTask(taskId, { stage, status: 'running' });
@@ -402,7 +408,7 @@ export class RefinedTranslationService {
   }
 
   pause(taskId: string) { this.#abortControllers.get(taskId)?.abort(); const current = this.#repository.getRefinedTranslationTask(taskId); if (!current || current.deletedAt) return current; const task = this.#repository.updateRefinedTranslationTask(taskId, { status: 'paused' }); if (task) this.#touch(taskId, '任务已暂停。'); return task; }
-  resume(taskId: string) { const task = this.#repository.getRefinedTranslationTask(taskId); if (!task || task.deletedAt) return null; const updated = this.#repository.updateRefinedTranslationTask(taskId, { status: 'running' }); if (updated) { this.#touch(taskId, '任务已恢复。'); void this.#run(taskId); } return updated; }
+  resume(taskId: string) { const task = this.#repository.getRefinedTranslationTask(taskId); if (!task || task.deletedAt) return null; this.#validateStart(task); const updated = this.#repository.updateRefinedTranslationTask(taskId, { status: 'running' }); if (updated) { this.#touch(taskId, '任务已恢复。'); void this.#run(taskId); } return updated; }
   markDeleted(taskId: string) { this.#abortControllers.get(taskId)?.abort(); const task = this.#repository.markRefinedTranslationTaskDeleted(taskId); if (task) this.#emit(taskId, { type: 'task_updated', taskId }); return task; }
   restore(taskId: string) { const task = this.#repository.restoreRefinedTranslationTask(taskId); if (task) this.#emit(taskId, { type: 'task_updated', taskId }); return task; }
   getPurgeStatus(taskId: string) { return this.#repository.getRefinedTranslationPurgeStatus(taskId); }
@@ -431,6 +437,7 @@ export class RefinedTranslationService {
     if (this.#abortControllers.has(taskId)) return;
     const task = this.#repository.getRefinedTranslationTask(taskId);
     if (!task || task.deletedAt || task.status !== 'running') return;
+    try { this.#validateStart(task); } catch (error) { this.#repository.updateRefinedTranslationTask(taskId, { status: 'needs_attention' }); this.#log(taskId, 'error', toMessage(error)); return; }
     const controller = new AbortController(); this.#abortControllers.set(taskId, controller);
     try {
       const checkpoint = this.#repository.getRefinedTranslationCheckpoint(taskId, task.stage)?.state;
@@ -607,7 +614,7 @@ export class RefinedTranslationService {
   }
 
   async #tryRunToolAgent(taskId: string, route: { providerId: string; modelId: string }, system: string, prompt: string, tools: import('ai').ToolSet, firstToolName?: string, signal?: AbortSignal): Promise<{ text: string; toolCallCount: number; toolCalls: Array<{ toolName: string; input: unknown }> } | null> {
-    if (!this.#runToolAgent) return null;
+    if (!this.#runToolAgent || refinedModelFormat(this.#preferences, route) !== 'general') return null;
     try {
       return await this.#runToolAgent(this.#preferences, route, system, prompt, tools, firstToolName, signal);
     } catch (error) {
@@ -616,9 +623,24 @@ export class RefinedTranslationService {
       return null;
     }
   }
-  #resolveRoute(task: StoredRefinedTranslationTaskRow, kind: 'translationModels' | 'omissionModel' | 'reviewModel') { const configured = kind === 'translationModels' ? task.modelConfig.translationModels[0] ?? null : task.modelConfig[kind]; return configured ?? resolveTranslationModel(this.#preferences) ?? null; }
+  #chatRoute(configured: import('./novel-repository').RefinedModelRoute | null) {
+    const route = resolveRefinedChatRoute(this.#preferences, configured);
+    if (!route) throw new Error('精翻需要可用的普通对话模型用于术语、检查、审核与聊天；请配置后继续。');
+    return route;
+  }
+  #validateStart(task: StoredRefinedTranslationTaskRow) {
+    this.#chatRoute(task.modelConfig.reviewModel);
+    for (const route of task.modelConfig.translationModels) {
+      const provider = this.#preferences.getLlmState().providers.find((item) => item.id === route.providerId && item.enabled);
+      if (!provider?.models.some((model) => model.enabled && model.isConfigured && (model.id === route.modelId || model.modelId === route.modelId))) throw new Error('正文初翻模型配置已失效，请重新选择可用模型。');
+    }
+  }
+  #resolveRoute(task: StoredRefinedTranslationTaskRow, kind: 'translationModels' | 'omissionModel' | 'reviewModel') {
+    return kind === 'translationModels' ? task.modelConfig.translationModels[0] ?? resolveTranslationModel(this.#preferences) : this.#chatRoute(task.modelConfig[kind]);
+  }
   /** Split plain translation losslessly; only relevant glossary entries and fitting recent context travel with each part. */
-  async #translateText(route: { providerId: string; modelId: string }, instruction: string, source: string, glossary: string, context = '', signal?: AbortSignal): Promise<string> {
+  async #translateText(route: { providerId: string; modelId: string }, instruction: string, source: string, glossary: string, context = '', signal?: AbortSignal, languages?: { sourceLang: string; targetLang: string }): Promise<string> {
+    if (refinedModelFormat(this.#preferences, route) === 'bilibili-index-translate') return this.#translateIndex(route, source, glossary, context, languages ?? { sourceLang: 'auto', targetLang: 'zh-CN' }, signal);
     const limit = modelContextLimit(this.#preferences, route);
     const history = context.split('\n\n').filter(Boolean);
     const systemFor = (text: string) => `${instruction}\n术语表：\n${(limit > 0 ? relevantGlossary(glossary, text) : glossary) || '（无）'}\n前文上下文：\n${history.join('\n\n') || '（无）'}`;
@@ -633,6 +655,33 @@ export class RefinedTranslationService {
       translations.push(await this.#generateText(this.#preferences, route, systemFor(part), part, signal));
     }
     return translations.join('\n');
+  }
+  /** Index 只接收程序构造的翻译材料，预算包含实际消息，重试不会切回对话格式。 */
+  async #translateIndex(route: { providerId: string; modelId: string }, source: string, glossary: string, context: string, languages: { sourceLang: string; targetLang: string }, signal?: AbortSignal): Promise<string> {
+    const terms = glossary.split('\n').flatMap((line, index) => { const split = line.indexOf(' = '); return split < 0 ? [] : [{ id: String(index), sourceTerm: line.slice(0, split), targetTerm: line.slice(split + 3), entityType: null, priority: 0 }]; });
+    const previous = context.split('\n\n').filter(Boolean).slice(-2).map((sourceText) => ({ sourceText }));
+    const limit = modelContextLimit(this.#preferences, route);
+    const promptFor = (sourceText: string) => buildIndexTranslatePrompt([{ sourceText }], { ...languages, glossary: terms, previousParagraphs: previous });
+    const fits = (text: string) => textRequestFits(limit, '', promptFor(text)) && (!limit || text.length * 3 <= contextOutputReserve(limit));
+    while (previous.length && !fits(source)) previous.shift();
+    const parts = splitTextForContext(source, fits);
+    if (parts.length > 1 && /^\s*\|.*\|\s*$/m.test(source)) throw new Error('表格超过模型上下文预算，无法安全拆分。');
+    const results: string[] = [];
+    for (const part of parts) {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        signal?.throwIfAborted();
+        try {
+          const output = (await this.#generateText(this.#preferences, { ...route, thinkingEnabled: false }, '', promptFor(part), signal)).trim();
+          signal?.throwIfAborted();
+          if (!output) throw new Error('模型返回空文本。');
+          if (Object.values(detectIndexTranslatePromptEcho(output, part)).some(Boolean) || hasTranslationGlossaryEcho(output, part, terms) || hasTranslationBackgroundEcho(output, [{ sourceText: part }], previous)) throw new Error('模型回显提示材料，未保存译文。');
+          results.push(output); lastError = null; break;
+        } catch (error) { lastError = error; if (signal?.aborted) throw error; }
+      }
+      if (lastError) throw lastError;
+    }
+    return results.join('\n');
   }
   /** A long unchanged paragraph is skippable only if every budgeted piece is skippable. */
   async #canKeepOriginal(route: { providerId: string; modelId: string }, source: string, signal: AbortSignal): Promise<boolean> {
@@ -662,7 +711,7 @@ export class RefinedTranslationService {
   #hasFailures(taskId: string) { return this.#repository.listRefinedTranslationChapters(taskId).some((chapter) => chapter.status === 'failed' || chapter.status === 'needs_attention'); }
   async #suggestGlossary(taskId: string, signal: AbortSignal): Promise<void> {
     const task = this.#repository.getRefinedTranslationTask(taskId); if (!task) return;
-    const route = task.modelConfig.termExtractionModel ?? this.#resolveRoute(task, 'translationModels');
+    const route = this.#chatRoute(task.modelConfig.termExtractionModel);
     if (!route) { this.#repository.updateRefinedTranslationTask(taskId, { status: 'paused' }); this.#touch(taskId, '未配置术语提取模型，请人工确认术语候选。'); return; }
     if (!this.listTerms(taskId).length && !signal.aborted) {
       this.#touch(taskId, '现有术语候选为空，术语 AI 正在从任务原文提取候选。');
@@ -675,7 +724,7 @@ export class RefinedTranslationService {
   }
   async #translateGlossary(taskId: string, signal: AbortSignal): Promise<void> {
     const task = this.#repository.getRefinedTranslationTask(taskId); if (!task) return;
-    const route = task.modelConfig.termTranslationModel ?? this.#resolveRoute(task, 'translationModels');
+    const route = this.#chatRoute(task.modelConfig.termTranslationModel);
     if (!route) { this.#log(taskId, 'warn', '未配置术语翻译模型，将保留空术语译文并自动继续正文初翻。'); return; }
     for (const term of this.listTerms(taskId)) {
       if (signal.aborted) return;
@@ -698,7 +747,7 @@ export class RefinedTranslationService {
     const source = task.sourceMetadata;
     const translated = task.translatedMetadata;
     const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
-    const translate = async (kind: string, text: string) => this.#translateText(route, `将小说${kind}从${task.sourceLang}翻译为${task.targetLang}。只输出译文，不添加说明。专有名词必须遵循术语表。`, text, glossary, '', signal);
+    const translate = async (kind: string, text: string) => this.#translateText(route, `将小说${kind}从${task.sourceLang}翻译为${task.targetLang}。只输出译文，不添加说明。专有名词必须遵循术语表。`, text, glossary, '', signal, task);
     try {
       const update: Partial<typeof translated> = {};
       if (!translated.title && source.title.trim()) update.title = await translate('标题', source.title);
@@ -713,11 +762,11 @@ export class RefinedTranslationService {
   }
   async #translateChapter(taskId: string, chapterId: string, signal: AbortSignal): Promise<void> {
     const task = this.#repository.getRefinedTranslationTask(taskId); const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId); if (!task || !chapter) return;
-    const glossary = this.listTerms(taskId).filter((term) => term.status !== 'excluded' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
+    const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
     if (!chapter.translatedTitle?.trim() && chapter.title.trim() && !signal.aborted) {
       try {
         const route = this.#resolveSegmentRoute(task, 0);
-        if (route) { const translatedTitle = await this.#translateText(route, `将章节标题翻译为${task.targetLang}，只输出标题译文。`, chapter.title, glossary, '', signal); if (!signal.aborted) this.#repository.updateRefinedTranslationChapterTitle(taskId, chapterId, translatedTitle); }
+        if (route) { const translatedTitle = await this.#translateText(route, `将章节标题翻译为${task.targetLang}，只输出标题译文。`, chapter.title, glossary, '', signal, task); if (!signal.aborted) this.#repository.updateRefinedTranslationChapterTitle(taskId, chapterId, translatedTitle); }
       } catch (error) { if (signal.aborted) return; this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章标题翻译失败，正文将继续：${toMessage(error)}`); }
     }
     const pending = this.#repository.listRefinedTranslationSegments(taskId, chapterId).filter((segment) => segment.status !== 'translated' && segment.status !== 'skipped');
@@ -738,9 +787,9 @@ export class RefinedTranslationService {
           signal,
         );
         if (signal.aborted) return;
-        const text = toolResult?.text || await this.#translateText(route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。`, segment.sourceText, glossary, context, signal);
+        const text = toolResult?.text || await this.#translateText(route, `你是专业文学译者。将${task.sourceLang}翻译成${task.targetLang}。保持段落格式，只输出译文。`, segment.sourceText, glossary, context, signal, task);
         if (!signal.aborted) this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: text || null, status: text ? 'translated' : 'pending' });
-      } catch (error) { if (!signal.aborted) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: null, status: 'failed' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${segment.paragraphIndex + 1} 段失败：${toMessage(error)}`); } }
+      } catch (error) { if (!signal.aborted) { this.writeSegment(taskId, chapterId, segment.paragraphIndex, { translatedText: segment.translatedText, status: 'failed' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${segment.paragraphIndex + 1} 段失败：${toMessage(error)}`); } }
     }
     };
     const concurrency = Math.max(1, Math.min(Math.floor(task.modelConfig.concurrency || 1), pending.length));
@@ -760,7 +809,7 @@ export class RefinedTranslationService {
     if (!task || !chapter) return { processed: 0, unresolved: 0 };
     const openReviews = this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((review) => review.resolution === 'open');
     if (!openReviews.length || signal.aborted) return { processed: 0, unresolved: openReviews.length };
-    const glossary = this.listTerms(taskId).filter((term) => term.status !== 'excluded' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
+    const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
     const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
     const reviewsByParagraph = new Map<number, StoredRefinedTranslationReviewRow[]>();
     for (const review of openReviews) {
@@ -880,7 +929,7 @@ export class RefinedTranslationService {
     if (!route) { this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound, reviewScore: null, status: 'needs_attention' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章未配置审核模型。`); return { needsRevision: true, reviewRound, maxReviewRounds: reviewRound }; }
     const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
     const content = rows.map((row) => `【${row.paragraphIndex + 1}】原文：${row.sourceText}\n译文：${row.translatedText ?? '（缺失）'}`).join('\n');
-    const glossary = this.listTerms(taskId).filter((term) => term.status !== 'excluded' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
+    const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
     const adjacent = this.readContextChapters(taskId, chapterId).map((item) => `${item.chapter.title}\n${item.segments.map((segment) => segment.translatedText ?? segment.sourceText).join('\n')}`).join('\n\n');
     const rejectedDirections = this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((review) => review.resolution === 'rejected' || review.resolution === 'ignored').map((review) => `段落 #${review.paragraphIndices.map((index) => index + 1).join('、')}：${review.suggestion}${review.resolutionNote ? `（理由：${review.resolutionNote}）` : ''}`).join('\n');
     try {
