@@ -23,13 +23,22 @@ export function createRefinedTranslationRouter({ service }: { service: ControlCe
       return response.json(service.syncRefinedTranslationSource(request.params.taskId, reuseTaskId ? { reuseTaskId } : {}));
     } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '同步原文失败。' }); }
   });
-  router.put('/tasks/:taskId', (request, response) => { const body = objectBody(request.body); const task = service.updateRefinedTranslationTaskConfiguration(request.params.taskId, { ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig as unknown as NonNullable<Parameters<ControlCenterService['updateRefinedTranslationTaskConfiguration']>[1]['modelConfig']> } : {}) }); return task ? response.json({ task }) : response.status(404).json({ message: '精翻任务不存在或已在回收站。' }); });
+  router.put('/tasks/:taskId', (request, response) => { try { const body = objectBody(request.body); const task = service.updateRefinedTranslationTaskConfiguration(request.params.taskId, { ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig as unknown as NonNullable<Parameters<ControlCenterService['updateRefinedTranslationTaskConfiguration']>[1]['modelConfig']> } : {}) }); return task ? response.json({ task }) : response.status(404).json({ message: '精翻任务不存在或已在回收站。' }); } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '任务配置无效。' }); } });
   router.get('/tasks/:taskId/stream', (request, response) => {
     response.status(200); response.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); response.setHeader('Cache-Control', 'no-cache, no-transform'); response.setHeader('Connection', 'keep-alive'); response.flushHeaders();
     const send = () => { const task = service.getRefinedTranslationTask(request.params.taskId); response.write(`event: task_updated\ndata: ${JSON.stringify(task)}\n\n`); };
     send(); const unsubscribe = service.subscribeToRefinedTranslationTask(request.params.taskId, send); request.on('close', unsubscribe);
   });
   router.get('/tasks/:taskId/chapters/:chapterId', (request, response) => { const chapter = service.getRefinedTranslationChapter(request.params.taskId, request.params.chapterId); return chapter ? response.json(chapter) : response.status(404).json({ message: '章节快照不存在。' }); });
+  router.post('/tasks/:taskId/chapters/:chapterId/segments/:paragraphIndex/reopen', (request, response) => {
+    try {
+      const index = Number(request.params.paragraphIndex);
+      if (!Number.isInteger(index) || index < 0) return response.status(422).json({ message: '段落索引无效。' });
+      const body = objectBody(request.body);
+      const segment = service.reopenRefinedTranslationParagraph(request.params.taskId, request.params.chapterId, index, body.fromScratch === true);
+      return segment ? response.json({ segment }) : response.status(404).json({ message: '段落不存在。' });
+    } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '无法重新开启段落。' }); }
+  });
   router.put('/tasks/:taskId/chapters/:chapterId/segments/:paragraphIndex', (request, response) => {
     const body = objectBody(request.body); const paragraphIndex = Number(request.params.paragraphIndex); if (!Number.isInteger(paragraphIndex) || paragraphIndex < 0) return response.status(422).json({ message: '段落索引无效。' });
     const translatedText = typeof body.translatedText === 'string' ? body.translatedText : null; const status = body.status === 'pending' || body.status === 'translated' || body.status === 'skipped' || body.status === 'failed' ? body.status : undefined;

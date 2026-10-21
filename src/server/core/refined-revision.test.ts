@@ -108,3 +108,88 @@ test('oversized hard constraints fail visibly without silently trimming them', a
     assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[0]?.translatedText, '旧译文0');
   } finally { f.repository.close(); }
 });
+
+for (const index of [true, false]) for (const threshold of [1, 2]) test(`paragraph limit finalizes with reviewer once: Index=${index}, threshold=${threshold}`, async () => {
+  const f = fixture(index); f.task.modelConfig.maxParagraphRevisions = threshold;
+  let translations = 0; let finalizations = 0;
+  const generator: RevisionGenerator = async (_prefs, route, system, prompt) => {
+    if (system.includes('直接定稿')) { assert.equal(route.modelId, 'review'); finalizations++; return '审核最终译文'; }
+    if (system.includes('约束规划')) return f.plan();
+    if (system.includes('结果复审')) return '{"resolved":false,"reason":"仍需润色"}';
+    assert.equal(route.modelId, 'translate'); translations++; return `修订译文${translations}`;
+  };
+  try {
+    for (let round = 1; round <= threshold; round++) {
+      f.repository.updateRefinedTranslationChapterReview('t', 'c', { reviewRound: round, reviewScore: 50, status: 'pending' });
+      f.repository.updateRefinedTranslationReview('t', f.issue.id, 'open', null);
+      await f.run(generator);
+      assert.deepEqual(f.repository.listRefinedTranslationSegments('t', 'c').map((row) => row.revisionState?.count), [round, round, 0]);
+    }
+    f.repository.updateRefinedTranslationChapterReview('t', 'c', { reviewRound: threshold + 1, reviewScore: 50, status: 'pending' });
+    f.repository.updateRefinedTranslationReview('t', f.issue.id, 'open', null);
+    await f.run(generator);
+    assert.equal(translations, threshold * 2); assert.equal(finalizations, 2);
+    assert.equal(f.repository.listRefinedTranslationReviews('t')[0]?.resolved, false, 'direct finalization is not independent review success');
+    assert.deepEqual(f.repository.listRefinedTranslationSegments('t', 'c').map((row) => row.revisionState?.status), ['finalized', 'finalized', 'none']);
+    f.repository.updateRefinedTranslationReview('t', f.issue.id, 'open', null);
+    await f.run(generator); assert.equal(finalizations, 2, 'later opinions must not re-finalize');
+    assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[2]?.translatedText, '旧译文2');
+  } finally { f.repository.close(); }
+});
+
+test('same round, multiple issues and provider retries count once per paragraph', async () => {
+  const f = fixture(); let calls = 0;
+  const { id: _id, createdAt: _createdAt, ...issueInput } = f.issue;
+  const extra = f.repository.createRefinedTranslationReview({ ...issueInput, suggestion: '另一个意见', paragraphIndices: [0] });
+  try {
+    await f.run(async (_prefs, _route, system) => {
+      if (system.includes('约束规划')) {
+        const plan = JSON.parse(f.plan()) as { decisions: unknown[] };
+        plan.decisions.push({ reviewId: extra.id, decision: 'accepted', reason: '适用', constraints: [{ kind: 'soft', text: '另一要求', paragraphIndices: [0] }] }); return JSON.stringify(plan);
+      }
+      if (system.includes('结果复审')) return '{"resolved":false,"reason":"还需修改"}';
+      calls++; if (calls === 1) throw new Error('retry'); return '修订';
+    });
+    assert.equal(calls, 3);
+    assert.deepEqual(f.repository.listRefinedTranslationSegments('t', 'c').map((row) => row.revisionState?.count), [1, 1, 0]);
+    const records = f.repository.listRefinedRevisions('t');
+    const row = f.repository.listRefinedTranslationSegments('t', 'c')[0]!;
+    f.repository.completeParagraphRevisionCycle(records[0]!, row.id, '0:1');
+    assert.equal(f.repository.getParagraphRevisionState('t', row.id).count, 1);
+  } finally { f.repository.close(); }
+});
+
+test('failed finalization has bounded attempts, preserves old text and needs explicit reopening', async () => {
+  const f = fixture(); f.task.modelConfig.maxParagraphRevisions = 1;
+  const row = f.repository.listRefinedTranslationSegments('t', 'c')[0]!;
+  f.repository.saveParagraphRevisionState('t', row.id, { ...f.repository.getParagraphRevisionState('t', row.id), count: 1 });
+  let calls = 0;
+  const generate: RevisionGenerator = async (_prefs, _route, system) => {
+    if (system.includes('直接定稿')) { calls++; return ' '; }
+    if (system.includes('约束规划')) return f.plan();
+    return '普通修订';
+  };
+  try {
+    const result = await f.run(generate);
+    assert.equal(calls, 3); assert.equal(result.unresolved, 1);
+    assert.equal(f.repository.getParagraphRevisionState('t', row.id).status, 'failed');
+    assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[0]?.translatedText, '旧译文0');
+    await f.run(generate); assert.equal(calls, 3);
+    assert.equal(f.repository.listRefinedTranslationReviews('t')[0]?.resolved, false);
+    f.repository.resetParagraphRevisionState('t', row.id);
+    assert.equal(f.repository.getParagraphRevisionState('t', row.id).count, 0);
+  } finally { f.repository.close(); }
+});
+
+test('cancelling reviewer finalization keeps previous text and can resume safely', async () => {
+  const f = fixture(); f.task.modelConfig.maxParagraphRevisions = 1;
+  for (const row of f.repository.listRefinedTranslationSegments('t', 'c').slice(0, 2)) f.repository.saveParagraphRevisionState('t', row.id, { ...f.repository.getParagraphRevisionState('t', row.id), count: 1 });
+  const abort = new AbortController(); let calls = 0;
+  try {
+    await f.run(async () => { calls++; abort.abort(); return '不应保存'; }, abort.signal);
+    assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[0]?.translatedText, '旧译文0');
+    await f.run(async (_prefs, route, system) => { assert.equal(route.modelId, 'review'); assert.match(system, /直接定稿/); calls++; return '最终译文'; });
+    assert.equal(calls, 3);
+    assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[0]?.revisionState?.status, 'finalized');
+  } finally { f.repository.close(); }
+});

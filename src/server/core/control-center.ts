@@ -1210,6 +1210,7 @@ export class ControlCenterService {
   suggestRefinedTranslationSegmentRevision(taskId: string, chapterId: string, paragraphIndex: number, feedback: string) { return this.#refinedTranslation.suggestSegmentRevision(taskId, chapterId, paragraphIndex, feedback); }
   chatAboutRefinedTranslationChapter(taskId: string, chapterId: string, input: Parameters<RefinedTranslationService['chatAboutChapter']>[2]) { return this.#refinedTranslation.chatAboutChapter(taskId, chapterId, input); }
   applyRefinedTranslationChapterAgentEdits(taskId: string, chapterId: string, input: Parameters<RefinedTranslationService['applyChapterAgentEdits']>[2]) { return this.#refinedTranslation.applyChapterAgentEdits(taskId, chapterId, input); }
+  reopenRefinedTranslationParagraph(taskId: string, chapterId: string, paragraphIndex: number, fromScratch = false) { return this.#refinedTranslation.reopenParagraph(taskId, chapterId, paragraphIndex, fromScratch); }
   writeRefinedTranslationSegment(taskId: string, chapterId: string, paragraphIndex: number, input: Parameters<RefinedTranslationService['writeSegment']>[3]) { return this.#refinedTranslation.writeSegment(taskId, chapterId, paragraphIndex, input); }
   updateRefinedTranslationChapterTitle(taskId: string, chapterId: string, translatedTitle: string | null) { return this.#refinedTranslation.updateChapterTitle(taskId, chapterId, translatedTitle); }
   listRefinedTranslationReviews(taskId: string, chapterId?: string) { return this.#refinedTranslation.listReviews(taskId, chapterId); }

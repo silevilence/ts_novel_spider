@@ -6,6 +6,7 @@ export interface RevisionConstraint {
 }
 
 export interface RefinedRevisionRecord {
+  kind?: 'revision' | 'finalization';
   id: string;
   taskId: string;
   chapterId: string;

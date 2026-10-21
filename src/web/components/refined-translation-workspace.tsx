@@ -1,3 +1,5 @@
+import { revisionLimitsError } from '../../server/contracts/refined-finalization';
+import { reopenRefinedParagraph } from '../services/api';
 import { useEffect, useRef, useState } from 'react';
 import {
   Badge,
@@ -107,6 +109,8 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
   const [newName, setNewName] = useState('');
   const [newSourceLang, setNewSourceLang] = useState('');
   const [newTargetLang, setNewTargetLang] = useState('');
+  const [newRevisionLimit, setNewRevisionLimit] = useState('3');
+  const [newReviewRounds, setNewReviewRounds] = useState('5');
   const [taskQuery, setTaskQuery] = useState('');
   const [taskStatus, setTaskStatus] = useState<'all' | 'running' | 'paused' | 'needs_attention' | 'completed'>('all');
   const filteredTasks = tasks.filter((task) => (taskStatus === 'all' || task.status === taskStatus) && `${task.name} ${task.novelTitle} ${task.author}`.toLocaleLowerCase().includes(taskQuery.trim().toLocaleLowerCase()));
@@ -255,6 +259,11 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
           modelOptions={modelOptions}
           onSelectChapter={selectChapter}
           onSaveSegment={saveSegment}
+          onReopenSegment={async (index) => {
+            if (!selectedId || !chapterId) return;
+            try { await reopenRefinedParagraph(selectedId, chapterId, index); await loadDetail(selectedId); }
+            catch (error) { onNotify({ tone: 'error', title: '无法重新开启', message: error instanceof Error ? error.message : '请稍后重试。' }); }
+          }}
           onSaveChapterTitle={async (translatedTitle) => { if (!selectedId || !chapterId) return; await updateRefinedChapterTitle(selectedId, chapterId, translatedTitle); await loadDetail(selectedId); }}
           onRetrySegment={async (paragraphIndex) => { if (!selectedId || !chapterId) return; await retryRefinedFailedSegments(selectedId, chapterId, paragraphIndex); await loadDetail(selectedId); }}
           onResolveReview={async (reviewId, resolution) => {
@@ -328,6 +337,8 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
           setReuseTaskId(value); const donor = reuseTasks.find((task) => task.id === value); if (donor) { setNewSourceLang(donor.sourceLang); setNewTargetLang(donor.targetLang); }
         }} />
         <Text size="xs" c="dimmed">未选择时自动继承全局翻译模型。可分别覆盖任务内各自动步骤。</Text>
+        <SimpleGrid cols={2}><TextInput label="同一段最多自动修订次数" value={newRevisionLimit} onChange={(event) => setNewRevisionLimit(event.currentTarget.value)} /><TextInput label="章节最大审核轮次" value={newReviewRounds} onChange={(event) => setNewReviewRounds(event.currentTarget.value)} /></SimpleGrid>
+        {revisionLimitsError(Number(newRevisionLimit), Number(newReviewRounds)) ? <Text c="red" size="sm">{revisionLimitsError(Number(newRevisionLimit), Number(newReviewRounds))}</Text> : null}
         <SimpleGrid cols={2}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Stack key={key} gap={4}><Select label={label} data={modelOptions.filter((option) => !option.translationOnly)} clearable value={modelKeys[key] ?? null} onChange={(value) => setModelKeys((current) => ({ ...current, [key]: value ?? '' }))} /><Checkbox size="xs" label="启用模型思考" checked={modelThinking[key] ?? false} disabled={!modelKeys[key]} onChange={(event) => { const enabled = event.currentTarget.checked; setModelThinking((current) => ({ ...current, [key]: enabled })); }} /></Stack>)}</SimpleGrid><Stack gap={4}><MultiSelect label="正文初翻模型池" description="按段落轮转分配，配合任务并发数执行。" data={modelOptions} value={translationModelKeys} onChange={setTranslationModelKeys} clearable /><Checkbox size="xs" label="普通初翻模型启用思考（专用翻译模型始终关闭）" checked={translationThinking} disabled={!translationModelKeys.some((key) => !modelOptions.find((option) => option.value === key)?.translationOnly)} onChange={(event) => setTranslationThinking(event.currentTarget.checked)} /></Stack><Text size="xs" c="dimmed">仅在所选模型支持原生思考时开启；翻译、审核等步骤可分别设置。</Text>
         <Button disabled={!newSource} onClick={() => {
           const [sourceId, novelId] = newSource.split('\u0000');
@@ -337,7 +348,9 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
             return providerId && modelId ? { providerId, modelId, ...(modelThinking[key] ? { thinkingEnabled: true } : {}) } : null;
           };
           const translationModels = translationModelKeys.flatMap((key) => { const [providerId, modelId] = key.split('\u0000'); return providerId && modelId ? [{ providerId, modelId, ...(translationThinking && !modelOptions.find((option) => option.value === key)?.translationOnly ? { thinkingEnabled: true } : {}) }] : []; });
-          void createRefinedTask({ sourceId, novelId, ...(reuseTaskId ? { reuseTaskId } : {}), ...(newName.trim() ? { name: newName.trim() } : {}), ...(newSourceLang.trim() ? { sourceLang: newSourceLang.trim() } : {}), ...(newTargetLang.trim() ? { targetLang: newTargetLang.trim() } : {}), modelConfig: { termExtractionModel: route('termExtractionModel'), termTranslationModel: route('termTranslationModel'), translationModels, omissionModel: route('omissionModel'), reviewModel: route('reviewModel') } }).then(({ task }) => {
+          const limitsError = revisionLimitsError(Number(newRevisionLimit), Number(newReviewRounds));
+          if (limitsError) { onNotify({ tone: 'error', title: '配置无效', message: limitsError }); return; }
+          void createRefinedTask({ sourceId, novelId, ...(reuseTaskId ? { reuseTaskId } : {}), ...(newName.trim() ? { name: newName.trim() } : {}), ...(newSourceLang.trim() ? { sourceLang: newSourceLang.trim() } : {}), ...(newTargetLang.trim() ? { targetLang: newTargetLang.trim() } : {}), modelConfig: { maxParagraphRevisions: Number(newRevisionLimit), maxReviewRounds: Number(newReviewRounds), termExtractionModel: route('termExtractionModel'), termTranslationModel: route('termTranslationModel'), translationModels, omissionModel: route('omissionModel'), reviewModel: route('reviewModel') } }).then(({ task }) => {
             setCreateOpen(false); setNewName(''); setNewSourceLang(''); setNewTargetLang(''); setModelKeys({}); setModelThinking({}); setTranslationModelKeys([]); setTranslationThinking(false); setSelectedId(task.id); void loadTasks();
             onNotify({ tone: 'success', title: '精翻任务已创建', message: '已将正文和术语候选快照到独立任务。' });
           }).catch((error: unknown) => onNotify({ tone: 'error', title: '创建失败', message: error instanceof Error ? error.message : '请稍后再试。' }));

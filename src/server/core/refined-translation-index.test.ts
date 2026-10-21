@@ -19,7 +19,7 @@ function preferences(type: 'openai-compatible' | 'ollama' = 'openai-compatible',
 }
 const indexRoute = { providerId: 'p', modelId: 'index', thinkingEnabled: true };
 const chatRoute = { providerId: 'p', modelId: 'chat' };
-const config = { termExtractionModel: null, termTranslationModel: null, translationModels: [indexRoute, chatRoute], omissionModel: null, reviewModel: null, concurrency: 1, maxReviewRounds: 2 };
+const config = { termExtractionModel: null, termTranslationModel: null, translationModels: [indexRoute, chatRoute], omissionModel: null, reviewModel: null, concurrency: 1, maxReviewRounds: 3 };
 async function settle(repository: SqliteNovelRepository, id: string) {
   for (let i = 0; i < 400; i++) { if (repository.getRefinedTranslationTask(id)?.status !== 'running') return; await new Promise((resolve) => setTimeout(resolve, 5)); }
   throw new Error('workflow did not finish');
@@ -102,5 +102,49 @@ for (const failure of ['empty', 'echo', 'error'] as const) test(`Index failure $
     assert.equal(calls, 3);
     assert.equal(db.listRefinedTranslationSegments('f', 'c')[0]?.translatedText, '旧有效译文');
     assert.equal(db.listRefinedTranslationSegments('f', 'c')[0]?.status, 'failed');
+  } finally { db.close(); }
+});
+
+for (const initial of ['index', 'chat']) test(`full workflow converges through reviewer finalization with ${initial} initial model`, async () => {
+  const db = new SqliteNovelRepository(':memory:'); const prefs = preferences();
+  let finalizations = 0; let reviews = 0;
+  const generate: ConstructorParameters<typeof RefinedTranslationService>[3] = async (_prefs, route, system, prompt) => {
+    if (system.includes('直接定稿')) { assert.equal(route.modelId, 'chat'); finalizations++; return '最终定稿'; }
+    if (system.includes('约束规划')) {
+      const data = JSON.parse(prompt) as { reviews: Array<{ id: string }> };
+      return JSON.stringify({ decisions: data.reviews.map((review) => ({ reviewId: review.id, decision: 'accepted', reason: '适用', constraints: [{ kind: 'soft', text: '自然流畅', paragraphIndices: [0] }] })) });
+    }
+    if (system.includes('结果复审')) return '{"resolved":false,"reason":"仍需修改"}';
+    if (system.includes('审核文学翻译')) {
+      reviews++;
+      const translated = prompt.includes('修订译文') ? '修订译文' : '初翻译文';
+      return JSON.stringify({ score: 60, issues: [{ paragraphIndex: 0, sourceExcerpt: '猫が来た', translationExcerpt: translated, suggestion: '语气还不自然', forceChange: true }] });
+    }
+    return prompt.includes('旧译文仅作修订参考') ? '修订译文' : '初翻译文';
+  };
+  const engine = new LocalExportEngine({ outputRoot: os.tmpdir(), assetService: new OfflineLibraryAssetService({ storageRoot: os.tmpdir() }) });
+  const service = new RefinedTranslationService(db, prefs, engine, generate);
+  db.createRefinedTranslationTask({ id: 'flow', sourceId: 'manual', novelId: 'n', name: 'test', novelTitle: '', author: '', sourceLang: 'ja', targetLang: 'zh-CN', modelConfig: { ...config, maxParagraphRevisions: 1, translationModels: [{ providerId: 'p', modelId: initial }] }, chapters: [{ id: 'c', index: 1, title: '', volumeTitle: null, content: '猫が来た', paragraphs: ['猫が来た'] }], terms: [] });
+  db.updateRefinedTranslationTask('flow', { stage: 'translating' });
+  try {
+    service.resume('flow'); await settle(db, 'flow');
+    assert.equal(db.getRefinedTranslationTask('flow')?.status, 'completed');
+    assert.equal(finalizations, 1); assert.equal(reviews, 2);
+    assert.equal(db.listRefinedTranslationSegments('flow', 'c')[0]?.translatedText, '最终定稿');
+    assert.equal(db.listRefinedTranslationSegments('flow', 'c')[0]?.revisionState?.count, 1);
+    // A replacement service sees the persisted finalization and will not run the model again.
+    const restarted = new RefinedTranslationService(db, prefs, engine, async () => { throw new Error('must not repeat finalized paragraph'); });
+    db.updateRefinedTranslationChapterReview('flow', 'c', { reviewRound: 0, reviewScore: null, status: 'translated' });
+    db.updateRefinedTranslationTask('flow', { stage: 'reviewing', status: 'running' });
+    db.saveRefinedTranslationCheckpoint('flow', 'reviewing', { chapterId: 'c' });
+    restarted.recoverInterruptedTasks(); await settle(db, 'flow');
+    assert.equal(db.getRefinedTranslationTask('flow')?.status, 'completed');
+    restarted.reopenParagraph('flow', 'c', 0);
+    assert.equal(db.listRefinedTranslationSegments('flow', 'c')[0]?.revisionState?.status, 'none');
+    assert.equal(db.listRefinedTranslationSegments('flow', 'c')[0]?.revisionState?.count, 0);
+    assert.equal(db.listRefinedTranslationSegments('flow', 'c')[0]?.translatedText, '最终定稿');
+    restarted.reopenParagraph('flow', 'c', 0, true);
+    assert.equal(db.listRefinedTranslationSegments('flow', 'c')[0]?.translatedText, null);
+    assert.equal(db.getRefinedTranslationTask('flow')?.stage, 'translating');
   } finally { db.close(); }
 });

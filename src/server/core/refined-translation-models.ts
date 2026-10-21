@@ -1,3 +1,4 @@
+import { paragraphRevisionLimit, revisionLimitsError } from '../contracts/refined-finalization';
 import type { RefinedModelRoute, RefinedTranslationModelConfig } from './novel-repository';
 import type { SystemPreferencesService } from './system-preferences';
 import { resolveCapabilityRoute } from './library-intelligence';
@@ -19,9 +20,12 @@ export function resolveRefinedChatRoute(preferences: SystemPreferencesService, c
 
 /** 保存时拒绝职责冲突；调用时仍会重新检查已禁用或被删除的配置。 */
 export function validateRefinedModelRoles(preferences: SystemPreferencesService, config: RefinedTranslationModelConfig): RefinedTranslationModelConfig {
+  const limit = paragraphRevisionLimit(config.maxParagraphRevisions, config.maxReviewRounds);
+  const error = revisionLimitsError(config.maxParagraphRevisions === undefined ? limit : config.maxParagraphRevisions, config.maxReviewRounds);
+  if (error) throw new Error(error);
   for (const key of ['termExtractionModel', 'termTranslationModel', 'omissionModel', 'reviewModel'] as const) {
     const route = config[key];
     if (route && refinedModelFormat(preferences, route) !== 'general') throw new Error(`${key} 必须使用普通对话模型，专用翻译模型仅用于初翻与段落修订。`);
   }
-  return { ...config, translationModels: config.translationModels.map((route) => refinedModelFormat(preferences, route) === 'bilibili-index-translate' ? { ...route, thinkingEnabled: false } : route) };
+  return { ...config, maxParagraphRevisions: limit, translationModels: config.translationModels.map((route) => refinedModelFormat(preferences, route) === 'bilibili-index-translate' ? { ...route, thinkingEnabled: false } : route) };
 }

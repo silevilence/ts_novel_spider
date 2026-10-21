@@ -43,6 +43,21 @@ test('refined API creates with reusable results and synchronizes the latest sour
     assert.equal((await post(`/tasks/${imported.task.id}/sync-source`, { reuseTaskId: 'missing' })).status, 422);
     assert.equal((await post('/tasks', { ...input, targetLang: 'en', reuseTaskId: donor.task.id })).status, 422);
     assert.equal((await post('/tasks/missing/sync-source', {})).status, 422);
+    const limitTask = await post('/tasks', { ...input, modelConfig: { maxParagraphRevisions: 1, maxReviewRounds: 3 } });
+    assert.equal(limitTask.status, 201);
+    const limitPayload = await limitTask.json() as { task: { id: string; modelConfig: { maxParagraphRevisions: number } } };
+    assert.equal(limitPayload.task.modelConfig.maxParagraphRevisions, 1);
+    assert.equal((await post('/tasks', { ...input, modelConfig: { maxParagraphRevisions: 0, maxReviewRounds: 3 } })).status, 422);
+    assert.equal((await post('/tasks', { ...input, modelConfig: { maxParagraphRevisions: 2, maxReviewRounds: 3 } })).status, 422);
+    const task = repository.getRefinedTranslationTask(limitPayload.task.id)!;
+    const invalidEdit = await fetch(`${baseUrl}/api/refined-translations/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelConfig: { ...task.modelConfig, maxParagraphRevisions: 10, maxReviewRounds: 3 } }) });
+    assert.equal(invalidEdit.status, 422);
+    assert.match((await invalidEdit.json() as { message: string }).message, /审核轮次/);
+    const segment = repository.listRefinedTranslationSegments(task.id, chapter.id)[0]!;
+    repository.saveParagraphRevisionState(task.id, segment.id, { count: 1, epoch: 0, lastCycle: '0:1', status: 'finalized', finalization: null });
+    assert.equal((await post(`/tasks/${task.id}/chapters/${chapter.id}/segments/0/reopen`, {})).status, 200);
+    assert.equal(repository.getParagraphRevisionState(task.id, segment.id).count, 0);
+    assert.equal((await post(`/tasks/${task.id}/chapters/${chapter.id}/segments/999/reopen`, {})).status, 404);
     repository.updateRefinedTranslationTask(imported.task.id, { status: 'running' });
     assert.equal((await post(`/tasks/${imported.task.id}/sync-source`, {})).status, 422);
   } finally {

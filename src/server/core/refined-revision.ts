@@ -1,3 +1,4 @@
+import { paragraphRevisionLimit } from '../contracts/refined-finalization';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import type { RefinedRevisionRecord, RevisionConstraint } from '../contracts/refined-revision';
@@ -40,12 +41,52 @@ export async function reviseRefinedChapter(options: {
   segmentRoute: (paragraphIndex: number) => RefinedModelRoute | null;
 }): Promise<{ processed: number; unresolved: number }> {
   const { repository, preferences, task, chapterId, signal, generate, segmentRoute } = options;
-  const reviews = repository.listRefinedTranslationReviews(task.id, chapterId).filter((review) => review.resolution === 'open');
+  let reviews = repository.listRefinedTranslationReviews(task.id, chapterId).filter((review) => review.resolution === 'open');
   if (!reviews.length) return { processed: 0, unresolved: 0 };
-  const rows = repository.listRefinedTranslationSegments(task.id, chapterId);
+  let rows = repository.listRefinedTranslationSegments(task.id, chapterId);
   const glossary = repository.listRefinedTranslationTerms(task.id).filter((term) => term.status === 'confirmed' && term.targetTerm?.trim());
   const chat = resolveRefinedChatRoute(preferences, task.modelConfig.reviewModel);
   if (!chat) throw new Error('审核修订需要普通对话审核模型。');
+  const finalized = new Set<number>();
+  const blocked = new Set<number>();
+  for (const segment of rows.filter((row) => reviews.some((review) => review.paragraphIndices.includes(row.paragraphIndex)))) {
+    const state = repository.getParagraphRevisionState(task.id, segment.id);
+    if (state.status === 'finalized') { finalized.add(segment.paragraphIndex); continue; }
+    if (state.status === 'failed') { blocked.add(segment.paragraphIndex); continue; }
+    if (state.count < paragraphRevisionLimit(task.modelConfig.maxParagraphRevisions, task.modelConfig.maxReviewRounds)) continue;
+    signal.throwIfAborted();
+    const related = reviews.filter((review) => review.paragraphIndices.includes(segment.paragraphIndex));
+    const history = repository.listRefinedTranslationReviews(task.id, chapterId).filter((review) => review.paragraphIndices.includes(segment.paragraphIndex));
+    const finalSystem = '审核模型直接定稿：当前段已达到自动修订上限。结合原文、术语、上下文和历次反馈，只输出该段完整最终译文。禁止修改标题、其他段落或术语。此输出是直接定稿，不代表另一次独立复审通过。';
+    const prompt = JSON.stringify({ sourceLang: task.sourceLang, targetLang: task.targetLang, source: segment.sourceText, currentTranslation: segment.translatedText, glossary, feedback: history, context: rows.filter((row) => row.paragraphIndex < segment.paragraphIndex).slice(-2) });
+    const finalization = { model: chat, triggerCount: state.count, reason: `已完成 ${state.count} 次修订并复审，仍有审核意见`, before: segment.translatedText ?? '', after: null as string | null, reviewIds: related.map((review) => review.id), prompt };
+    const record: RefinedRevisionRecord = { id: crypto.randomUUID(), kind: 'finalization', taskId: task.id, chapterId, paragraphIndex: segment.paragraphIndex, round: repository.getRefinedTranslationChapter(task.id, chapterId)?.reviewRound ?? 0, fingerprint: fingerprint({ source: segment.sourceText, epoch: state.epoch }), reviewIds: finalization.reviewIds, constraints: [], model: chat, before: finalization.before, after: null, prompt, status: 'prepared', verification: [], error: null };
+    repository.saveRefinedRevision(record);
+    try {
+      checkBudget(preferences, chat, finalSystem, prompt);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          signal.throwIfAborted();
+          const text = validateRevisionText(await generate(preferences, chat, finalSystem, prompt, signal), segment.sourceText);
+          signal.throwIfAborted();
+          record.after = text; record.status = 'revised'; finalization.after = text;
+          repository.applyParagraphFinalization(record, segment.id, { ...state, status: 'finalized', finalization });
+          finalized.add(segment.paragraphIndex); break;
+        } catch (error) { if (signal.aborted || attempt === 2) throw error; }
+      }
+    } catch (error) {
+      record.status = signal.aborted ? 'cancelled' : 'failed'; record.error = errorMessage(error); repository.saveRefinedRevision(record);
+      if (signal.aborted) return { processed: 0, unresolved: reviews.length };
+      repository.saveParagraphRevisionState(task.id, segment.id, { ...state, status: 'failed', finalization: { ...finalization, reason: errorMessage(error) } });
+      blocked.add(segment.paragraphIndex);
+    }
+  }
+  for (const review of reviews.filter((review) => review.paragraphIndices.length && review.paragraphIndices.every((index) => finalized.has(index)))) {
+    repository.updateRefinedTranslationReview(task.id, review.id, 'ignored', '关联段落已由审核模型直接定稿，退出自动返工；未声称独立复审通过，可人工重新开启。', false);
+  }
+  reviews = reviews.filter((review) => !review.paragraphIndices.length || !review.paragraphIndices.every((index) => finalized.has(index)));
+  if (!reviews.length) return { processed: finalized.size, unresolved: 0 };
+  rows = repository.listRefinedTranslationSegments(task.id, chapterId);
   const linked = new Set(reviews.flatMap((review) => review.paragraphIndices));
   const material = JSON.stringify({ reviews, paragraphs: rows.filter((row) => linked.has(row.paragraphIndex)), glossary });
   const system = '审核意见约束规划：判断每条意见是否应采纳，发现相互冲突、无法定位、无法执行时 decision=manual 并解释；不要把所有意见当硬性要求。只返回 JSON {"decisions":[{"reviewId":"原意见ID","decision":"accepted|partially_accepted|rejected|manual","reason":"原因","constraints":[{"kind":"hard|soft","text":"可执行要求","paragraphIndices":[0]}]}]}。覆盖全部意见，约束只能属于意见关联段落，不输出译文。';
@@ -73,9 +114,9 @@ export async function reviseRefinedChapter(options: {
     if (decision.decision === 'manual') repository.updateRefinedTranslationReview(task.id, decision.reviewId, 'open', `待人工处理：${decision.reason}`, false);
   }
   const records: RefinedRevisionRecord[] = [];
-  const failed = new Set<string>(manual);
+  const failed = new Set<string>([...manual, ...reviews.filter((review) => review.paragraphIndices.some((index) => blocked.has(index))).map((review) => review.id)]);
   const round = repository.getRefinedTranslationChapter(task.id, chapterId)?.reviewRound ?? 0;
-  for (const segment of rows.filter((row) => constraints.some((constraint) => constraint.paragraphIndices.includes(row.paragraphIndex)))) {
+  for (const segment of rows.filter((row) => !finalized.has(row.paragraphIndex) && !blocked.has(row.paragraphIndex) && constraints.some((constraint) => constraint.paragraphIndices.includes(row.paragraphIndex)))) {
     signal.throwIfAborted();
     const applicable = constraints.filter((constraint) => constraint.paragraphIndices.includes(segment.paragraphIndex));
     const ids = [...new Set(applicable.map((constraint) => constraint.reviewId))];
@@ -83,7 +124,7 @@ export async function reviseRefinedChapter(options: {
     if (reviews.some((review) => manual.has(review.id) && review.paragraphIndices.includes(segment.paragraphIndex))) { ids.forEach((id) => failed.add(id)); continue; }
     const route = segmentRoute(segment.paragraphIndex);
     if (!route) { ids.forEach((id) => failed.add(id)); continue; }
-    const signature = fingerprint({ source: segment.sourceText, glossary, reviews: reviews.filter((review) => ids.includes(review.id)), route, languages: [task.sourceLang, task.targetLang] });
+    const signature = fingerprint({ round, epoch: repository.getParagraphRevisionState(task.id, segment.id).epoch, source: segment.sourceText, glossary, reviews: reviews.filter((review) => ids.includes(review.id)), route, languages: [task.sourceLang, task.targetLang] });
     const previous = repository.listRefinedRevisions(task.id, chapterId).reverse().find((record) => record.paragraphIndex === segment.paragraphIndex && record.fingerprint === signature && record.after === segment.translatedText && ['revised', 'verified'].includes(record.status));
     if (previous) { records.push(previous); continue; }
     const context = rows.filter((row) => row.paragraphIndex < segment.paragraphIndex).slice(-2).map((row) => ({ sourceText: row.sourceText, ...(row.translatedText ? { translatedText: row.translatedText } : {}) }));
@@ -115,7 +156,7 @@ export async function reviseRefinedChapter(options: {
   for (const decision of plan.decisions.filter((item) => ['accepted', 'partially_accepted'].includes(item.decision))) {
     const review = reviews.find((item) => item.id === decision.reviewId)!;
     const related = records.filter((record) => record.reviewIds.includes(review.id));
-    if (failed.has(review.id) || review.paragraphIndices.some((index) => !related.some((record) => record.paragraphIndex === index))) {
+    if (failed.has(review.id) || review.paragraphIndices.some((index) => !finalized.has(index) && !related.some((record) => record.paragraphIndex === index))) {
       repository.updateRefinedTranslationReview(task.id, review.id, 'open', '部分关联段落未完成有效修订，保留原译文及执行记录，待人工处理。', false); failed.add(review.id); continue;
     }
     try {
@@ -125,12 +166,16 @@ export async function reviseRefinedChapter(options: {
       checkBudget(preferences, chat, verificationSystem, verificationPrompt);
       const verification = verificationSchema.parse(parseJson(await generate(preferences, chat, verificationSystem, verificationPrompt, signal)));
       signal.throwIfAborted();
-      repository.updateRefinedTranslationReview(task.id, review.id, decision.decision as 'accepted' | 'partially_accepted', `${decision.reason}；复审${verification.resolved ? '通过' : '未通过'}：${verification.reason}`, verification.resolved);
       for (const record of related) {
         record.verification = [...record.verification.filter((item) => item.reviewId !== review.id), { reviewId: review.id, ...verification }];
         record.status = record.reviewIds.every((id) => record.verification.some((item) => item.reviewId === id)) ? 'verified' : 'revised';
-        repository.saveRefinedRevision(record);
+        if (record.status === 'verified') {
+          const segment = rows.find((row) => row.paragraphIndex === record.paragraphIndex)!;
+          const state = repository.getParagraphRevisionState(task.id, segment.id);
+          repository.completeParagraphRevisionCycle(record, segment.id, `${state.epoch}:${round}`);
+        } else repository.saveRefinedRevision(record);
       }
+      repository.updateRefinedTranslationReview(task.id, review.id, decision.decision as 'accepted' | 'partially_accepted', `${decision.reason}；复审${verification.resolved ? '通过' : '未通过'}：${verification.reason}`, verification.resolved);
     } catch (error) {
       if (signal.aborted) return { processed: records.length, unresolved: reviews.length };
       failed.add(review.id); repository.updateRefinedTranslationReview(task.id, review.id, 'open', `复审失败：${errorMessage(error)}`, false);

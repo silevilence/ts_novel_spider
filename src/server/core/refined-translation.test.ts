@@ -563,7 +563,7 @@ test('updated task model configuration is used by the next model call', async ()
 
     service.resume('task-config-live');
     await firstTranslationStarted;
-    service.updateTaskConfiguration('task-config-live', { modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'new-translation' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'new-review', thinkingEnabled: true }, concurrency: 1, maxReviewRounds: 2 } });
+    service.updateTaskConfiguration('task-config-live', { modelConfig: { termExtractionModel: null, termTranslationModel: null, translationModels: [{ providerId: 'fake', modelId: 'new-translation' }], omissionModel: null, reviewModel: { providerId: 'fake', modelId: 'new-review', thinkingEnabled: true }, concurrency: 1, maxReviewRounds: 3 } });
     waitForRelease?.();
     await waitFor(() => repository.getRefinedTranslationTask('task-config-live')?.status === 'completed');
 
@@ -995,4 +995,20 @@ test('sync refuses paused tasks with an outstanding model call until cancellatio
     assert.doesNotThrow(() => f.service.syncSource(task.id));
     assert.equal(f.repository.listRefinedTranslationSegments(task.id, f.chapter.id)[0]?.translatedText, null);
   } finally { release?.(); f.close(); }
+});
+
+test('source sync preserves unchanged paragraph finalization and invalidates changed source', () => {
+  const f = createSourceSyncFixture();
+  try {
+    const task = f.create();
+    f.service.writeSegment(task.id, f.chapter.id, 0, { translatedText: '第一段定稿' });
+    f.service.writeSegment(task.id, f.chapter.id, 1, { translatedText: '第二段定稿' });
+    const before = f.repository.listRefinedTranslationSegments(task.id, f.chapter.id);
+    for (const row of before.slice(0, 2)) f.repository.saveParagraphRevisionState(task.id, row.id, { count: 2, epoch: 0, lastCycle: '0:2', status: 'finalized', finalization: { model: { providerId: 'fake', modelId: 'model' }, triggerCount: 2, reason: '上限', before: '旧译文', after: row.translatedText, reviewIds: [], prompt: '材料' } });
+    f.repository.saveManualChapter(f.novelId, { chapterId: f.chapter.id, title: '第一章', content: '原文甲\n\n改后的原文乙\n\n原文甲' });
+    f.service.syncSource(task.id);
+    const after = f.repository.listRefinedTranslationSegments(task.id, f.chapter.id);
+    assert.equal(after[0]?.revisionState?.status, 'finalized'); assert.equal(after[0]?.revisionState?.count, 2);
+    assert.equal(after[1]?.revisionState?.status, 'none'); assert.equal(after[1]?.revisionState?.count, 0);
+  } finally { f.close(); }
 });

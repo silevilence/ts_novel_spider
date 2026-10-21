@@ -1,3 +1,4 @@
+import { paragraphRevisionLimit, revisionLimitsError } from '../contracts/refined-finalization';
 import { reviseRefinedChapter } from './refined-revision';
 import { refinedModelFormat, resolveRefinedChatRoute, validateRefinedModelRoles } from './refined-translation-models';
 import { buildIndexTranslatePrompt, detectIndexTranslatePromptEcho } from './translation/nodes/index-translate-messages';
@@ -218,9 +219,27 @@ export class RefinedTranslationService {
   writeSegment(taskId: string, chapterId: string, paragraphIndex: number, input: { translatedText: string | null; status?: RefinedTranslationSegmentStatus }) {
     if (!this.#editable(taskId)) return null;
     const status = input.status ?? (input.translatedText?.trim() ? 'translated' : 'pending');
+    if (status === 'pending' && !input.translatedText) { const existing = this.#repository.listRefinedTranslationSegments(taskId, chapterId).find((row) => row.paragraphIndex === paragraphIndex); if (existing) this.#repository.resetParagraphRevisionState(taskId, existing.id); }
     const segment = this.#repository.updateRefinedTranslationSegment(taskId, chapterId, paragraphIndex, input.translatedText, status);
     if (segment) { this.#checkpoint(taskId, this.#repository.getRefinedTranslationTask(taskId)?.stage ?? 'translating', { chapterId, paragraphIndex, segmentStatus: segment.status }); this.#touch(taskId, `已保存第 ${paragraphIndex + 1} 段译文。`); this.#emit(taskId, { type: 'segment_updated', taskId, chapterId, paragraphIndex }); }
     return segment;
+  }
+  /** Explicitly reopen a finalized paragraph; editing text alone keeps its finalization marker. */
+  reopenParagraph(taskId: string, chapterId: string, paragraphIndex: number, fromScratch = false) {
+    const task = this.#repository.getRefinedTranslationTask(taskId);
+    if (!task || task.deletedAt) return null;
+    if (task.status === 'running' || this.#abortControllers.has(taskId)) throw new Error('请先暂停任务并等待当前调用结束后重新开启段落。');
+    const segment = this.#repository.listRefinedTranslationSegments(taskId, chapterId).find((row) => row.paragraphIndex === paragraphIndex);
+    if (!segment) return null;
+    this.#repository.resetParagraphRevisionState(taskId, segment.id);
+    if (fromScratch) this.#repository.updateRefinedTranslationSegment(taskId, chapterId, paragraphIndex, null, 'pending');
+    for (const review of this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((item) => item.paragraphIndices.includes(paragraphIndex))) this.#repository.updateRefinedTranslationReview(taskId, review.id, 'superseded', '用户重新开启段落，将重新审核。');
+    this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound: 0, reviewScore: null, status: fromScratch ? 'pending' : 'translated' });
+    const stage = fromScratch ? 'translating' : 'reviewing';
+    this.#repository.updateRefinedTranslationTask(taskId, { status: 'paused', stage });
+    this.#checkpoint(taskId, stage, { chapterId, event: 'paragraph_reopened', paragraphIndex, fromScratch });
+    this.#touch(taskId, `已重新开启第 ${paragraphIndex + 1} 段，修订计数已清零，等待继续。`);
+    return this.#repository.listRefinedTranslationSegments(taskId, chapterId).find((row) => row.paragraphIndex === paragraphIndex)!;
   }
   writeSegments(taskId: string, updates: Array<{ chapterId: string; paragraphIndex: number; translatedText: string; status?: RefinedTranslationSegmentStatus }>) {
     return updates.flatMap((update) => { const saved = this.writeSegment(taskId, update.chapterId, update.paragraphIndex, { translatedText: update.translatedText, ...(update.status ? { status: update.status } : {}) }); return saved ? [saved] : []; });
@@ -633,6 +652,8 @@ export class RefinedTranslationService {
   }
   #validateStart(task: StoredRefinedTranslationTaskRow) {
     this.#chatRoute(task.modelConfig.reviewModel);
+    const warning = revisionLimitsError(paragraphRevisionLimit(task.modelConfig.maxParagraphRevisions, task.modelConfig.maxReviewRounds), task.modelConfig.maxReviewRounds);
+    if (warning) this.#log(task.id, 'warn', `存量任务配置：${warning}`);
     for (const route of task.modelConfig.translationModels) {
       const provider = this.#preferences.getLlmState().providers.find((item) => item.id === route.providerId && item.enabled);
       if (!provider?.models.some((model) => model.enabled && model.isConfigured && (model.id === route.modelId || model.modelId === route.modelId))) throw new Error('正文初翻模型配置已失效，请重新选择可用模型。');
@@ -846,7 +867,11 @@ export class RefinedTranslationService {
     const task = this.#repository.getRefinedTranslationTask(taskId); const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId); if (!task || !chapter) return { needsRevision: true, reviewRound: 1, maxReviewRounds: 1 };
     const reviewRound = chapter.reviewRound + 1; const route = this.#resolveRoute(task, 'reviewModel');
     if (!route) { this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound, reviewScore: null, status: 'needs_attention' }); this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章未配置审核模型。`); return { needsRevision: true, reviewRound, maxReviewRounds: reviewRound }; }
-    const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
+    const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId).filter((row) => row.revisionState?.status !== 'finalized');
+    if (!rows.length) {
+      this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound: chapter.reviewRound, reviewScore: chapter.reviewScore, status: 'reviewed' });
+      return { needsRevision: false, reviewRound: chapter.reviewRound, maxReviewRounds: task.modelConfig.maxReviewRounds };
+    }
     const content = rows.map((row) => `【${row.paragraphIndex + 1}】原文：${row.sourceText}\n译文：${row.translatedText ?? '（缺失）'}`).join('\n');
     const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
     const adjacent = this.readContextChapters(taskId, chapterId).map((item) => `${item.chapter.title}\n${item.segments.map((segment) => segment.translatedText ?? segment.sourceText).join('\n')}`).join('\n\n');

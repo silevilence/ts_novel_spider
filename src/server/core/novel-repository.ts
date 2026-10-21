@@ -1,3 +1,4 @@
+import { defaultParagraphRevisionState, paragraphRevisionLimit, type ParagraphRevisionState } from '../contracts/refined-finalization';
 import type { RefinedRevisionRecord } from '../contracts/refined-revision';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
@@ -681,6 +682,7 @@ export interface RefinedTranslationModelConfig {
   reviewModel: RefinedModelRoute | null;
   concurrency: number;
   maxReviewRounds: number;
+  maxParagraphRevisions?: number;
 }
 
 export interface StoredRefinedTranslationTaskRow {
@@ -699,6 +701,7 @@ export interface StoredRefinedTranslationChapterRow {
 export interface StoredRefinedTranslationSegmentRow {
   id: string; taskId: string; chapterId: string; paragraphIndex: number; sourceText: string; translatedText: string | null;
   status: RefinedTranslationSegmentStatus; updatedAt: string;
+  revisionState?: ParagraphRevisionState;
 }
 export interface StoredRefinedTranslationTermRow {
   id: string; taskId: string; sourceTerm: string; targetTerm: string | null; entityType: string | null; priority: number;
@@ -4347,6 +4350,10 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         this.#database.prepare('DELETE FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ?').run(taskId, source.id);
         const insert = this.#database.prepare(`INSERT INTO refined_translation_segments (segment_id, task_id, chapter_id, paragraph_index, source_text, translated_text, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
         for (const segment of segments) insert.run(segment.id, taskId, source.id, segment.paragraphIndex, segment.sourceText, segment.translatedText, segment.status, now);
+        if (resetReview) for (const segment of segments) {
+          const state = this.getParagraphRevisionState(taskId, segment.id);
+          this.saveParagraphRevisionState(taskId, segment.id, { ...state, epoch: state.epoch + 1, lastCycle: null });
+        }
         if (resetReview) this.#database.prepare('UPDATE refined_translation_chapters SET has_reused_translation = ? WHERE task_id = ? AND chapter_id = ?').run(reused > 0 ? 1 : 0, taskId, source.id);
         if (resetReview) {
           // Old paragraph indices are no longer actionable; retain the audit trail as superseded.
@@ -4450,7 +4457,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   listRefinedTranslationSegments(taskId: string, chapterId: string): StoredRefinedTranslationSegmentRow[] {
     return this.#database.prepare('SELECT * FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? ORDER BY paragraph_index').all(taskId, chapterId)
-      .map((row) => mapRefinedSegmentRow(row as RefinedSegmentRow));
+      .map((row) => { const segment = mapRefinedSegmentRow(row as RefinedSegmentRow); return { ...segment, revisionState: this.getParagraphRevisionState(taskId, segment.id) }; });
   }
 
   updateRefinedTranslationSegment(taskId: string, chapterId: string, paragraphIndex: number, translatedText: string | null, status: RefinedTranslationSegmentStatus): StoredRefinedTranslationSegmentRow | null {
@@ -4461,7 +4468,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     this.#database.prepare(`UPDATE refined_translation_chapters SET status = CASE WHEN EXISTS(SELECT 1 FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? AND status = 'failed') THEN 'failed' WHEN NOT EXISTS(SELECT 1 FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? AND status = 'pending') THEN 'translated' ELSE 'pending' END, updated_at = ? WHERE task_id = ? AND chapter_id = ?`)
       .run(taskId, chapterId, taskId, chapterId, now, taskId, chapterId);
     const row = this.#database.prepare('SELECT * FROM refined_translation_segments WHERE task_id = ? AND chapter_id = ? AND paragraph_index = ?').get(taskId, chapterId, paragraphIndex) as RefinedSegmentRow | undefined;
-    return row ? mapRefinedSegmentRow(row) : null;
+    return row ? { ...mapRefinedSegmentRow(row), revisionState: this.getParagraphRevisionState(taskId, row.segment_id) } : null;
   }
 
   updateRefinedTranslationChapterTitle(taskId: string, chapterId: string, translatedTitle: string | null): StoredRefinedTranslationChapterRow | null {
@@ -4538,6 +4545,37 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const result = this.#database.prepare(`UPDATE refined_translation_chapters SET review_round = ?, review_score = ?, status = ?, updated_at = ? WHERE task_id = ? AND chapter_id = ?`)
       .run(input.reviewRound, input.reviewScore, input.status, new Date().toISOString(), taskId, chapterId);
     return result.changes ? this.getRefinedTranslationChapter(taskId, chapterId) : null;
+  }
+
+  getParagraphRevisionState(taskId: string, segmentId: string): ParagraphRevisionState {
+    const row = this.#database.prepare('SELECT state_json FROM refined_translation_paragraph_states WHERE task_id = ? AND segment_id = ?').get(taskId, segmentId) as { state_json: string } | undefined;
+    return row ? JSON.parse(row.state_json) as ParagraphRevisionState : defaultParagraphRevisionState();
+  }
+
+  saveParagraphRevisionState(taskId: string, segmentId: string, state: ParagraphRevisionState): void {
+    this.#database.prepare(`INSERT INTO refined_translation_paragraph_states (task_id, segment_id, state_json) VALUES (?, ?, ?)
+      ON CONFLICT(task_id, segment_id) DO UPDATE SET state_json = excluded.state_json`).run(taskId, segmentId, JSON.stringify(state));
+  }
+
+  resetParagraphRevisionState(taskId: string, segmentId: string): void {
+    const previous = this.getParagraphRevisionState(taskId, segmentId);
+    this.saveParagraphRevisionState(taskId, segmentId, { ...defaultParagraphRevisionState(), epoch: previous.epoch + 1 });
+  }
+
+  /** Count only fully verified execution cycles, once per paragraph/round/epoch. */
+  completeParagraphRevisionCycle(record: RefinedRevisionRecord, segmentId: string, cycle: string): void {
+    this.#database.transaction(() => {
+      const state = this.getParagraphRevisionState(record.taskId, segmentId);
+      if (state.lastCycle !== cycle) this.saveParagraphRevisionState(record.taskId, segmentId, { ...state, count: state.count + 1, lastCycle: cycle });
+      this.saveRefinedRevision(record);
+    })();
+  }
+
+  applyParagraphFinalization(record: RefinedRevisionRecord, segmentId: string, state: ParagraphRevisionState): void {
+    this.#database.transaction(() => {
+      this.applyRefinedRevision(record);
+      this.saveParagraphRevisionState(record.taskId, segmentId, state);
+    })();
   }
 
   /** Persist an execution record before calling a model; no credentials are stored. */
@@ -5133,6 +5171,10 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         volume_title TEXT, source_content TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL,
         review_round INTEGER NOT NULL DEFAULT 0, review_score REAL, has_reused_translation INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
         PRIMARY KEY(task_id, chapter_id), FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS refined_translation_paragraph_states (
+        task_id TEXT NOT NULL, segment_id TEXT NOT NULL, state_json TEXT NOT NULL,
+        PRIMARY KEY(task_id, segment_id), FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE
       );
       CREATE TABLE IF NOT EXISTS refined_translation_revisions (
         revision_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, chapter_id TEXT NOT NULL, record_json TEXT NOT NULL,
@@ -5803,10 +5845,10 @@ function mapRefinedReviewRow(row: RefinedReviewRow): StoredRefinedTranslationRev
   return { id: row.review_id, taskId: row.task_id, chapterId: row.chapter_id, reviewRound: row.review_round, severity: row.severity, paragraphIndices: parseNumberArray(row.paragraph_indices_json), scores: parseScoreObject(row.scores_json), suggestion: row.suggestion, replacementText: row.replacement_text, forceChange: row.force_change !== 0, resolved: row.resolved !== 0, resolution, resolutionNote: row.resolution_note, createdAt: row.created_at };
 }
 function parseRefinedModelConfig(raw: string): RefinedTranslationModelConfig {
-  const fallback: RefinedTranslationModelConfig = { termExtractionModel: null, termTranslationModel: null, translationModels: [], omissionModel: null, reviewModel: null, concurrency: 2, maxReviewRounds: 5 };
+  const fallback: RefinedTranslationModelConfig = { termExtractionModel: null, termTranslationModel: null, translationModels: [], omissionModel: null, reviewModel: null, concurrency: 2, maxReviewRounds: 5, maxParagraphRevisions: 3 };
   try {
     const value = JSON.parse(raw) as Partial<RefinedTranslationModelConfig>;
-    return { ...fallback, ...value, translationModels: Array.isArray(value.translationModels) ? value.translationModels : [] };
+    return { ...fallback, ...value, maxParagraphRevisions: paragraphRevisionLimit(value.maxParagraphRevisions, value.maxReviewRounds ?? 5), translationModels: Array.isArray(value.translationModels) ? value.translationModels : [] };
   } catch { return fallback; }
 }
 function parseRefinedSourceMetadata(raw: string | null, title: string, author: string): StoredRefinedTranslationTaskRow['sourceMetadata'] {
