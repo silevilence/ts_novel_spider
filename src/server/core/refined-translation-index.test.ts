@@ -1,3 +1,4 @@
+import { textRequestFits } from './llm-context-budget';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import os from 'node:os';
@@ -147,4 +148,28 @@ for (const initial of ['index', 'chat']) test(`full workflow converges through r
     assert.equal(db.listRefinedTranslationSegments('flow', 'c')[0]?.translatedText, null);
     assert.equal(db.getRefinedTranslationTask('flow')?.stage, 'translating');
   } finally { db.close(); }
+});
+
+test('Index long paragraphs keep the dedicated format and budget each actual request', async () => {
+  const db = new SqliteNovelRepository(':memory:'); const prefs = preferences();
+  prefs.updateLlmProviders(prefs.getLlmState().providers.map((provider) => ({ ...provider, models: provider.models.map((model) => ({ ...model, contextWindowTokens: 8000 })) })));
+  const source = '猫が窓の外を見ていた。'.repeat(1200);
+  db.createRefinedTranslationTask({ id: 'long', sourceId: 'manual', novelId: 'n', name: 'long', novelTitle: '', author: '', sourceLang: 'ja', targetLang: 'zh-CN', modelConfig: { ...config, translationModels: [indexRoute] }, chapters: [{ id: 'c', index: 1, title: '', volumeTitle: null, content: source, paragraphs: [source] }], terms: [] });
+  db.updateRefinedTranslationTask('long', { stage: 'translating' });
+  let calls = 0;
+  const service = new RefinedTranslationService(db, prefs, new LocalExportEngine({ outputRoot: os.tmpdir(), assetService: new OfflineLibraryAssetService({ storageRoot: os.tmpdir() }) }), async (_prefs, route, system, prompt) => {
+    if (route.modelId === 'index') { calls++; assert.equal(system, ''); assert.equal(route.thinkingEnabled, false); assert.ok(textRequestFits(8000, system, prompt)); assert.match(prompt, /日语.*中文/); return '窗外的猫。'; }
+    return '{"score":95,"issues":[]}';
+  });
+  try {
+    service.resume('long'); await settle(db, 'long');
+    assert.ok(calls > 1);
+    assert.equal(db.listRefinedTranslationSegments('long', 'c')[0]?.sourceText, source);
+    assert.equal(db.listRefinedTranslationSegments('long', 'c')[0]?.translatedText?.split('\n').length, calls);
+  } finally { db.close(); }
+});
+
+test('truncated refined model output is rejected before it can be persisted', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ id: 'fake', object: 'chat.completion', created: 0, model: 'index', choices: [{ index: 0, message: { role: 'assistant', content: '不完整的译文' }, finish_reason: 'length' }] }));
+  await assert.rejects(generateRefinedTranslationText(preferences(), indexRoute, '', '猫'), /不完整/);
 });

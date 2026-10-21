@@ -16,7 +16,7 @@ test('recognizes supported catalogs, information pages and chapter URLs locally'
 });
 
 test('rejects malformed, unrelated and spoofed URLs and invalid known-source IDs', () => {
-  for (const url of ['https://ncode.syosetu.com.evil.test/n1234ab/', 'https://evil.test/works/123', 'https://kakuyomu.jp/users/123', 'https://ncode.syosetu.com/', 'javascript:alert(1)', 'https://user@kakuyomu.jp/works/123', 'https://kakuyomu.jp:444/works/123', 'http:/', 'kakuyomu.jp/works/123']) {
+  for (const url of ['https://ncode.syosetu.com.evil.test/n1234ab/', 'https://evil.test/works/123', 'https://kakuyomu.jp/users/123', 'https://ncode.syosetu.com/', 'https://ncode.syosetu.com/novelview/infotop/ncode/n123ab/12', 'javascript:alert(1)', 'https://user@kakuyomu.jp/works/123', 'https://kakuyomu.jp:444/works/123', 'http:/', 'kakuyomu.jp/works/123']) {
     assert.throws(() => resolveNovelTarget('syosetu', url));
   }
   assert.throws(() => resolveNovelTarget('syosetu', '123'));

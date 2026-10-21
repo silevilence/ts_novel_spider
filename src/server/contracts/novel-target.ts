@@ -19,7 +19,7 @@ export function resolveNovelTarget(sourceId: string, input: string): NovelTarget
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) throw new Error('不支持此 URL，请使用站点的标准 http(s) 地址。');
   const host = url.hostname;
   if (host === 'ncode.syosetu.com' || host === 'novel18.syosetu.com') {
-    const match = /^\/(?:novelview\/infotop\/ncode\/)?(n\d+[a-z]+)(?:\/\d+)?\/?$/i.exec(url.pathname);
+    const match = (/^\/(n\d+[a-z]+)(?:\/\d+)?\/?$/i.exec(url.pathname) ?? /^\/novelview\/infotop\/ncode\/(n\d+[a-z]+)\/?$/i.exec(url.pathname));
     if (match) return { sourceId: host === 'ncode.syosetu.com' ? 'syosetu' : 'syosetu18', novelId: match[1]!.toLowerCase(), fromUrl: true };
   } else if (host === 'kakuyomu.jp') {
     const match = /^\/works\/(\d+)(?:\/episodes\/\d+)?\/?$/.exec(url.pathname);

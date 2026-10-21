@@ -232,6 +232,10 @@ export class RefinedTranslationService {
     const segment = this.#repository.listRefinedTranslationSegments(taskId, chapterId).find((row) => row.paragraphIndex === paragraphIndex);
     if (!segment) return null;
     this.#repository.resetParagraphRevisionState(taskId, segment.id);
+    for (const other of this.#repository.listRefinedTranslationSegments(taskId, chapterId).filter((row) => row.id !== segment.id)) {
+      const state = this.#repository.getParagraphRevisionState(taskId, other.id);
+      this.#repository.saveParagraphRevisionState(taskId, other.id, { ...state, epoch: state.epoch + 1, lastCycle: null });
+    }
     if (fromScratch) this.#repository.updateRefinedTranslationSegment(taskId, chapterId, paragraphIndex, null, 'pending');
     for (const review of this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((item) => item.paragraphIndices.includes(paragraphIndex))) this.#repository.updateRefinedTranslationReview(taskId, review.id, 'superseded', '用户重新开启段落，将重新审核。');
     this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound: 0, reviewScore: null, status: fromScratch ? 'pending' : 'translated' });

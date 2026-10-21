@@ -193,3 +193,26 @@ test('cancelling reviewer finalization keeps previous text and can resume safely
     assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[0]?.revisionState?.status, 'finalized');
   } finally { f.repository.close(); }
 });
+
+for (const change of ['translation', 'glossary', 'verification'] as const) test(`in-flight ${change} edits invalidate stale revision materials`, async () => {
+  const f = fixture(); let changed = false;
+  try {
+    const result = await f.run(async (_prefs, _route, system) => {
+      if (system.includes('约束规划')) return f.plan();
+      if (system.includes('结果复审')) {
+        if (change === 'verification') f.repository.updateRefinedTranslationSegment('t', 'c', 0, '用户新译文', 'translated');
+        return '{"resolved":true,"reason":"模型已检查"}';
+      }
+      if (!changed) {
+        changed = true;
+        if (change === 'translation') f.repository.updateRefinedTranslationSegment('t', 'c', 0, '用户新译文', 'translated');
+        if (change === 'glossary') f.repository.createRefinedTranslationTerm('t', { sourceTerm: '猫', targetTerm: '猫咪', status: 'confirmed' });
+      }
+      return '过期模型译文';
+    });
+    assert.equal(result.unresolved, 1);
+    assert.equal(f.repository.listRefinedTranslationReviews('t')[0]?.resolved, false);
+    assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[0]?.translatedText, change === 'glossary' ? '旧译文0' : '用户新译文');
+    assert.equal(f.repository.listRefinedTranslationSegments('t', 'c')[0]?.revisionState?.count, 0);
+  } finally { f.repository.close(); }
+});

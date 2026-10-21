@@ -1012,3 +1012,16 @@ test('source sync preserves unchanged paragraph finalization and invalidates cha
     assert.equal(after[1]?.revisionState?.status, 'none'); assert.equal(after[1]?.revisionState?.count, 0);
   } finally { f.close(); }
 });
+
+test('reopening one paragraph retains other counts but starts a fresh chapter counting epoch', () => {
+  const f = createSourceSyncFixture();
+  try {
+    const task = f.create();
+    const rows = f.repository.listRefinedTranslationSegments(task.id, f.chapter.id);
+    f.repository.saveParagraphRevisionState(task.id, rows[1]!.id, { count: 2, epoch: 0, lastCycle: '0:1', status: 'none', finalization: null });
+    f.service.reopenParagraph(task.id, f.chapter.id, 0);
+    const state = f.repository.getParagraphRevisionState(task.id, rows[1]!.id);
+    assert.equal(state.count, 2); assert.equal(state.epoch, 1); assert.equal(state.lastCycle, null);
+    assert.equal(f.repository.getParagraphRevisionState(task.id, rows[0]!.id).count, 0);
+  } finally { f.close(); }
+});

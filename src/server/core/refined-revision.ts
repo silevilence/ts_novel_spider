@@ -18,6 +18,7 @@ const verificationSchema = z.object({ resolved: z.boolean(), reason: z.string().
 
 function parseJson(text: string): unknown { return JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); }
 function fingerprint(value: unknown): string { return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
+class StaleRevisionMaterialsError extends Error {}
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
 /** Complete constraints must fit. Never trim mandatory requirements or split a revision paragraph. */
@@ -47,6 +48,14 @@ export async function reviseRefinedChapter(options: {
   const glossary = repository.listRefinedTranslationTerms(task.id).filter((term) => term.status === 'confirmed' && term.targetTerm?.trim());
   const chat = resolveRefinedChatRoute(preferences, task.modelConfig.reviewModel);
   if (!chat) throw new Error('审核修订需要普通对话审核模型。');
+  const materialStamp = fingerprint({ glossary, languages: [task.sourceLang, task.targetLang] });
+  const assertCurrentMaterials = (segmentId: string, source: string, translation: string | null) => {
+    const currentTask = repository.getRefinedTranslationTask(task.id);
+    const current = repository.listRefinedTranslationSegments(task.id, chapterId).find((row) => row.id === segmentId);
+    const currentGlossary = repository.listRefinedTranslationTerms(task.id).filter((term) => term.status === 'confirmed' && term.targetTerm?.trim());
+    if (!currentTask || currentTask.deletedAt || current?.sourceText !== source || current.translatedText !== translation || fingerprint({ glossary: currentGlossary, languages: [currentTask.sourceLang, currentTask.targetLang] }) !== materialStamp) throw new StaleRevisionMaterialsError('修订期间原文、译文、术语或语言配置已变化，未覆盖新材料，请重新审核。');
+  };
+
   const finalized = new Set<number>();
   const blocked = new Set<number>();
   for (const segment of rows.filter((row) => reviews.some((review) => review.paragraphIndices.includes(row.paragraphIndex)))) {
@@ -63,16 +72,18 @@ export async function reviseRefinedChapter(options: {
     const record: RefinedRevisionRecord = { id: crypto.randomUUID(), kind: 'finalization', taskId: task.id, chapterId, paragraphIndex: segment.paragraphIndex, round: repository.getRefinedTranslationChapter(task.id, chapterId)?.reviewRound ?? 0, fingerprint: fingerprint({ source: segment.sourceText, epoch: state.epoch }), reviewIds: finalization.reviewIds, constraints: [], model: chat, before: finalization.before, after: null, prompt, status: 'prepared', verification: [], error: null };
     repository.saveRefinedRevision(record);
     try {
+      assertCurrentMaterials(segment.id, segment.sourceText, segment.translatedText);
       checkBudget(preferences, chat, finalSystem, prompt);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           signal.throwIfAborted();
           const text = validateRevisionText(await generate(preferences, chat, finalSystem, prompt, signal), segment.sourceText);
           signal.throwIfAborted();
+          assertCurrentMaterials(segment.id, segment.sourceText, segment.translatedText);
           record.after = text; record.status = 'revised'; finalization.after = text;
           repository.applyParagraphFinalization(record, segment.id, { ...state, status: 'finalized', finalization });
           finalized.add(segment.paragraphIndex); break;
-        } catch (error) { if (signal.aborted || attempt === 2) throw error; }
+        } catch (error) { if (signal.aborted || error instanceof StaleRevisionMaterialsError || attempt === 2) throw error; }
       }
     } catch (error) {
       record.status = signal.aborted ? 'cancelled' : 'failed'; record.error = errorMessage(error); repository.saveRefinedRevision(record);
@@ -135,6 +146,7 @@ export async function reviseRefinedChapter(options: {
     const record: RefinedRevisionRecord = { id: crypto.randomUUID(), taskId: task.id, chapterId, paragraphIndex: segment.paragraphIndex, round, fingerprint: signature, reviewIds: ids, constraints: applicable, model: { providerId: route.providerId, modelId: route.modelId }, before: segment.translatedText ?? '', after: null, prompt, status: 'prepared', verification: [], error: null };
     repository.saveRefinedRevision(record);
     try {
+      assertCurrentMaterials(segment.id, segment.sourceText, segment.translatedText);
       checkBudget(preferences, route, revisionSystem, prompt);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -142,10 +154,11 @@ export async function reviseRefinedChapter(options: {
           const output = validateRevisionText(await generate(preferences, isIndex ? { ...route, thinkingEnabled: false } : route, revisionSystem, prompt, signal), segment.sourceText);
           signal.throwIfAborted();
           if (hasTranslationGlossaryEcho(output, segment.sourceText, glossary)) throw new Error('修订模型回显术语表。');
+          assertCurrentMaterials(segment.id, segment.sourceText, segment.translatedText);
           record.after = output; record.status = 'revised';
           repository.applyRefinedRevision(record);
           records.push(record); break;
-        } catch (error) { if (signal.aborted || attempt === 2) throw error; }
+        } catch (error) { if (signal.aborted || error instanceof StaleRevisionMaterialsError || attempt === 2) throw error; }
       }
     } catch (error) {
       record.status = signal.aborted ? 'cancelled' : 'failed'; record.error = errorMessage(error); repository.saveRefinedRevision(record);
@@ -162,10 +175,12 @@ export async function reviseRefinedChapter(options: {
     try {
       signal.throwIfAborted();
       const verificationSystem = '修订结果复审：检查该意见的全部关联段落是否解决问题；生成了译文不等于问题解决。只返回 JSON {"resolved":true或false,"reason":"复审依据"}。';
-      const verificationPrompt = JSON.stringify({ review, paragraphs: repository.listRefinedTranslationSegments(task.id, chapterId).filter((row) => review.paragraphIndices.includes(row.paragraphIndex)), revisions: related });
+      const verificationRows = repository.listRefinedTranslationSegments(task.id, chapterId).filter((row) => review.paragraphIndices.includes(row.paragraphIndex));
+      const verificationPrompt = JSON.stringify({ review, paragraphs: verificationRows, revisions: related });
       checkBudget(preferences, chat, verificationSystem, verificationPrompt);
       const verification = verificationSchema.parse(parseJson(await generate(preferences, chat, verificationSystem, verificationPrompt, signal)));
       signal.throwIfAborted();
+      for (const row of verificationRows) assertCurrentMaterials(row.id, row.sourceText, row.translatedText);
       for (const record of related) {
         record.verification = [...record.verification.filter((item) => item.reviewId !== review.id), { reviewId: review.id, ...verification }];
         record.status = record.reviewIds.every((id) => record.verification.some((item) => item.reviewId === id)) ? 'verified' : 'revised';
