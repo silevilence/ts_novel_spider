@@ -433,11 +433,12 @@ test('refined translation revises only review-linked segments in a dedicated age
         if (system.includes('审核文学翻译')) return prompt.includes('按审核意见修订的译文')
           ? '{"score":92,"severity":"low","issues":[],"scores":{"fluency":92,"consistency":92,"termAccuracy":92,"format":92}}'
           : '{"score":65,"severity":"medium","issues":[{"paragraphIndex":0,"sourceExcerpt":"原文一","translationExcerpt":"初始译文一","suggestion":"将语气改得更自然。","replacementText":"按审核意见修订的译文","forceChange":true}],"scores":{"fluency":65}}';
-        if (system.includes('审核修订 Agent')) {
-          revisionPrompt = `${system}\n${prompt}`;
-          const reviewId = prompt.match(/reviewId=([^；\n]+)/u)?.[1] ?? '';
-          return `{"translatedText":"按审核意见修订的译文","reviewFeedback":[{"reviewId":"${reviewId}","decision":"accepted","reason":"已采用建议并调整语气。"}]}`;
+        if (system.includes('审核意见约束规划')) {
+          const material = JSON.parse(prompt) as { reviews: Array<{ id: string }> };
+          return JSON.stringify({ decisions: material.reviews.map((review) => ({ reviewId: review.id, decision: 'accepted', reason: '已采用建议并调整语气。', constraints: [{ kind: 'soft', text: '将语气改得更自然。', paragraphIndices: [0] }] })) });
         }
+        if (system.includes('修订结果复审')) return '{"resolved":true,"reason":"语气自然"}';
+        if (system.includes('根据已判定的审核约束')) { revisionPrompt = `${system}\n${prompt}`; return '按审核意见修订的译文'; }
         if (system.includes('你是专业文学译者')) {
           initialTranslationPrompts.push(prompt);
           return prompt === '原文一' ? '初始译文一' : '不应改动的译文二';
@@ -449,14 +450,14 @@ test('refined translation revises only review-linked segments in a dedicated age
     service.resume('task-auto-revision');
     await waitFor(() => repository.getRefinedTranslationTask('task-auto-revision')?.status === 'completed');
     assert.match(revisionPrompt, /将语气改得更自然/);
-    assert.match(revisionPrompt, /当前段译文：初始译文一/);
+    assert.match(revisionPrompt, /旧译文仅作修订参考，不是待译正文：初始译文一/);
     assert.doesNotMatch(revisionPrompt, /原文二/);
     assert.deepEqual(initialTranslationPrompts, ['原文一', '原文二']);
     assert.equal(repository.listRefinedTranslationSegments('task-auto-revision', 'c1')[0]?.translatedText, '按审核意见修订的译文');
     assert.equal(repository.listRefinedTranslationSegments('task-auto-revision', 'c1')[1]?.translatedText, '不应改动的译文二');
     assert.equal(repository.listRefinedTranslationReviews('task-auto-revision', 'c1')[0]?.replacementText, '按审核意见修订的译文');
     assert.equal(repository.listRefinedTranslationReviews('task-auto-revision', 'c1')[0]?.resolution, 'accepted');
-    assert.equal(repository.listRefinedTranslationReviews('task-auto-revision', 'c1')[0]?.resolutionNote, '已采用建议并调整语气。');
+    assert.equal(repository.listRefinedTranslationReviews('task-auto-revision', 'c1')[0]?.resolutionNote, '已采用建议并调整语气。；复审通过：语气自然');
     assert.equal(repository.getRefinedTranslationChapter('task-auto-revision', 'c1')?.reviewRound, 2);
     assert.ok(repository.listRefinedTranslationTransitions('task-auto-revision').some((item) => item.fromStage === 'reviewing' && item.toStage === 'revising'));
     assert.ok(repository.listRefinedTranslationTransitions('task-auto-revision').some((item) => item.fromStage === 'revising' && item.toStage === 'checking'));

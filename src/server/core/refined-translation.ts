@@ -1,3 +1,4 @@
+import { reviseRefinedChapter } from './refined-revision';
 import { refinedModelFormat, resolveRefinedChatRoute, validateRefinedModelRoles } from './refined-translation-models';
 import { buildIndexTranslatePrompt, detectIndexTranslatePromptEcho } from './translation/nodes/index-translate-messages';
 import { hasTranslationGlossaryEcho, hasTranslationBackgroundEcho } from './translation/nodes/translation-prompt-materials';
@@ -59,6 +60,7 @@ export interface RefinedTranslationTaskDetail {
   logs: ReturnType<SqliteNovelRepository['listRefinedTranslationLogs']>;
   checkpoints: ReturnType<SqliteNovelRepository['listRefinedTranslationCheckpoints']>;
   transitions: ReturnType<SqliteNovelRepository['listRefinedTranslationTransitions']>;
+  revisions: ReturnType<SqliteNovelRepository['listRefinedRevisions']>;
   workflow: typeof REFINED_TRANSLATION_STAGES;
 }
 
@@ -189,6 +191,7 @@ export class RefinedTranslationService {
       logs: this.#repository.listRefinedTranslationLogs(taskId),
       checkpoints: this.#repository.listRefinedTranslationCheckpoints(taskId),
       transitions: this.#repository.listRefinedTranslationTransitions(taskId),
+      revisions: this.#repository.listRefinedRevisions(taskId),
       workflow: REFINED_TRANSLATION_STAGES,
     };
   }
@@ -805,96 +808,12 @@ export class RefinedTranslationService {
    */
   async #reviseChapter(taskId: string, chapterId: string, signal: AbortSignal): Promise<{ processed: number; unresolved: number }> {
     const task = this.#repository.getRefinedTranslationTask(taskId);
-    const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId);
-    if (!task || !chapter) return { processed: 0, unresolved: 0 };
-    const openReviews = this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((review) => review.resolution === 'open');
-    if (!openReviews.length || signal.aborted) return { processed: 0, unresolved: openReviews.length };
-    const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
-    const rows = this.#repository.listRefinedTranslationSegments(taskId, chapterId);
-    const reviewsByParagraph = new Map<number, StoredRefinedTranslationReviewRow[]>();
-    for (const review of openReviews) {
-      for (const paragraphIndex of review.paragraphIndices) {
-        const reviews = reviewsByParagraph.get(paragraphIndex) ?? [];
-        reviews.push(review);
-        reviewsByParagraph.set(paragraphIndex, reviews);
-      }
-    }
-    let processed = 0;
-    const processedReviewIds = new Set<string>();
-    for (const [paragraphIndex, reviews] of reviewsByParagraph) {
-      if (signal.aborted) break;
-      const segment = rows.find((item) => item.paragraphIndex === paragraphIndex);
-      if (!segment) {
-        for (const review of reviews) {
-          if (processedReviewIds.has(review.id)) continue;
-          this.#repository.updateRefinedTranslationReview(taskId, review.id, 'rejected', '审核意见未能定位到当前任务快照中的段落，未自动改动译文。');
-          processedReviewIds.add(review.id);
-          processed += 1;
-        }
-        continue;
-      }
-      const route = this.#resolveSegmentRoute(task, paragraphIndex);
-      if (!route) {
-        this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章未配置审核修订可用模型，相关意见将保留至最终人工复核。`);
-        continue;
-      }
-      const activeReviews = reviews.filter((review) => !processedReviewIds.has(review.id));
-      if (!activeReviews.length) continue;
-      try {
-        const toolResult = await this.#tryRunToolAgent(taskId, route,
-          `你是文学翻译的审核修订 Agent。必须先调用 read_current_translation、read_review_issues 与 read_glossary。只允许处理 chapterId=${chapterId} 的 paragraphIndex=${paragraphIndex}：禁止重翻整章、禁止改动章节标题、禁止改动其他段落或术语表。对每条审核意见，按需调用 write_translation_segment 写入完整修订译文，并调用 resolve_review_issue 记录 accepted、partially_accepted 或 rejected 及理由。不要输出 JSON 提案；工具调用就是实际修订记录。`,
-          `任务定位：task_id=${taskId}，chapter_id=${chapterId}，paragraphIndex=${paragraphIndex}。待处理意见：\n${activeReviews.map((review, index) => `${index + 1}. reviewId=${review.id}；意见：${review.suggestion}`).join('\n')}`,
-          createRefinedTranslationTools(this, { taskId, chapterIds: [chapterId], writable: true, abortSignal: signal }),
-          undefined,
-          signal,
-        );
-        if (signal.aborted) break;
-        if (toolResult?.toolCallCount) {
-          const resolvedByTools = activeReviews.filter((review) => this.#repository.listRefinedTranslationReviews(taskId, chapterId).some((stored) => stored.id === review.id && stored.resolution !== 'open'));
-          if (resolvedByTools.length) {
-            for (const review of resolvedByTools) {
-              processedReviewIds.add(review.id);
-              processed += 1;
-            }
-            continue;
-          }
-        }
-        const material = `当前段原文：${segment.sourceText}\n当前段译文：${segment.translatedText ?? '（缺失）'}\n审核意见：\n${activeReviews.map((review, index) => `${index + 1}. reviewId=${review.id}；意见：${review.suggestion}`).join('\n')}`;
-        const references = this.#translationContext(taskId, chapterId, paragraphIndex).split('\n\n').filter(Boolean);
-        const systemFor = () => `你是文学翻译的审核修订 Agent。只允许修改当前给出的一个段落：禁止重翻整章、禁止改动章节标题、禁止改动其他段落或术语表。依据审核意见进行最小必要修改；若意见不应采纳，保留当前译文。\n术语表：\n${relevantGlossary(glossary, material) || '（无）'}\n前文上下文：\n${references.join('\n\n') || '（当前为本章开头）'}\n只返回 JSON：{"translatedText":"修订后的完整当前段译文；不修改时返回当前译文","reviewFeedback":[{"reviewId":"...","decision":"accepted|partially_accepted|rejected","reason":"针对该意见的简短处理说明"}]}。reviewFeedback 必须覆盖每条 reviewId。`;
-        while (references.length && !textRequestFits(modelContextLimit(this.#preferences, route), systemFor(), material)) references.shift();
-        const rawText = await this.#generateText(this.#preferences, route, systemFor(), material, signal);
-        if (signal.aborted) break;
-        const hasStructuredResponse = /\{[\s\S]*"translatedText"[\s\S]*\}/.test(rawText);
-        const revision = parseRevisionResponse(rawText);
-        const feedbackById = new Map(revision.reviewFeedback.map((feedback) => [feedback.reviewId, feedback]));
-        const shouldApply = hasStructuredResponse && Boolean(revision.translatedText) && activeReviews.some((review) => feedbackById.get(review.id)?.decision !== 'rejected');
-        if (shouldApply) this.writeSegment(taskId, chapterId, paragraphIndex, { translatedText: revision.translatedText, status: 'translated' });
-        for (const review of activeReviews) {
-          const feedback = feedbackById.get(review.id);
-          const resolution = feedback?.decision ?? (shouldApply ? 'partially_accepted' : 'rejected');
-          const note = feedback?.reason ?? (shouldApply ? '模型已修订当前段，但未返回该意见的明确结论。' : '模型未返回可验证的结构化审核修订结果，未自动改动译文。');
-          this.#repository.updateRefinedTranslationReview(taskId, review.id, resolution, note);
-          processedReviewIds.add(review.id);
-          processed += 1;
-        }
-      } catch (error) {
-        if (signal.aborted) break;
-        for (const review of activeReviews) {
-          this.#repository.updateRefinedTranslationReview(taskId, review.id, 'rejected', `自动审核修订调用失败：${toMessage(error)}`);
-          processedReviewIds.add(review.id);
-          processed += 1;
-        }
-        this.#log(taskId, 'warn', `第 ${chapter.chapterIndex} 章第 ${paragraphIndex + 1} 段审核修订失败：${toMessage(error)}`);
-      }
-    }
-    const unresolved = this.#repository.listRefinedTranslationReviews(taskId, chapterId).filter((review) => review.resolution === 'open').length;
-    if (processed) {
-      this.#touch(taskId, `审核修订 Agent 已逐条处理 ${processed} 条审核意见，仅改动关联段落。`);
-      this.#emit(taskId, { type: 'review_updated', taskId, chapterId });
-    }
-    return { processed, unresolved };
+    if (!task) return { processed: 0, unresolved: 0 };
+    const result = await reviseRefinedChapter({ repository: this.#repository, preferences: this.#preferences, task, chapterId, signal, generate: this.#generateText, segmentRoute: (index) => this.#resolveSegmentRoute(task, index) });
+    this.#emit(taskId, { type: 'review_updated', taskId, chapterId });
+    return result;
   }
+
   #translationContext(taskId: string, chapterId: string, paragraphIndex: number) { return this.#repository.listRefinedTranslationSegments(taskId, chapterId).filter((segment) => segment.paragraphIndex < paragraphIndex && segment.translatedText?.trim()).slice(-TRANSLATION_CONTEXT_SEGMENTS).map((segment) => `原文：${segment.sourceText}\n译文：${segment.translatedText}`).join('\n\n'); }
   async #checkChapter(taskId: string, chapterId: string, signal: AbortSignal): Promise<{ retranslate: boolean; failed: boolean }> {
     const task = this.#repository.getRefinedTranslationTask(taskId); const chapter = this.#repository.getRefinedTranslationChapter(taskId, chapterId); if (!task || !chapter) return { retranslate: false, failed: true };
@@ -994,7 +913,6 @@ function toRoute(value: { providerId?: string; modelId?: string; thinkingEnabled
 function toMessage(error: unknown) { return error instanceof Error ? error.message : '未知错误'; }
 function parseReviewJson(text: string): { score: number; severity: string; scores: Record<string, number>; issues: Array<{ paragraphIndex: number; sourceExcerpt: string; translationExcerpt: string; suggestion: string; replacementText: string | null; forceChange: boolean }> } { try { const match = text.match(/\{[\s\S]*\}/); const parsed = JSON.parse(match?.[0] ?? '{}') as Record<string, unknown>; const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : []; return { score: typeof parsed.score === 'number' ? parsed.score : 0, severity: typeof parsed.severity === 'string' ? parsed.severity : 'medium', scores: parsed.scores && typeof parsed.scores === 'object' ? Object.fromEntries(Object.entries(parsed.scores as Record<string, unknown>).filter((entry): entry is [string, number] => typeof entry[1] === 'number')) : {}, issues: rawIssues.flatMap((item) => { if (!item || typeof item !== 'object') return []; const value = item as Record<string, unknown>; return typeof value.paragraphIndex === 'number' && typeof value.suggestion === 'string' && typeof value.sourceExcerpt === 'string' && typeof value.translationExcerpt === 'string' ? [{ paragraphIndex: value.paragraphIndex, sourceExcerpt: value.sourceExcerpt.trim(), translationExcerpt: value.translationExcerpt.trim(), suggestion: value.suggestion, replacementText: typeof value.replacementText === 'string' && value.replacementText.trim() ? value.replacementText.trim() : null, forceChange: value.forceChange === true }] : []; }) }; } catch { return { score: 0, severity: 'medium', scores: {}, issues: [] }; } }
 function resolveReviewIssueParagraphIndex(issue: { paragraphIndex: number; sourceExcerpt: string; translationExcerpt: string }, rows: Array<{ paragraphIndex: number; sourceText: string; translatedText: string | null }>): number | null { const normalize = (value: string) => value.replace(/[\s\p{P}]/gu, '').toLocaleLowerCase(); const source = normalize(issue.sourceExcerpt); const translation = normalize(issue.translationExcerpt); const matches = (row: { sourceText: string; translatedText: string | null }) => Boolean(source) && normalize(row.sourceText).includes(source) && Boolean(translation) && normalize(row.translatedText ?? '').includes(translation); const anchored = rows.filter(matches); return anchored.length === 1 ? anchored[0]!.paragraphIndex : null; }
-function parseRevisionResponse(text: string): { translatedText: string; reviewFeedback: Array<{ reviewId: string; decision: Extract<RefinedTranslationReviewResolution, 'accepted' | 'partially_accepted' | 'rejected'>; reason: string | null }> } { try { const match = text.match(/\{[\s\S]*\}/); const parsed = JSON.parse(match?.[0] ?? '{}') as Record<string, unknown>; const translatedText = typeof parsed.translatedText === 'string' ? parsed.translatedText.trim() : text.trim(); const rawFeedback = Array.isArray(parsed.reviewFeedback) ? parsed.reviewFeedback : []; return { translatedText, reviewFeedback: rawFeedback.flatMap((item) => { if (!item || typeof item !== 'object') return []; const value = item as Record<string, unknown>; const decision = value.decision === 'accepted' || value.decision === 'partially_accepted' || value.decision === 'rejected' ? value.decision : null; return typeof value.reviewId === 'string' && decision ? [{ reviewId: value.reviewId, decision, reason: typeof value.reason === 'string' && value.reason.trim() ? value.reason.trim() : null }] : []; }) }; } catch { return { translatedText: text.trim(), reviewFeedback: [] }; } }
 function parseChapterAgentResponse(text: string): { reply: string; edits: Array<{ paragraphIndex: number; translatedText: string }> } {
   try {
     const match = text.match(/\{[\s\S]*\}/);

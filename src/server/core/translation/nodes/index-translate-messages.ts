@@ -12,6 +12,7 @@ export function detectIndexTranslatePromptEcho(response: string, source: string)
 
 /** Index 模板的语言和可选材料；通过具名字段避免源/目标语言与参考材料错位。 */
 export interface IndexTranslatePromptOptions {
+  constraints?: Array<{ kind: 'hard' | 'soft'; text: string }>;
   sourceLang: string;
   targetLang: string;
   glossary: TranslationTermEntry[];
@@ -34,6 +35,7 @@ export function buildIndexTranslatePrompt(
   if (terms.length) constraints.push(`【硬性要求】专名/术语对照: ${terms.join('、')}`);
   if (batch.length > 1) constraints.push('【硬性要求】每段前的【数字编号】要求原样保留');
   if (background) constraints.push(`【注意】以下为上下文背景，仅用于理解当前源文，不要翻译或复述背景：${background}`);
+  for (const constraint of options.constraints ?? []) constraints.push(`${constraint.kind === 'hard' ? '【硬性要求】' : '【注意】'}${constraint.text}`);
   if (!constraints.length) return `请将以下${source}文本翻译为${target}，直接输出翻译结果，不要进行任何解释。\n\n${text}`;
   return `请将以下${source}文本翻译成${target}，并且严格遵循所有约束要求。\n\n【源文】\n${text}\n\n【约束要求】\n${constraints.map((c, i) => `${i + 1}. ${c}`).join('\n')}\n\n只输出译文，不要有任何额外说明。`;
 }
