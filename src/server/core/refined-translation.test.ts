@@ -1013,6 +1013,55 @@ test('source sync preserves unchanged paragraph finalization and invalidates cha
   } finally { f.close(); }
 });
 
+for (const mode of ['edit_review', 'edit_skip_review'] as const) {
+  test(`chapter agent ${mode} handles finalized paragraphs according to the approved review mode`, async () => {
+    const reviewPrompts: string[] = [];
+    const f = createSourceSyncFixture(async (_preferences, _route, system, prompt) => {
+      assert.match(system, /审核文学翻译/);
+      reviewPrompts.push(prompt);
+      return '{"score":97,"issues":[]}';
+    });
+    try {
+      const task = f.create();
+      for (const [index, text] of ['第一段定稿', '第二段定稿', '第三段定稿'].entries()) {
+        f.service.writeSegment(task.id, f.chapter.id, index, { translatedText: text });
+      }
+      const before = f.repository.listRefinedTranslationSegments(task.id, f.chapter.id);
+      for (const row of before) {
+        f.repository.saveParagraphRevisionState(task.id, row.id, {
+          count: 3, epoch: 2, lastCycle: '2:4', status: 'finalized',
+          finalization: { model: { providerId: 'fake', modelId: 'model' }, triggerCount: 3, reason: '达到上限', before: '旧译文', after: row.translatedText, reviewIds: [], prompt: '定稿材料' },
+        });
+      }
+      const originalStates = before.map((row) => f.repository.getParagraphRevisionState(task.id, row.id));
+      f.repository.updateRefinedTranslationChapterReview(task.id, f.chapter.id, { reviewRound: 4, reviewScore: 99, status: 'reviewed' });
+      f.repository.updateRefinedTranslationTask(task.id, { stage: 'completed', status: 'completed' });
+
+      const result = await f.service.applyChapterAgentEdits(task.id, f.chapter.id, {
+        mode, edits: [{ paragraphIndex: 1, translatedText: 'Agent 修改后的译文' }, { paragraphIndex: 0, translatedText: ' ' }, { paragraphIndex: 99, translatedText: '无效段落' }],
+      });
+      await waitFor(() => f.repository.getRefinedTranslationTask(task.id)?.status === 'completed');
+
+      assert.deepEqual(result.appliedParagraphIndices, [1]);
+      assert.equal(reviewPrompts.length, mode === 'edit_review' ? 1 : 0);
+      const after = f.repository.listRefinedTranslationSegments(task.id, f.chapter.id);
+      assert.deepEqual(after.map((row) => row.translatedText), ['第一段定稿', 'Agent 修改后的译文', '第三段定稿']);
+      assert.deepEqual(after[0]?.revisionState, originalStates[0]);
+      assert.deepEqual(after[2]?.revisionState, originalStates[2]);
+      if (mode === 'edit_review') {
+        assert.match(reviewPrompts[0]!, /Agent 修改后的译文/);
+        assert.doesNotMatch(reviewPrompts[0]!, /第一段定稿|第三段定稿/);
+        assert.deepEqual(after[1]?.revisionState, { count: 0, epoch: 3, lastCycle: null, status: 'none', finalization: null });
+        assert.equal(f.repository.getRefinedTranslationChapter(task.id, f.chapter.id)?.reviewScore, 97);
+      } else {
+        assert.deepEqual(after[1]?.revisionState, originalStates[1]);
+        assert.equal(f.repository.getRefinedTranslationChapter(task.id, f.chapter.id)?.reviewScore, 99);
+      }
+      assert.equal(f.repository.getRefinedTranslationChapter(task.id, f.chapter.id)?.status, 'reviewed');
+    } finally { f.close(); }
+  });
+}
+
 test('reopening one paragraph retains other counts but starts a fresh chapter counting epoch', () => {
   const f = createSourceSyncFixture();
   try {

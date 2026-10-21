@@ -354,6 +354,12 @@ export class RefinedTranslationService {
       appliedParagraphIndices.push(edit.paragraphIndex);
     }
     if (appliedParagraphIndices.length && input.mode === 'edit_review') {
+      // Explicit review approval reopens edited finalizations before the review filter runs.
+      for (const row of rows) {
+        if (appliedParagraphIndices.includes(row.paragraphIndex) && row.revisionState?.status === 'finalized') {
+          this.#repository.resetParagraphRevisionState(taskId, row.id);
+        }
+      }
       const nextReviewRound = task.status === 'needs_attention' ? 0 : chapter.reviewRound;
       this.#repository.updateRefinedTranslationChapterReview(taskId, chapterId, { reviewRound: nextReviewRound, reviewScore: null, status: 'translated' });
       this.#repository.updateRefinedTranslationTask(taskId, { stage: 'checking', status: 'running' });
