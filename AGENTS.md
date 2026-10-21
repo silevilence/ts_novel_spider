@@ -27,6 +27,15 @@
 
 **禁止降级**：不得将 Express 5 降回 v4；不得关闭 TypeScript strict 模式；不得将 Mantine 降回 v6 或更早版本。
 
+### 2.1 运行、构建与配置
+
+- 使用 npm；根目录与 `browser-extension/` 各有独立的 `package.json` 和 `package-lock.json`。在根目录运行 `npm ci`。Node.js 建议使用 22，与 `.github/workflows/release.yml` 和两个 Dockerfile 一致；`engines.node` 声明为 `>=20`，实际安装还需满足锁定依赖的小版本约束。
+- `npm run dev` 同时运行后端 `tsx watch` 与前端 Vite，并通过 `scripts/dev/diagnostic-command.mjs` 将输出及退出信息追加到 `.data/dev-logs/dev-server.log`、`.data/dev-logs/dev-web.log`。单独运行 `dev:server` / `dev:web` 不经过该包装脚本。
+- `src/server/index.ts` 默认监听 `HOST=127.0.0.1`、`PORT=3000`；Vite 默认监听 `127.0.0.1:5173`，可通过 `VITE_DEV_HOST`、`VITE_API_PROXY_TARGET`、`VITE_USE_POLLING=true` 调整。Vite 只代理 `/api`；扩展配对与 OPDS Feed 应使用后端地址。
+- `npm run build` 依次构建 Web 与服务端，产物为 `dist/web/` 和 `dist/server/`；`npm start` 运行 `dist/server/index.js`。根 `tsconfig.json` 仅聚合项目引用，前后端编译选项分别在 `tsconfig.server.json` 与 `src/web/tsconfig.json`。
+- 扩展单独执行 `npm ci --prefix browser-extension`、`npm run typecheck --prefix browser-extension`、`npm run build --prefix browser-extension`，产物为 `browser-extension/dist/`；根 `build` 与 `typecheck` 不包含扩展。
+- `docker-compose.yml` 使用 GHCR 镜像；`docker-compose.dev.yml` 从源码构建，但同样运行生产服务，不提供热重载。二者默认复用 `.data/`、`data/` 和宿主机 3000 端口，不要当作独立隔离环境同时运行。
+
 ## 3. 目录结构规范 (Directory Structure)
 
 ```text
@@ -50,6 +59,9 @@
 │   │   │   ├── library-term-translation.ts   # 缺译术语批量 AI 翻译
 │   │   │   ├── refined-translation.ts        # 精翻工作区服务（任务/术语/审核生命周期）
 │   │   │   ├── refined-translation-tools.ts   # 精翻 Agent 工具表面（AI SDK ToolSet）
+│   │   │   ├── refined-translation-models.ts  # 精翻模型职责与路由校验
+│   │   │   ├── refined-revision.ts           # 审核约束规划、逐段修订、复审与直接定稿
+│   │   │   ├── llm-context-budget.ts         # 模型上下文预算与请求保护
 │   │   │   ├── refined-translation.test.ts    # 精翻工作区测试
 │   │   │   ├── library-intelligence-rag.ts    # GraphRAG 检索（摘要召回 + 证据下钻）
 │   │   │   ├── scheduling-summary.ts # 更新总结服务（AI 摘要生成）
@@ -64,7 +76,7 @@
 │   │   │   └── ...
 │   │   ├── app.ts                 # createServerApp()，挂载路由与静态资源
 │   │   ├── browser-capture-websocket.ts # 桥接 WebSocket 接入（/api/browser/ws）
-│   │   ├── contracts/             # 前端与服务端共享契约（翻译消息格式）
+│   │   ├── contracts/             # 共享契约（小说目标、翻译格式、精翻修订与定稿）
 │   │   └── index.ts               # HTTP 监听入口
 │   └── web/                       # 前端 React 工程（Mantine v7 + Vite 构建）
 │       ├── components/            # UI 组件：控制台、书库列表/详情/阅读器、监控大盘、系统偏好面板、翻译面板、精翻工作区、Cron 编辑器、定时更新面板、OPDS 面板
@@ -92,6 +104,7 @@
 │   ├── src/options/               # 设置页入口（服务器地址、配对令牌、解除配对）
 │   └── src/shared/bridge.ts       # 协议常量、设置读写与进度文案
 ├── scripts/ci/                    # CI 发布准备脚本
+├── scripts/dev/                   # 前后端开发启动诊断与日志包装
 ├── docs/                          # UX 设计规范与开发备忘
 ├── data/
 │   ├── exports/                   # 导出文件输出目录
@@ -103,7 +116,7 @@
 ├── Dockerfile.dev                 # 开发镜像（国内加速源）
 ├── docker-compose.yml             # 生产编排（消费 ghcr.io 镜像）
 ├── docker-compose.dev.yml         # 本地开发编排
-├── tsconfig.json                  # 根 TS 配置（前端路径映射）
+├── tsconfig.json                  # 根 TS 配置（前后端项目引用）
 └── tsconfig.server.json           # 后端 TS 配置（输出至 dist/server）
 ```
 
@@ -116,6 +129,8 @@
 - 注入 `fetchHtml` 函数（`SpiderHtmlFetcher` 类型）实现请求与解析解耦，测试时传入本地 fixture HTML，线上使用 `createProxyAwareHtmlFetcher`。
 - Syosetu 站点基于 HTML 选择器解析；Kakuyomu 使用双轨解析（`__NEXT_DATA__` Apollo State 为主，HTML 选择器降级）。
 - 新增站点爬虫时，在 `src/server/adapters/spider/` 下创建文件，并在 `ControlCenterService` 构造函数的 spider 注册表中追加条目。
+- 作品编号/URL 识别共用 `src/server/contracts/novel-target.ts` 的 `resolveNovelTarget`，只解析已知域名和路径，不发网络请求。支持 Syosetu/Syosetu18 的目录、情报页、章节 URL，以及 Kakuyomu 的作品、章节 URL；URL 自动确定来源，拒绝未知站点、非 http(s)、嵌入凭据和非标准端口。
+- 前端 `control-center-model.ts` 在输入、站点或传输方式变化时失效旧预览与选章状态，粘贴 URL 不自动抓取，迟到响应不得恢复旧目标。变更识别规则时同步验证 `contracts/novel-target.test.ts` 与 `web/services/control-center-target.test.ts`。
 
 ### 4.2 日志适配器：SpiderLogAdapter
 
@@ -136,6 +151,7 @@
 ### 4.5 网络代理
 
 - 全局代理状态由 `NetworkProxyService` 管理，代理配置持久化至 `.data/network-proxy.json`，服务器启动时自动恢复。
+- 当前协议为 `http` / `https`（`NetworkProxyProtocol`），支持认证与绕过主机列表；不要将 SOCKS 描述为已实现能力。
 - Spider 适配器通过 `createProxyAwareHtmlFetcher` 获得代理感知的 fetch 函数，不得直接硬编码 `fetch`。
 
 ### 4.6 Express 5 注意事项
@@ -155,6 +171,13 @@
 - LLM API Key 以明文存储于 JSON 文件中，注意安全边界。
 - 模型能力检测通过发送轻量 API 请求验证，结果缓存在内存中。
 
+#### 模型上下文预算
+
+- 每个模型的 `contextWindowTokens` 表示输入与输出的总预算；存量默认值为 0，表示不启用本地预算限制，不表示提供商无限制。
+- 共享实现位于 `src/server/core/llm-context-budget.ts`。使用 `modelContextLimit` 解析实际路由的上限，`withContextBudget` 检查 SDK 请求（包含消息、工具 schema/结果、结构化输出 schema 和输出预留）；embedding/rerank 输入使用 `assertModelInputBudget`。
+- Token 估算采用 UTF-8 字节数保守计算，并非提供商 tokenizer 的精确结果。对话裁剪只移除完整旧轮次，保留 system、当前 user 与工具调用链；必要材料超预算时抛出 `ContextBudgetExceededError`，不得静默截断硬性约束或表格。
+- 分批逻辑使用 `textRequestFits` / `splitTextForContext` 等共享函数，新增模型调用必须沿用预算保护；测试位于 `llm-context-budget.test.ts`。
+
 ### 4.8 知识图谱与 AI 伴读：LibraryIntelligenceService
 
 - `LibraryIntelligenceService`（`src/server/core/library-intelligence.ts`）编排知识图谱构建与 AI 问答。
@@ -170,6 +193,7 @@
 - AI 伴读采用混合检索：元数据 + 图谱子图 + 章节块（关键词评分 + 向量余弦相似度 + 可选重排序）。
 - OpenAI 兼容接口需确保 base URL 包含 `/v1` 路径（若原始 URL 无 path 则自动补齐）。
 - 支持将本地图谱数据同步至 Neo4j 图数据库（`POST .../graph/sync-neo4j`），用于与外部工具联动分析。
+- 本地图谱持久化至 SQLite，Neo4j 为可选同步/查询目标；不要将 Neo4j 连接列为本地图谱构建的必需条件。
 - 图谱功能为 **实验性**，未经用户明确要求不得主动启用或宣传为稳定功能。
 
 ### 4.9 书库搜索：LibrarySearch
@@ -183,6 +207,7 @@
 - `TranslationService`（`src/server/core/translation-service.ts`）管理翻译任务的全生命周期：启动、取消、进度查询、术语库管理。
 - `TranslationRunner`（`src/server/core/translation-runner.ts`）负责调度翻译任务，控制并发数与重试策略，单章失败不阻塞整体任务。
 - `TranslationPipeline`（`src/server/core/translation-pipeline.ts`）使用 LangGraph 实现分段→翻译→组装→定稿的流水线。
+- `review-node.ts` 虽然存在，但没有接入粗翻状态图；不要将书库粗翻描述为已启用 AI 审校。审核校对由精翻工作区承担。
 - 流水线子节点位于 `src/server/core/translation/nodes/`：
   - `segment-node.ts`：按自然段拆分原文
   - `translate-node.ts`：调用 LLM 逐段翻译（含术语注入与上下文历史管理）
@@ -199,6 +224,7 @@
 - 每本小说拥有独立的术语库，支持 CRUD 操作（`GET/POST/PUT/DELETE .../translate/terms`），也支持从知识图谱实体导入术语（`POST .../translate/terms/import-from-graph`）。
 - 翻译任务支持 `fromScratch` 参数从零重译，可覆盖指定模型（`modelOverride`）。
 - 翻译调度使用 `processUnits` 单元式迭代，按顺序依次处理：小说元数据（书名+简介）→ 各卷标题 → 各真实章节。进度百分比的分母固定为本轮全部翻译单元数（`totalUnitCount = allUnits.length`，含元数据与卷标题单元），分子为已译与失败单元之和，**不得**改用剩余单元数；恢复翻译时已完成单元计入分子，分母不变，失败数按本轮重新统计。
+- 翻译明细通过 `GET .../translate/units` 返回元数据、卷标题与章节单元，前端 `translation-units-modal.tsx` 按已译/失败/待译展示与分页。部分失败章节仍展示有效段落译文，缺译段保留原文；保持 `reader-translation.ts` 的原文匹配检查。
 - 导出引擎（`export-engine.ts`）支持三种翻译导出模式：`original`（原文）、`translated`（纯译文）、`bilingual`（双语对照），通过 `?mode=` 查询参数控制。
 - 失败处理与重试：单批最多 4 次尝试（`maxAttempts = 4`），单次请求超时 120s（`AbortSignal.timeout`）；仅 `format_mismatch` / `prompt_echo` 会触发逐段回退，回退后的单段请求只携带当前段落正文；失败段落保留既有译文、记录 `[类别] 段落 …：原因` 且不计为成功，其他单元按既有隔离规则继续。
 - 中断恢复（`translation-checkpoint.ts`）：每次 translate 节点后把非空译文草稿写入 `novel_translation_build_checkpoints`，finalize 成功且未请求暂停时写 `completed` 并清空草稿。仅在继续翻译时（非 `fromScratch` 且既有构建为 `paused` / `completed` / `failed`）恢复草稿；原文、语言对、术语表或模型签名（provider / baseUrl / 消息格式）任一变化即判定检查点失效。清除译文数据时一并清除检查点。
@@ -214,18 +240,23 @@
 - 六阶段流水线：`glossary_setup`（术语确认）→ `glossary_translation`（术语翻译）→ `translating`（正文初翻）→ `checking`（遗漏检查）→ `reviewing`（审核校对）→ `revising`（审核修订）→ `completed`。各阶段可暂停/继续/下一步骤，失败段落可重试。
 - 任务数据持久化至 SQLite（`refined_translation_tasks`、`refined_translation_chapters`、`refined_translation_segments`、`refined_translation_terms`、`refined_translation_reviews`、`refined_translation_logs`、`refined_translation_transitions`、`refined_translation_checkpoints` 表）。
 - **工具表面**：`createRefinedTranslationTools(service, scope)`（`src/server/core/refined-translation-tools.ts`）返回 AI SDK `ToolSet`，通过 `scope` 绑定 `taskId`、`chapterIds` 白名单、`writable` 标志，防止 Agent 越权访问其他任务或章节。写入工具在章节聊天编辑路径启用 `needsApproval`，产出待用户确认的提案。
-- **工具代理**：`runRefinedTranslationToolAgent`（`src/server/core/translation/nodes/translate-node.ts`）使用 AI SDK `generateText` + `stepCountIs(8)` 限步运行工具调用循环，`prepareStep` 强制首步读取任务物料。所有 6 个接入点（术语提取/筛选/翻译、正文初翻、审核修订、章节审核）均通过 `#tryRunToolAgent` 优先尝试工具代理，失败时回退到确定性 `#generateText` 工作流。
+- **模型职责**：`refined-translation-models.ts` 校验角色并解析普通对话模型；术语提取/翻译、遗漏判断、审核和章节聊天使用 `general` 模型，专用翻译模型用于初翻与段落修订。Index-Translate 走单轮翻译模板且关闭思考，不能承担 JSON 决策或工具代理。
+- **工具代理**：`runRefinedTranslationToolAgent`（`src/server/core/translation/nodes/translate-node.ts`）使用 AI SDK `generateText` + `stepCountIs(8)` 限步运行工具调用循环，`prepareStep` 强制首步读取任务物料。章节聊天、普通模型正文初翻与章节审核通过 `#tryRunToolAgent` 尝试工具代理并保留确定性回退；非 `general` 格式跳过工具代理。术语翻译直接生成标量译文，审核修订走 `refined-revision.ts`，不得笼统描述为所有阶段均使用工具代理。
 - **章节 Agent**：`chatAboutChapter` 支持只读（`read`）与编辑（`edit_review` / `edit_skip_review`）两种模式；编辑模式下 Agent 产出的修改需用户通过 `applyChapterAgentEdits` 确认后才写入任务。
-- **审核修订 Agent**：仅修订与审核意见关联的段落，禁止重翻整章、禁止改动章节标题或其他段落。审核意见可接受（`accepted`）、部分接受（`partially_accepted`）、拒绝（`rejected`）、忽略（`ignored`）或重新打开（`open`）。
+- **审核修订**：`reviseRefinedChapter`（`refined-revision.ts`）按「审核模型规划 hard/soft 约束 → 翻译模型逐段修订 → 审核模型复审整条意见的全部关联段落」执行。仅修订关联段落，禁止重翻整章、修改标题或术语；不能将生成译文等同于问题已解决。冲突、无法定位、超预算或失败项保留待处理状态与原有效译文。写入前核对原文、译文、术语和语言，防止晚到响应覆盖已变化材料。
+- **修订记录与段落定稿**：共享契约为 `contracts/refined-revision.ts` 与 `contracts/refined-finalization.ts`，持久化至 `refined_translation_revisions` 和 `refined_translation_paragraph_states`。`maxParagraphRevisions` 范围为 1–20，`maxReviewRounds` 至少为其加 2、最多 100；前后端复用 `revisionLimitsError`。完成修订和复审周期才计数，同周期不重复累计。达到上限仍有意见的段落由普通审核模型直接定稿，定稿或修订请求最多尝试 3 次。直接定稿不是独立复审通过，须保留前后文本、模型、原因与意见 ID。
+- 定稿段落退出自动返工，失败定稿保留原译文等待人工处理。暂停并等待在途调用结束后，可通过段落 `/reopen` 接口重开；`fromScratch=true` 同时清空该段译文。普通手工编辑保留定稿标记，显式重新开启或确认需要复审的 Agent 编辑才重新纳入流程。
 - **导出**：支持 EPUB、Markdown、TXT 三种格式，可选原文（`original`）、纯译文（`translated`）、双语对照（`bilingual`）三种模式，可选全部章节或仅已完成章节。
 - **回收站**：删除的任务进入回收站，可恢复或永久清理（`purge`）；永久清理会移除原文快照、译文、术语、审核记录与操作日志。
-- 精翻相关测试在 `src/server/core/refined-translation.test.ts`，应使用 SQLite 内存数据库，**不得**依赖真实 LLM 调用。
+- 精翻相关测试包括 `refined-translation.test.ts`、`refined-translation-index.test.ts`、`refined-revision.test.ts` 与 `contracts/refined-finalization.test.ts`，应使用 SQLite 内存数据库与模拟模型，**不得**依赖真实 LLM 调用。
 - 新增精翻相关代码需同步更新 `novel-repository.ts` 中的精翻表结构与迁移逻辑。
 
 ### 4.10.2 书库术语候选与批量翻译：LibraryTermExtractionService & LibraryTermTranslationService
 
 - 术语状态为 `pending`（待确认）/ `confirmed`（已确认）/ `rejected`（已排除），旧库存量术语迁移为已确认；仅已确认术语注入粗翻上下文并计入缺译统计。精翻任务创建时只复制已确认的书库术语，之后沿用精翻自己的候选确认流程。
-- `LibraryTermExtractionService`（`src/server/core/library-term-extraction.ts`）按 18,000 字符窗口（`glossary-extraction.ts` 的 `GLOSSARY_EXTRACTION_SOURCE_LIMIT`）扫描已下载章节，候选按源词去重、优先级夹取 0–10，并保留来源章节。模型解析顺序：单本 `termExtractionModel` → 全局翻译偏好 `termExtractionModel` → 模型网关默认对话模型；思考开关取单本 `termExtractionThinkingEnabled`（默认关闭）。
+- `LibraryTermExtractionService`（`src/server/core/library-term-extraction.ts`）先按 18,000 字符窗口（`glossary-extraction.ts` 的 `GLOSSARY_EXTRACTION_SOURCE_LIMIT`）扫描已下载章节，再按实际模型上下文预算细分。候选按源词去重、优先级夹取 0–10，并保留来源章节。模型解析顺序：单本 `termExtractionModel` → 全局翻译偏好 `termExtractionModel` → 模型网关默认对话模型；思考开关取单本 `termExtractionThinkingEnabled`（默认关闭）。
+- 提取单批最多尝试 3 次、每次超时 120s；解析支持修复常见模型格式错误，失败批次记录到 `failedBatches` 后继续后续批次。`completedBatchIndexes` 与 `sourceFingerprint` 持久化恢复进度；仅未完成运行且源语言与窗口内容的指纹一致时复用成功批次。更换模型本身不失效，但上下文预算改变导致重新分批会改变指纹；旧记录无指纹时需重扫，已有术语仍保留。
+- 术语提取复用 `LlmInteractionLogger` 和翻译日志开关，携带 `operation=term_extraction`、运行/批次/来源章节、尝试次数、请求响应与用量，凭据必须脱敏；不要为重试虚构独立路由，再次 `POST .../translate/term-extraction` 即执行恢复逻辑。
 - `LibraryTermTranslationService`（`src/server/core/library-term-translation.ts`）为已确认但缺译文的术语批量翻译，每批 20 条，要求模型返回完整且不重复的 ID，缺失或多余即判失败。
 - 两个服务均以 `AbortController` 取消、运行记录持久化到 SQLite，取消或失败保留已完成批次；服务重启时 `recoverInterruptedRuns` 把残留的 `running` 任务标记为 `failed`。
 - 测试：`library-term-extraction.test.ts`、`library-term-translation.test.ts`、`routes/library-terms.test.ts`，应使用 SQLite 内存数据库，**不得**依赖真实 LLM 调用。
@@ -320,7 +351,7 @@
 |---|---|---|
 | GET | `/api/health` | 健康探针 |
 | GET | `/api/control/sources` | 获取注册的爬虫来源列表 |
-| POST | `/api/control/preview` | 预览小说元数据与目录（含增量状态） |
+| GET | `/api/control/preview` | 预览小说元数据与目录（查询参数 `sourceId`、`novelId`、可选 `kind`，含增量状态） |
 | GET | `/api/control/tasks` | 抓取任务快照列表（`?limit=`） |
 | POST | `/api/control/tasks` | 创建并启动抓取任务（`kind` 为 `direct` 或 `browser`） |
 | GET | `/api/control/tasks/:id` | 获取任务快照 |
@@ -387,6 +418,7 @@
 | POST | `/api/library/novels/:sourceId/:novelId/translate/start` | 启动翻译任务 |
 | POST | `/api/library/novels/:sourceId/:novelId/translate/cancel` | 取消翻译任务 |
 | GET | `/api/library/novels/:sourceId/:novelId/translate/build` | 获取翻译任务状态与进度 |
+| GET | `/api/library/novels/:sourceId/:novelId/translate/units` | 获取元数据、卷标题、章节的翻译明细与状态 |
 | GET/PUT | `/api/library/novels/:sourceId/:novelId/translate/profile` | 读取/更新翻译配置 |
 | GET | `/api/library/novels/:sourceId/:novelId/translate/chapters/:chapterId` | 获取章节翻译详情 |
 | GET | `/api/library/novels/:sourceId/:novelId/translate/terms` | 获取术语库列表 |
@@ -428,6 +460,7 @@
 | GET | `/api/refined-translations/tasks/:taskId/stream` | SSE：精翻任务实时更新流 |
 | GET | `/api/refined-translations/tasks/:taskId/chapters/:chapterId` | 精翻章节快照 |
 | PUT | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/segments/:paragraphIndex` | 写入段落译文 |
+| POST | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/segments/:paragraphIndex/reopen` | 重新开启段落自动修订（可选 `fromScratch=true` 清空译文） |
 | PUT | `/api/refined-translations/tasks/:taskId/chapters/:chapterId/title` | 更新章节标题译文 |
 | GET | `/api/refined-translations/tasks/:taskId/terms` | 精翻任务术语列表 |
 | POST | `/api/refined-translations/tasks/:taskId/terms/extract` | AI 提取术语候选 |
@@ -467,8 +500,10 @@
 
 - 测试文件与被测文件同目录，后缀为 `.test.ts`。
 - 运行命令：`npm run test:server`（服务端）、`npm run test:web`（前端）、`npm run test:extension`（浏览器扩展，`browser-extension/src/**/*.test.ts`）、`npm run test:ci`（CI 脚本）。
+- `npm test` 依次执行上述四组测试；单文件可运行 `npx tsx --test <服务端测试路径>`，前端单文件添加 `--tsconfig src/web/tsconfig.json`。脚本采用文件 glob；深层目录或新测试需核对实际输出，必要时显式传入测试路径，不能仅凭全量命令名称认定已覆盖。
 - Spider 适配器测试通过注入本地 HTML fixture 进行，**不得**发起真实网络请求；浏览器采集桥接的测试同样不得启动真实浏览器或连接真实站点。
 - **完成验收**：代码变更必须通过 `npm run typecheck` 和 `npm run build`，无类型错误和编译错误，并且相关测试通过。
+- 扩展代码变更还需通过独立 `typecheck` 与 `build`（见 2.1）。不要用根目录类型检查替代扩展检查。
 
 ## 8. 文档更新规范 (Documentation)
 
@@ -488,7 +523,7 @@
 - **系统偏好**：新增偏好字段需在 `SystemPreferencesService` 中定义接口与持久化逻辑，并在前端 `SystemPreferences` 组件中提供对应 UI。偏好迁移策略（新增字段默认值）需在 `system-preferences.ts` 的 `loadPersistedPreferences` 中显式处理。
 - **书库搜索**：搜索语法变更需同步更新 `library-search.ts` 中的分词器与解析器，并补充测试覆盖。
 - **翻译流水线**：新增翻译节点或修改流水线逻辑时，需同步更新 `translation-pipeline.ts` 中的 LangGraph 状态图定义（使用 `Annotation.Root()` API）以及 `translation-state.ts` 中的类型。翻译任务调度变更需同步更新 `translation-runner.ts`。术语库相关变更需同步更新 `translation-service.ts` 与 `novel-repository.ts` 中的表结构。从知识图谱实体导入术语（`importGraphEntitiesToTerms`）需要校验目标小说存在且术语表已就绪。翻译功能为 **已发布**，不属于实验性功能，但应在实现变更时提供测试覆盖。
-- **定时更新调度**：新增调度相关代码需同步更新 `novel-repository.ts` 中的 `scheduled_novels`、`scheduled_check_runs` 表结构与迁移逻辑。调度测试使用 `scheduling.test.ts`，应使用 SQLite 内存数据库。前端 `CronEditor` 组件（`cron-editor.tsx`）使用 `cron-parser` 做表达式校验与实时预览。定时更新书单管理入口收敛至系统偏好设置页面的一个操作按钮，唤起 Modal 浮窗勾选。定时更新支持自动翻译联动（`auto_translate`）和自动总结（`auto_summarize`）。
+- **定时更新调度**：新增调度相关代码需同步更新 `novel-repository.ts` 中的 `scheduled_novels`、`scheduled_check_runs` 表结构与迁移逻辑。调度测试使用 `scheduling.test.ts`，应使用 SQLite 内存数据库。前端 `CronEditor` 组件（`cron-editor.tsx`）使用 `cron-parser` 做表达式校验与实时预览。策略、书单表格与运行记录集中在独立 `/scheduling` 页面（`scheduling-dashboard.tsx`），不再使用全局设置内的书单 Modal。定时更新支持自动翻译联动（`auto_translate`）和自动总结（`auto_summarize`）。
 - **OPDS 书源服务**：新增 OPDS 相关代码需同步更新 `novel-repository.ts` 中的 `opds_visible`、`content_updated_at`、`epub_compiled_at` 列以及 `opds_compilation_runs` 表结构与迁移逻辑。OPDS 测试使用 `opds-compilation.test.ts`、`opds-feed.test.ts`、`opds.test.ts`，应使用 SQLite 内存数据库。前端 OPDS 管理面板位于 `opds-dashboard.tsx`，视图模型位于 `opds-dashboard-model.ts`。OPDS 路由挂载在 `/opds` 路径下，注意与 `/api` 路由区分。
 - **浏览器采集桥接**：新增站点若要支持浏览器传输，必须在 `ControlCenterService` 的注册表条目上同时声明 `transports`（含 `browser`）与 `createBrowserSpider`，并保持适配器只做解析（不得内含任何反爬绕过）；扩展只回传渲染后的 DOM，Cookie 与验证凭据不得离开浏览器；配对密钥只授权 `/api/browser` 通道，`/api/browser` 与 `/api/control/browser` 前缀必须保留回环校验（容器部署由 `allowRemoteBrowserCapture` 显式放开）。桥接相关测试使用模拟连接，不得启动真实浏览器。
 - **翻译消息格式**：格式增删必须只改 `src/server/contracts/translation-message-format.ts` 这一处契约，前端选项与后端校验同步更新；新增专用格式时需同时覆盖首轮请求、重试、逐段回退、日志字段与存量配置迁移（未知值回退 `general`）。

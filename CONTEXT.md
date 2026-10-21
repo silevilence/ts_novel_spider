@@ -32,7 +32,7 @@
 
 **Manual Asset** (手动素材) — A file uploaded by the user into a manual novel's chapter content (currently images only). Assets are stored per novel under `data/manual-assets/{novelId}/` and are referenced from Markdown as `manual://{assetId}`. They are uploaded atomically when the chapter is saved and are purged together with the novel's directory on permanent deletion.
 
-**Library Trash** (书库回收站) — A soft-delete state for novels, independent of the refined-translation trash. A novel in the trash exits automatic scheduling and OPDS distribution, stays viewable but not editable, and is permanently deleted 15 days after entering the trash (with confirmation), wiping all associated data.
+**Library Trash** (书库回收站) — A soft-delete state for novels, independent of the refined-translation trash. A novel in the trash exits automatic scheduling and OPDS distribution and stays viewable but not editable. After 15 days it becomes eligible for explicit, confirmed permanent deletion; there is no automatic purge at that deadline. Purging removes the novel's associated library data and assets, while independent refined-translation snapshots remain available.
 
 **Stale Translation** (待重译) — A translation-unit-level dirty mark applied when a novel's metadata or a chapter's content changes. Stale units are not translated automatically; they join the translation targets the next time the user triggers "continue translation", alongside newly added chapters. Unchanged translated units are left untouched.
 
@@ -54,6 +54,12 @@
 
 **Translation Reuse** (译文复用) — Importing translations from another refined-translation task that covers the same novel with the same source and target language, when creating a task or during a source sync. Only paragraphs whose source text is identical are filled in, existing translations are never overwritten, and a chapter whose paragraphs are all covered skips initial translation and goes straight to review while its title is still translated.
 
+**Review Constraint** (审核约束) — A hard requirement or soft preference derived by a general chat review model from an open review issue. Constraints are scoped to that issue's paragraphs; conflicting or unlocatable requirements require manual attention. Producing a revised paragraph does not itself resolve the issue: the review model verifies all associated paragraphs afterward.
+
+**Paragraph Finalization** (段落定稿) — When a paragraph reaches its configured automatic revision limit and still has review feedback, the review model directly produces a final translation. The system records the model, reason, before/after text and associated review IDs, and excludes a finalized paragraph from automatic rework. This is not a claim of independent re-review approval. Failed finalization preserves the prior translation for manual handling; explicitly reopening a paragraph resets its revision state.
+
+**Model Context Budget** (模型上下文预算) — The configured per-model bound on input plus reserved output, including message framing, tool materials and structured-output schemas. The application uses a conservative UTF-8-byte estimate rather than a provider-specific tokenizer. A value of zero disables the local guard; it does not remove the provider's own limit. Required material that cannot safely fit fails rather than silently losing constraints.
+
 ## Sites
 
 **SyosetuOrg** (syosetu.org 站点) — An independent Japanese novel viewing/aggregation site, operated separately from the HinaProject syosetu.com group and therefore distinct from Syosetu (小説家になろう) and Syosetu18 (ノクターンノベルズ). Novel pages live at `/novel/{id}/` with numeric ids (e.g. 353455). The site sits behind Cloudflare and IP-blocks direct server fetches (HTTP 403 even with a browser UA), so the planned adapter is parse-only and production capture is intended to run through Browser Transport or a Cloudflare-allowed proxy (ADR-0003). The adapter is **not implemented yet** (see ROADMAP: SyosetuOrg 数据源适配与爬虫研发); the sources currently selectable in the capture workbench are Syosetu, Syosetu18, and Kakuyomu.
@@ -61,7 +67,7 @@ _Avoid_: Syosetu18, なろう系 (confusable with the syosetu.com group)
 
 ## Capture Mechanisms
 
-**Browser Transport** (浏览器传输采集) — Obtaining a site's HTML through a user-authorized browser extension instead of the server's own fetcher. The extension renders the page in a real top-level tab (letting the user complete access verification such as Cloudflare challenges), serializes the rendered DOM, and returns it to the server. Parsing stays server-side in the SpiderAdapter; the extension is only a `SpiderHtmlFetcher` implementation. Site session cookies and verification credentials never leave the browser.
+**Browser Transport** (浏览器传输采集) — Obtaining a site's HTML through a user-authorized browser extension instead of the server's own fetcher. The extension renders the page in a real top-level tab (letting the user complete access verification such as Cloudflare challenges), serializes the rendered DOM, and returns it to the server. Parsing stays server-side in the SpiderAdapter; the extension supplies the browser transport behind a `SpiderHtmlFetcher`. Site session cookies and verification credentials never enter the capture channel. Developer Export is a separate, local-only operation (ADR-0004).
 _Avoid_: Plugin capture, extension crawling
 
 **Pairing** (配对) — The trust relationship between a user-authorized browser extension and the local server, established once by exchanging a short-lived one-time token (generated in the settings page) for a persistent pairing key. The key authorizes only the browser-capture channel, and can be revoked by unpairing.
