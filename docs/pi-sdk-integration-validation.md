@@ -30,6 +30,6 @@ npm run typecheck --prefix scripts/experiments/pi-sdk
 - 只验证 openai-compatible 主控、关闭思考、明确的上下文上限。Anthropic、Google、Ollama、思考参数、组织头、特殊兼容参数及真实提供商行为仍需后续验证。
 - 使用新的受限验证工具包装现有领域函数，不证明现有 AI SDK ToolSet 可以原样转换；审批策略和所有生产工具仍需逐项适配。
 - 预算及脱敏包装仅为实验。正式实现必须沿用模型实际路由、覆盖所有请求和日志出口，并保留审核与版本约束。
-- SDK 最低 Node 22.19.0 与根 engines >=20 有差异；顶层 MIT 和传递许可声明已核查。Windows 启动及 Linux Node 22 SDK smoke 已通过，完整生产 Dockerfile 重建另行跟踪，不能以本项验收替代部署验收。
+- SDK 最低 Node 22.19.0 与根 engines >=20 有差异；顶层 MIT 和传递许可声明已核查。Windows 启动、Linux Node 22 SDK smoke 及完整生产 Dockerfile 重建已通过，应用容器同进程健康检查为 200，具体部署范围见 `pi-sdk-validation.md`。
 
 本项完成的是接入可行性与边界验证，不是 Agent 模式生产实现。

@@ -9,7 +9,8 @@
 - Windows：Node **24.15.0** / npm **11.12.1**；SDK smoke、应用同进程启动及 `/api/health` 200 已通过。
 - Linux：通过 Podman 构建 Dockerfile，在 `node:22-bookworm-slim` / Node **22.23.4** 中安装生产依赖、创建无内置工具的会话并完成假模型响应，已通过。Podman 使用已有 WSL machine，不挂载项目 `.data` 或真实配置。
 - 根项目：`npm run typecheck`、`npm run build` 通过；66 项精翻、Index、修订和预算回归通过。Vite 仍提示现有的大 chunk 与混合动态/静态导入警告。
-- 原始生产 Dockerfile 的完整重建及携带 SDK 的应用容器健康检查：**仍在验证，不能用上述独立 Linux smoke 替代**。
+- 原始生产 Dockerfile 经 Podman 完整重建成功，再叠加 SDK 实验包构建成功；Linux Node 22.23.4 下 SDK 与应用同进程运行，`/api/health` 返回 **200**。基础镜像 ID 前缀 `6b6dd704c786`，叠加镜像 `ee172f476324`。
+- 本机没有 Docker Engine，使用已有 Podman WSL machine 验证 Dockerfile。Podman 的默认 OCI 格式忽略 Docker HEALTHCHECK 声明，因此健康状态以本次显式 HTTP 请求为证，未验证 Docker Engine 的定期探针或 compose 部署。
 
 ## 安装、许可与模块兼容性
 
@@ -95,8 +96,19 @@ podman build --ignorefile scripts/experiments/pi-sdk/container.ignore --build-ar
 | Pi Agent Core | 已安装为 SDK 依赖；没有独立开发或基准比较 | 若单独使用，技能与长期会话能力需要另外组合 |
 | 现有 AI SDK | 项目现有精翻及 66 项回归通过 | 技能加载、会话管理、压缩、追加指令与持久恢复需自行完善 |
 
-技术上优先保留 **Pi 会话 SDK 1.4.0 + 薄适配模块 + 现有精翻领域操作**，本次无需 fork Pi 核心。建议固定精确版本及 lockfile，升级时重跑这套协议、技能和故障测试。正式采用仍以完整生产容器验证和 Node 支持策略明确为前提，不把初步匹配结论当成生产上线许可。
+技术上优先保留 **Pi 会话 SDK 1.4.0 + 薄适配模块 + 现有精翻领域操作**，本次无需 fork Pi 核心。建议固定精确版本及 lockfile，升级时重跑这套协议、技能和故障测试。完整生产容器构建及启动验证已通过；正式选型仍待 SQLite 崩溃窗口验证及 Node 支持策略明确，不把初步匹配结论当成生产上线许可。
 
 第一版仍限定单主控 Agent、领域工具及可配置技能；多 Agent、任意脚本、第三方技能安装和模式切换不在范围内。后续生产接入必须补事务幂等、材料版本、任务与会话所有权、技能快照、运行预算及审核完成条件；这些属于后续 ROADMAP 任务，不能因为 SDK 测试通过而勾选。
+
+## 本轮交付与未完成项
+
+本轮在用户给定的 40 分钟窗口内验证并收尾。21 项实验测试通过，增强 checkpoint 内容及恢复目标断言后对应 2 项再次通过，实验严格类型检查通过；根项目 66 项相关回归、类型检查及构建通过。整体检查确认没有修改生产代码、根依赖、用户数据库或真实凭据，差异无空白错误。
+
+ROADMAP 中安装部署、模型与领域工具接入两项完成；技能与恢复、正式选型两项保留未完成状态。后续最小验证工作为：
+
+1. 补真实 SQLite 写入后、Pi 工具结果持久化前的崩溃测试，落实恢复判定与幂等方案；当前临时文件测试只证明风险窗口存在。
+2. 决定将生产 Node 最低版本提高到 22.19，还是保留 Node 20 主程序并采用独立运行进程，评估对应发布与维护成本。
+3. 在明确提供商与可用测试凭据后，验证真实模型的工具协议、思考参数及长会话摘要质量；本轮没有覆盖这些行为。
+4. 完成上述评估后确定正式运行时，再按后续 ROADMAP 实现 Agent 模式。技能可以约束行为，权限与审核完成条件仍需后端强制检查。
 
 依据：安装的 1.4.0 package.json、lockfile、类型声明及运行源码优先；在线参考为 [SDK 文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)、[Agent Core](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md)、[扩展文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)。在线 main 会继续变化，不能代替锁定包的实测结果。
