@@ -100,3 +100,44 @@ test('cancelled extraction cannot advance after a late reply; a busy book waits 
   } finally { f.cleanup(); }
 });
 
+test('pausing an in-flight extraction ignores its late response and resumes without approving old candidates', async () => {
+  const f = fixture();
+  let release!: (value: string) => void;
+  let calls = 0;
+  const extraction = new LibraryTermExtractionService(f.repository, f.preferences, async () => {
+    if (++calls === 1) return new Promise<string>((resolve) => { release = resolve; });
+    return '{"terms":[{"sourceTerm":"アリス"}]}';
+  });
+  const service = new LibraryProcessingService(f.repository, extraction, f.translation);
+  const job = () => f.repository.listProcessingJobs('test', 'n')[0]!;
+  try {
+    service.configure('test', 'n', { extractTerms: true, translate: false, candidatePolicy: 'automatic' });
+    service.enqueue('test', 'n', 'capture', {}, ['a']); service.tick();
+    service.control('test', 'n', job().id, 'pause');
+    release('{"terms":[{"sourceTerm":"迟到候选"}]}');
+    await new Promise((resolve) => setTimeout(resolve, 10)); service.tick();
+    assert.equal(f.repository.listTranslationTerms('test', 'n').length, 0);
+    service.control('test', 'n', job().id, 'resume');
+    await until(() => job().status === 'completed', () => service.tick());
+    assert.equal(f.repository.listTranslationTerms('test', 'n')[0]?.sourceTerm, 'アリス');
+    assert.equal(calls, 2);
+  } finally { f.cleanup(); }
+});
+
+test('persisted confirmation survives database reopening and settings are preserved through trash', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'processing-reopen-'));
+  const databasePath = path.join(directory, 'test.sqlite');
+  let db = new SqliteNovelRepository(databasePath);
+  try {
+    db.saveMetadata('test', { novelId: 'n', title: 'Book', author: '', description: '', tags: [], chapterCount: 0, infoPageUrl: '' });
+    const settings = { extractTerms: true, translate: false, candidatePolicy: 'manual' as const };
+    db.saveProcessingSettings('test', 'n', settings);
+    db.saveProcessingJob({ id: 'job', sourceId: 'test', novelId: 'n', origin: 'capture', chapterHashes: {}, settings, status: 'waiting', stage: 'confirmation', message: '等待确认', createdAt: '2026-10-23', updatedAt: '2026-10-23', candidateIds: ['term'], extractionRunId: null, termRunId: null, translationStartedAt: null });
+    db.close(); db = new SqliteNovelRepository(databasePath);
+    assert.deepEqual(db.getProcessingSettings('test', 'n'), settings);
+    assert.deepEqual(db.listProcessingJobs('test', 'n')[0]?.candidateIds, ['term']);
+    assert.equal(db.listProcessingJobs('test', 'n')[0]?.stage, 'confirmation');
+    db.moveNovelToTrash('test', 'n'); db.restoreNovelFromTrash('test', 'n');
+    assert.deepEqual(db.getProcessingSettings('test', 'n'), settings);
+  } finally { db.close(); fs.rmSync(directory, { recursive: true, force: true }); }
+});

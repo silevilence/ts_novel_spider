@@ -28,7 +28,7 @@ export class LibraryProcessingService {
     if (!settings.extractTerms && !settings.translate) return false;
     const chapterHashes = Object.fromEntries(Object.entries(this.hashes(sourceId, novelId)).filter(([id, hash]) => before[id] !== hash && (!allowedIds || allowedIds.includes(id))));
     if (!Object.keys(chapterHashes).length) return true;
-    const id = createHash('sha256').update(JSON.stringify([sourceId, novelId, Object.entries(chapterHashes).sort(), settings])).digest('hex');
+    const id = createHash('sha256').update(JSON.stringify([sourceId, novelId, Object.entries(chapterHashes).sort(), settings, this.languageKey(sourceId, novelId)])).digest('hex');
     if (this.repository.listProcessingJobs(sourceId, novelId).some((job) => job.id === id)) return true;
     const now = new Date().toISOString();
     this.repository.saveProcessingJob({ id, sourceId, novelId, origin, chapterHashes, settings, languageKey: this.languageKey(sourceId, novelId), status: 'queued', stage: settings.extractTerms ? 'extraction' : 'translation', message: '等待处理', createdAt: now, updatedAt: now, candidateIds: [], extractionRunId: null, termRunId: null, translationStartedAt: null });
