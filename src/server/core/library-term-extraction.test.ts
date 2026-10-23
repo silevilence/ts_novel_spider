@@ -89,6 +89,28 @@ test('chapter extraction validates scope and preserves independent resumable his
   } finally { cleanup(); }
 });
 
+test('incremental extraction scans appended and changed chapters and tracks all term sources', async () => {
+  const { repository, preferences, cleanup } = fixture();
+  const prompts: string[] = [];
+  const service = new LibraryTermExtractionService(repository, preferences, async (_p, _r, _s, prompt) => { prompts.push(prompt); return '{"terms":[{"sourceTerm":"アリス"}]}'; });
+  const wait = () => waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+  try {
+    service.start('test', 'novel', { incremental: true }); await wait();
+    assert.equal(prompts.length, 1);
+    service.start('test', 'novel', { incremental: true }); await wait();
+    assert.equal(prompts.length, 1);
+    repository.saveChapterIndex('test', 'novel', [{ id: 'c1', index: 1, title: '序章', url: '' }, { id: 'c2', index: 2, title: '追加', url: '' }]);
+    repository.saveChapterContent('test', 'novel', { chapterId: 'c2', index: 2, title: '追加', url: '', content: 'アリスは旅立つ。' });
+    service.start('test', 'novel', { incremental: true }); await wait();
+    assert.equal(prompts.length, 2); assert(!prompts[1]!.includes('序章'));
+    assert.deepEqual(repository.listTermChapterSources('test', 'novel').map((row) => row.chapterId).sort(), ['c1', 'c2']);
+    repository.saveChapterContent('test', 'novel', { chapterId: 'c1', index: 1, title: '序章', url: '', content: 'アリスは戻る。' });
+    service.start('test', 'novel', { incremental: true }); await wait();
+    assert.equal(prompts.length, 3); assert(!prompts[2]!.includes('追加'));
+    assert.equal(repository.listTranslationTerms('test', 'novel').length, 1);
+  } finally { cleanup(); }
+});
+
 test('shared extraction windows preserve the refined first window and all source provenance', () => {
   const chapters = [{ id: 'c1', index: 1, title: '一', content: 'あ'.repeat(20_000) }, { id: 'c2', index: 2, title: '二', content: '王都' }];
   const full = chapters.map((c) => `【第 ${c.index} 章 ${c.title}】\n${c.content}`).join('\n\n');

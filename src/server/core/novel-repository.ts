@@ -343,6 +343,7 @@ export interface StoredTermExtractionRun {
   id: string; sourceId: string; novelId: string;
   chapterIds?: string[];
   message?: string;
+  addedTermIds?: string[];
   status: 'running' | 'completed' | 'cancelled' | 'failed';
   totalBatches: number; completedBatches: number; candidates: number; added: number;
   /** Optional for legacy run_json rows, which have no resumable window checkpoints. */
@@ -2870,6 +2871,19 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .map((row) => JSON.parse(row.run_json) as StoredTermExtractionRun);
   }
 
+  getChapterExtractionFingerprint(sourceId: string, novelId: string, chapterId: string): string | null {
+    const row = this.#database.prepare('SELECT fingerprint FROM novel_chapter_extractions WHERE source_id = ? AND novel_id = ? AND chapter_id = ?').get(sourceId, novelId, chapterId) as { fingerprint: string } | undefined;
+    return row?.fingerprint ?? null;
+  }
+
+  saveChapterExtractionFingerprint(sourceId: string, novelId: string, chapterId: string, fingerprint: string): void {
+    this.#database.prepare('INSERT INTO novel_chapter_extractions VALUES (?, ?, ?, ?) ON CONFLICT(source_id, novel_id, chapter_id) DO UPDATE SET fingerprint = excluded.fingerprint').run(sourceId, novelId, chapterId, fingerprint);
+  }
+
+  listTermChapterSources(sourceId: string, novelId: string): Array<{ termId: string; chapterId: string }> {
+    return this.#database.prepare('SELECT term_id AS termId, chapter_id AS chapterId FROM novel_term_chapter_sources WHERE source_id = ? AND novel_id = ?').all(sourceId, novelId) as Array<{ termId: string; chapterId: string }>;
+  }
+
   recoverTermExtractionRuns(): void {
     const rows = this.#database.prepare('SELECT run_json FROM novel_term_extraction_runs').all() as Array<{ run_json: string }>;
     for (const row of rows) {
@@ -2878,10 +2892,16 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     }
   }
 
-  saveTermExtractionBatch(run: StoredTermExtractionRun, terms: Parameters<SqliteNovelRepository['upsertTranslationTerms']>[2]): StoredTermExtractionRun {
+  saveTermExtractionBatch(run: StoredTermExtractionRun, terms: Array<Parameters<SqliteNovelRepository['upsertTranslationTerms']>[2][number] & { chapterIds?: string[] }>): StoredTermExtractionRun {
     return this.#database.transaction(() => {
+      const previousIds = new Set(this.listTranslationTerms(run.sourceId, run.novelId).map((term) => term.id));
       const result = this.upsertTranslationTerms(run.sourceId, run.novelId, terms);
-      const next = { ...run, completedBatches: run.completedBatches + 1, candidates: run.candidates + terms.length, added: run.added + result.created, updatedAt: new Date().toISOString() };
+      const saved = this.listTranslationTerms(run.sourceId, run.novelId);
+      for (const term of terms) {
+        const match = saved.find((entry) => entry.sourceTerm === term.sourceTerm.trim());
+        if (match) for (const chapterId of term.chapterIds ?? []) this.#database.prepare('INSERT OR IGNORE INTO novel_term_chapter_sources VALUES (?, ?, ?, ?)').run(run.sourceId, run.novelId, match.id, chapterId);
+      }
+      const next = { ...run, addedTermIds: [...new Set([...(run.addedTermIds ?? []), ...saved.filter((term) => !previousIds.has(term.id)).map((term) => term.id)])], completedBatches: run.completedBatches + 1, candidates: run.candidates + terms.length, added: run.added + result.created, updatedAt: new Date().toISOString() };
       this.saveTermExtractionRun(next);
       return next;
     })();
@@ -5021,6 +5041,18 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       CREATE TABLE IF NOT EXISTS novel_term_extraction_history (
         id TEXT PRIMARY KEY, source_id TEXT NOT NULL, novel_id TEXT NOT NULL, run_json TEXT NOT NULL,
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_chapter_extractions (
+        source_id TEXT NOT NULL, novel_id TEXT NOT NULL, chapter_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id, chapter_id),
+        FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_term_chapter_sources (
+        source_id TEXT NOT NULL, novel_id TEXT NOT NULL, term_id TEXT NOT NULL, chapter_id TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id, term_id, chapter_id),
+        FOREIGN KEY (term_id) REFERENCES novel_translation_terms(term_id) ON DELETE CASCADE,
+        FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS novel_term_translation_runs (

@@ -12,6 +12,10 @@ import { extractionOptionsSchema, selectDownloadedChapters, type ExtractionOptio
 
 const MAX_EXTRACTION_ATTEMPTS = 3;
 
+export function extractionFingerprint(chapter: { title: string; content: string }, sourceLang: string): string {
+  return createHash('sha256').update(JSON.stringify([chapter.title, chapter.content, sourceLang])).digest('hex');
+}
+
 /** Owns background extraction independently of HTTP requests and translation runs. */
 export class LibraryTermExtractionService {
   readonly #repository: SqliteNovelRepository;
@@ -48,7 +52,7 @@ export class LibraryTermExtractionService {
       ?? (scopeKey === 'null' ? this.getRun(sourceId, novelId) : null);
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
     if (!snapshot || this.#repository.getNovelPurgeStatus(sourceId, novelId)?.deletedAt) throw new Error('小说不存在或已在回收站。');
-    const chapters = selectDownloadedChapters(snapshot.chapters, options.chapterIds).flatMap((chapter) => chapter.content?.trim()
+    let chapters = selectDownloadedChapters(snapshot.chapters, options.chapterIds).flatMap((chapter) => chapter.content?.trim()
       ? [{ id: chapter.id, index: chapter.index, title: chapter.title, content: chapter.content }] : []);
     if (!chapters.length) throw new Error('没有已下载的原文可用于提取术语。');
     const local = this.#repository.getTranslationProfile(sourceId, novelId);
@@ -60,6 +64,7 @@ export class LibraryTermExtractionService {
       throw new Error('术语提取模型不可用，请检查单本配置、全局翻译偏好或默认对话模型。');
     }
     const sourceLang = local?.sourceLang ?? global.sourceLang;
+    if (options.incremental && !options.fromScratch) chapters = chapters.filter((chapter) => this.#repository.getChapterExtractionFingerprint(sourceId, novelId, chapter.id) !== extractionFingerprint(chapter, sourceLang));
     const windows = buildGlossarySourceWindows(chapters).flatMap((window) => splitTextForContext(window.source,
       (source) => textRequestFits(resolved.model.contextWindowTokens, buildGlossaryExtractionPrompt(sourceLang), source))
       .map((source) => ({ ...window, source })));
@@ -73,6 +78,7 @@ export class LibraryTermExtractionService {
       message: resumable ? '继续有效批次检查点。' : previous && !options.fromScratch && previous.sourceFingerprint !== sourceFingerprint ? '原文或分批条件已变化，本次重新提取所选范围。' : '开始提取所选范围。',
       completedBatches: resumable ? previous.completedBatches : 0,
       candidates: resumable ? previous.candidates : 0, added: resumable ? previous.added : 0,
+      addedTermIds: resumable ? previous.addedTermIds ?? [] : [],
       sourceFingerprint, completedBatchIndexes: resumable ? [...previous.completedBatchIndexes ?? []] : [],
       failedBatches: [], startedAt: now, updatedAt: now, errorMessage: null,
     };
@@ -161,6 +167,10 @@ export class LibraryTermExtractionService {
         if (this.getRun(run.sourceId, run.novelId)?.id !== run.id) return;
         const novelStatus = this.#repository.getNovelPurgeStatus(run.sourceId, run.novelId);
         if (!novelStatus || novelStatus.deletedAt) throw new Error('小说已删除或移入回收站，提取已停止。');
+        for (const chapter of chapters) {
+          const current = this.#repository.getChapter(run.sourceId, run.novelId, chapter.id);
+          if (!current || current.title !== chapter.title || current.content !== chapter.content) throw new Error('原文已变化，请重新提取；旧响应未写入。');
+        }
         if (!candidates) {
           run = { ...run, failedBatches: [...run.failedBatches ?? [], { index, errorMessage: failure }], errorMessage: `第 ${index + 1} 批提取失败（已尝试 ${MAX_EXTRACTION_ATTEMPTS} 次）：${failure}`, updatedAt: new Date().toISOString() };
           this.#repository.saveTermExtractionRun(run);
@@ -169,9 +179,14 @@ export class LibraryTermExtractionService {
         const terms = candidates.map((candidate) => ({
           sourceTerm: candidate.sourceTerm, entityType: candidate.entityType, priority: candidate.priority,
           note: candidate.suggestion, status: 'pending' as const,
+          chapterIds: chapters.filter((chapter) => window.chapterIds.includes(chapter.id) && `${chapter.title}\n${chapter.content}`.includes(candidate.sourceTerm)).map((chapter) => chapter.id),
           extractedFromChapterId: chapters.find((chapter) => window.chapterIds.includes(chapter.id) && `${chapter.title}\n${chapter.content}`.includes(candidate.sourceTerm))?.id ?? window.chapterIds[0] ?? null,
         }));
         run = this.#repository.saveTermExtractionBatch({ ...run, completedBatchIndexes: [...run.completedBatchIndexes ?? [], index] }, terms);
+        for (const chapter of chapters) {
+          const indexes = windows.flatMap((item, batch) => item.chapterIds.includes(chapter.id) ? [batch] : []);
+          if (indexes.length && indexes.every((batch) => run.completedBatchIndexes?.includes(batch))) this.#repository.saveChapterExtractionFingerprint(run.sourceId, run.novelId, chapter.id, extractionFingerprint(chapter, sourceLang));
+        }
       }
       this.#repository.saveTermExtractionRun({ ...run, status: run.failedBatches?.length ? 'failed' : 'completed', updatedAt: new Date().toISOString() });
     } catch (error) {
