@@ -75,6 +75,11 @@ const PANEL_ICON_SIZE = 20;
 
 export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
   const theme = useMantineTheme();
+  const [initialPanels] = useState(() => window.location.hash === '#notifications' ? ['notifications'] : []);
+
+  useEffect(() => {
+    if (initialPanels.includes('notifications')) document.getElementById('notifications')?.scrollIntoView({ block: 'start' });
+  }, [initialPanels]);
 
   const panels = useMemo<AccordionPanelDef[]>(
     () => [
@@ -227,6 +232,7 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
         variant="separated"
         radius="lg"
         multiple
+        defaultValue={initialPanels}
         chevronPosition="right"
         styles={{
           control: {
@@ -249,7 +255,7 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
         }}
       >
         {panels.map((panel) => (
-          <Accordion.Item key={panel.id} value={panel.id}>
+          <Accordion.Item key={panel.id} value={panel.id} id={panel.id === 'notifications' ? 'notifications' : undefined} style={panel.id === 'notifications' ? { scrollMarginTop: 80 } : undefined}>
             <Accordion.Control
               icon={panel.icon}
             >
@@ -266,7 +272,7 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
               </Group>
             </Accordion.Control>
             <Accordion.Panel>
-              {panel.id === 'reader' || panel.id === 'llm' ? (
+              {panel.id === 'reader' || panel.id === 'llm' || panel.id === 'notifications' ? (
                 panel.content
               ) : (
                 <ScrollArea.Autosize mah="max(40vh, 360px)" offsetScrollbars>

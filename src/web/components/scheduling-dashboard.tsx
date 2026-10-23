@@ -3,6 +3,7 @@ import { LibraryProcessingPanel } from './library-processing-panel';
 import parseExpression from 'cron-parser';
 import {
   Accordion,
+  Alert,
   Badge,
   Button,
   Checkbox,
@@ -29,6 +30,8 @@ import {
 
 import { CronEditor } from './cron-editor';
 import { useSchedulingDashboardModel } from '../services/scheduling-dashboard-model';
+import { fetchNotificationConfig } from '../services/api';
+import type { NotificationConfig } from '../../server/contracts/notification';
 import type {
   SchedulingConfig,
   SchedulingNovelEntry,
@@ -52,6 +55,24 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
   const model = useSchedulingDashboardModel();
   const [drafts, setDrafts] = useState<Map<string, SchedulingNovelDraft>>(new Map());
   const [savingNovels, setSavingNovels] = useState(false);
+  const [notificationConfig, setNotificationConfig] = useState<NotificationConfig | null>(null);
+  const [notificationError, setNotificationError] = useState(false);
+  const [notificationLoading, setNotificationLoading] = useState(true);
+  const [notificationRefresh, setNotificationRefresh] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setNotificationLoading(true);
+    setNotificationError(false);
+    void fetchNotificationConfig().then((value) => {
+      if (active) setNotificationConfig(value);
+    }).catch(() => {
+      if (active) { setNotificationConfig(null); setNotificationError(true); }
+    }).finally(() => { if (active) setNotificationLoading(false); });
+    const refreshOnFocus = () => setNotificationRefresh((value) => value + 1);
+    window.addEventListener('focus', refreshOnFocus);
+    return () => { active = false; window.removeEventListener('focus', refreshOnFocus); };
+  }, [notificationRefresh]);
 
   useEffect(() => {
     setDrafts(new Map(model.novels.map((novel) => [
@@ -137,6 +158,12 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
   }
 
   const cronPreviews = config.mode === 'cron' ? computeCronPreviews(config.cronExpression) : [];
+  const notificationStatus = notificationLoading ? '正在读取全局通知状态'
+    : notificationError || !notificationConfig ? '无法确认全局通知状态，请重试读取'
+    : !notificationConfig.keyConfigured || !notificationConfig.baseUrl || !notificationConfig.target.umo ? '全局通知尚未配置完整'
+    : !notificationConfig.enabled ? '全局消息通知已关闭'
+    : '全局通知已启用';
+  const notificationReady = !notificationLoading && !notificationError && Boolean(notificationConfig?.enabled && notificationConfig.keyConfigured && notificationConfig.baseUrl && notificationConfig.target.umo);
 
   return (
     <Stack gap="lg" p="lg">
@@ -296,7 +323,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
           <Group justify="space-between" align="flex-start">
             <Stack gap={2}>
               <Text size="sm" fw={600}>书单管理</Text>
-              <Text size="xs" c="dimmed">支持批量开启追更，也可以逐本控制自动翻译、自动总结和单书总结模型覆盖。</Text>
+              <Text size="xs" c="dimmed">支持批量开启追更，也可以逐本控制更新通知、自动翻译、自动总结和单书总结模型覆盖。</Text>
             </Stack>
             <Group gap="xs">
               <Button variant="default" size="compact-sm" onClick={() => applyBatchEnabled(setDrafts, model.novels, true)}>全部开启</Button>
@@ -312,6 +339,19 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
               </Button>
             </Group>
           </Group>
+
+          <Alert color={notificationReady ? 'blue' : 'yellow'} title={notificationStatus} role="status">
+            <Stack gap="xs">
+              <Text size="sm" style={{ overflowWrap: 'anywhere' }}>{notificationReady
+                ? `接收目标：${notificationConfig?.target.umo}。接口接受后仍需在接收端确认。`
+                : '可先保存按书提醒偏好；全局通知启用且连接与接收目标配置完整后，后续更新才会发送通知。'}</Text>
+              <Text size="sm">单书开关修改后需保存书单设置。定时更新总开关关闭时，不会自动巡检。</Text>
+              <Group gap="xs">
+                <Button component="a" href="/settings#notifications" target="_blank" rel="noopener noreferrer" size="xs" variant="light">配置全局通知（新标签页）</Button>
+                <Button size="xs" variant="subtle" loading={notificationLoading} onClick={() => setNotificationRefresh((value) => value + 1)}>刷新通知状态</Button>
+              </Group>
+            </Stack>
+          </Alert>
 
           {model.novels.length === 0 ? (
             <Text size="sm" c="dimmed">书库里还没有作品，先去采集工作台或本地书库添加作品。</Text>
@@ -371,7 +411,13 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                             disabled={!draft.enabled}
                             onChange={(event) => updateDraft(setDrafts, key, { notifyOnUpdate: event.currentTarget.checked })}
                           />
-                          <Text size="xs" c="dimmed">使用全局通知渠道和目标</Text>
+                          <Text size="xs" c="dimmed">{draft.notifyOnUpdate !== novel.notifyOnUpdate || draft.enabled !== novel.enabled
+                            ? '有未保存的修改'
+                            : !draft.enabled ? '本书定时更新已关闭'
+                            : !draft.notifyOnUpdate ? '本书更新提醒已关闭'
+                            : !notificationReady ? notificationStatus
+                            : !config.enabled ? '等待开启定时更新总开关'
+                            : '已启用，下载有新章节时通知'}</Text>
                         </Table.Td>
                         <Table.Td>
                           <Switch
