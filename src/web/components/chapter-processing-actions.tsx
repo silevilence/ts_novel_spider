@@ -48,7 +48,14 @@ function ChapterProcessingDialog({ sourceId, novelId, chapterId, title }: Props)
           }
         } else {
           const { translation } = await fetchLibraryTranslationBuild(sourceId, novelId);
-          if (active) { setMessage(`本书最近运行：${translation.message} ${translation.errorMessage ?? ''}`); setProgress(translation.progressPercent); }
+          if (active && translation) {
+            if (translation.chapterIds && !translation.chapterIds.includes(chapterId)) {
+              setMessage('最近一次翻译运行不包含本章。可在翻译面板查看该运行的明细。'); setProgress(0);
+            } else {
+              setMessage(`${translation.chapterIds ? `所选 ${translation.chapterIds.length} 章` : '全书'}运行：${translation.message} ${translation.errorMessage ?? ''}`);
+              setProgress(translation.progressPercent);
+            }
+          }
         }
       } catch { /* No build is expected before the first operation. Launch errors are displayed separately. */ }
       if (active) timer = setTimeout(() => void poll(), 1500);

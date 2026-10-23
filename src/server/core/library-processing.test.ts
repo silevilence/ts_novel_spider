@@ -141,3 +141,21 @@ test('persisted confirmation survives database reopening and settings are preser
     assert.deepEqual(db.getProcessingSettings('test', 'n'), settings);
   } finally { db.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('source changes cancel only the child extraction owned by the conflicted job', async () => {
+  const f = fixture();
+  let release!: (value: string) => void;
+  const extraction = new LibraryTermExtractionService(f.repository, f.preferences, async () => new Promise<string>((resolve) => { release = resolve; }));
+  const service = new LibraryProcessingService(f.repository, extraction, f.translation);
+  try {
+    service.configure('test', 'n', { extractTerms: true, translate: true, candidatePolicy: 'automatic' });
+    service.enqueue('test', 'n', 'capture', {}, ['a']); service.tick();
+    f.repository.saveChapterContent('test', 'n', { chapterId: 'a', index: 1, title: 'a', url: '', content: '新正文' });
+    service.tick();
+    assert.equal(f.repository.listProcessingJobs('test', 'n')[0]?.status, 'failed');
+    assert.equal(extraction.getRun('test', 'n')?.status, 'cancelled');
+    release('{"terms":[{"sourceTerm":"旧候选"}]}');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(f.repository.listTranslationTerms('test', 'n').length, 0);
+  } finally { f.cleanup(); }
+});

@@ -663,6 +663,7 @@ export async function deleteLibraryBookmark(
 
 export interface TranslationBuildPayload {
   translation: {
+    chapterIds?: string[] | null;
     status: string;
     stage: string;
     progressPercent: number;

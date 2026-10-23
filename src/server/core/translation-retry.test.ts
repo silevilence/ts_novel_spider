@@ -51,8 +51,10 @@ test('scoped translation excludes metadata and other chapters, rejects conflicts
     assert.throws(() => service.startTranslation('manual', 'n', undefined, false, ['foreign']));
     const started = service.startTranslation('manual', 'n', undefined, false, ['c']);
     assert.equal(started.totalUnits, 1);
+    assert.deepEqual(started.chapterIds, ['c']);
     assert.throws(() => service.startTranslation('manual', 'n'), /正在运行/);
     await wait();
+    assert.deepEqual(new TranslationService(db, preferences).getTranslationBuild('manual', 'n')?.chapterIds, ['c']);
     assert.equal(db.getChapterTranslation('manual', 'n', 'd', 'ja', 'zh-CN'), null);
     assert.equal(db.getChapterTranslation('manual', 'n', '__novel_meta__', 'ja', 'zh-CN'), null);
     assert(prompts.every((prompt) => !prompt.includes('未选择正文')));

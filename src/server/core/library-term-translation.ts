@@ -41,6 +41,7 @@ export class LibraryTermTranslationService {
     if (!resolved || (override && (!route || resolved.source !== 'novel')) || !resolved.provider.isConfigured || !resolved.model.isConfigured || !resolved.model.resolvedCapabilities.includes('chat')) {
       throw new Error('术语翻译模型不可用，请检查术语提取模型或默认对话模型配置。');
     }
+    if (resolved.model.translationMessageFormat !== 'general') throw new Error('术语翻译需要普通对话模型，请调整术语提取模型配置。');
     const now = new Date().toISOString();
     const run: StoredTermTranslationRun = { id: randomUUID(), sourceId, novelId, status: 'running', totalTerms: terms.length, processedTerms: 0, translatedTerms: 0, skippedTerms: 0, startedAt: now, updatedAt: now, errorMessage: null };
     this.#repository.saveTermTranslationRun(run);
@@ -88,6 +89,11 @@ export class LibraryTermTranslationService {
         controller.signal.throwIfAborted();
         const currentNovel = this.#repository.getNovelPurgeStatus(run.sourceId, run.novelId);
         if (!currentNovel || currentNovel.deletedAt) throw new Error('小说不存在或已移入回收站，翻译已停止。');
+        const currentLocal = this.#repository.getTranslationProfile(run.sourceId, run.novelId);
+        const currentGlobal = this.#preferences.getTranslationState().config;
+        if ((currentLocal?.sourceLang ?? currentGlobal.sourceLang) !== sourceLang || (currentLocal?.targetLang ?? currentGlobal.targetLang) !== targetLang) {
+          throw new Error('翻译语言已变化，未写入旧语言的术语译文，请重新处理。');
+        }
         const currentTerms = this.#repository.listTranslationTerms(run.sourceId, run.novelId);
         translations = translations.filter((value) => {
           const original = batch.find((term) => term.id === value.id);

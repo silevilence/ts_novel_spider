@@ -76,6 +76,7 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
             <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.12em', color: '#ffd166' }}>翻译</Text>
             <Title order={3}>{isRunning ? '翻译中' : isDone ? (build?.status === 'completed' ? '翻译完成' : '翻译失败') : '翻译任务'}</Title>
             <Text size="xs" c="dimmed">{build ? build.message : '使用 AI 将已下载章节翻译为目标语言。'}</Text>
+            {build?.chapterIds ? <Text size="xs" c="dimmed">本轮仅处理所选 {build.chapterIds.length} 章；下方统计为本轮范围，其他章节保持原状态。</Text> : null}
           </div>
           {build ? (
             <Group gap="xs">
@@ -89,7 +90,7 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
         {build && detail ? (
           <Stack gap={4}>
             <Group justify="space-between">
-              <Text size="xs" c="dimmed">翻译单元 {build.translatedChapters + build.failedChapters}/{build.totalUnits}（含简介、卷标题和章节）</Text>
+              <Text size="xs" c="dimmed">翻译单元 {build.translatedChapters + build.failedChapters}/{build.totalUnits}（{build.chapterIds ? '仅所选章节的标题与正文' : '含简介、卷标题和章节'}）</Text>
               <Text size="xs" c="dimmed">{build.progressPercent}%</Text>
             </Group>
             <Progress value={build.progressPercent} size="sm" color="orange" striped={isRunning} animated={isRunning} />

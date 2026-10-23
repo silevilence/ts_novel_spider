@@ -39,9 +39,7 @@ export class LibraryProcessingService {
     if (!job) throw new Error('后处理任务不存在。');
     if (job.status === 'completed') throw new Error('任务已经完成。');
     if (action !== 'resume') {
-      if (this.extraction.getRun(sourceId, novelId)?.id === job.extractionRunId) this.extraction.cancel(sourceId, novelId);
-      if (this.translation.getTermTranslation(sourceId, novelId)?.id === job.termRunId) this.translation.cancelTermTranslation(sourceId, novelId);
-      if (job.translationStartedAt && this.translation.getTranslationBuild(sourceId, novelId)?.startedAt === job.translationStartedAt) this.translation.cancelTranslation(sourceId, novelId);
+      this.#cancelChildren(job);
       job.status = action === 'pause' ? 'paused' : 'cancelled';
       job.message = action === 'pause' ? '已暂停，保留完成结果' : '已取消，保留完成结果';
     } else {
@@ -51,6 +49,12 @@ export class LibraryProcessingService {
       // Keep IDs until their terminal result is inspected, preserving newly added candidates.
     }
     this.save(job); return job;
+  }
+  #cancelChildren(job: ProcessingJob): void {
+    const { sourceId, novelId } = job;
+    if (this.extraction.getRun(sourceId, novelId)?.id === job.extractionRunId) this.extraction.cancel(sourceId, novelId);
+    if (this.translation.getTermTranslation(sourceId, novelId)?.id === job.termRunId) this.translation.cancelTermTranslation(sourceId, novelId);
+    if (job.translationStartedAt && this.translation.getTranslationBuild(sourceId, novelId)?.startedAt === job.translationStartedAt && this.translation.isRunning(sourceId, novelId)) this.translation.cancelTranslation(sourceId, novelId);
   }
   private save(job: ProcessingJob): void { job.updatedAt = new Date().toISOString(); this.repository.saveProcessingJob(job); }
   private languageKey(sourceId: string, novelId: string): string { const profile = this.translation.getTranslationProfile(sourceId, novelId); return JSON.stringify([profile?.sourceLang, profile?.targetLang]); }
@@ -66,8 +70,8 @@ export class LibraryProcessingService {
       if (occupied.has(key)) continue;
       occupied.add(key);
       try {
-        if (this.repository.getNovelPurgeStatus(job.sourceId, job.novelId)?.deletedAt) { job.status = 'paused'; job.message = '小说已在回收站'; }
-        else if (!this.current(job)) { job.status = 'failed'; job.message = '原文版本已变化，未继续写入旧任务。'; }
+        if (this.repository.getNovelPurgeStatus(job.sourceId, job.novelId)?.deletedAt) { this.#cancelChildren(job); job.status = 'paused'; job.message = '小说已在回收站'; }
+        else if (!this.current(job)) { this.#cancelChildren(job); job.status = 'failed'; job.message = '原文或语言已变化，已停止旧任务，请重新处理。'; }
         else this.advance(job);
       } catch (error) { job.status = 'failed'; job.message = error instanceof Error ? error.message : '后处理失败'; }
       this.save(job);
@@ -91,6 +95,7 @@ export class LibraryProcessingService {
       job.extractionRunId = started.id; job.retryRequested = false; job.status = 'running'; job.message = '正在提取更新章节术语'; return;
     }
     if (job.stage === 'confirmation') {
+      if (this.translation.isRunning(sourceId, novelId)) { job.message = '等待本书翻译完成后确认术语'; return; }
       const pending = this.repository.listTranslationTerms(sourceId, novelId, 'pending').filter((term) => job.candidateIds.includes(term.id));
       if (pending.length && job.settings.candidatePolicy === 'manual') { job.message = `等待确认本轮 ${pending.length} 条候选术语`; return; }
       if (pending.length) this.repository.bulkUpdateTranslationTermStatus(sourceId, novelId, pending.map((term) => term.id), 'confirmed');
@@ -98,6 +103,7 @@ export class LibraryProcessingService {
       job.stage = 'terms'; return;
     }
     if (job.stage === 'terms') {
+      if (this.translation.isRunning(sourceId, novelId)) { job.message = '等待本书翻译完成后翻译术语'; return; }
       const sources = this.repository.listTermChapterSources(sourceId, novelId);
       const chapters = this.repository.getSnapshot(sourceId, novelId)!.chapters.filter((chapter) => ids.includes(chapter.id));
       const missing = this.repository.listMissingTranslationTerms(sourceId, novelId).filter((term) => sources.some((source) => source.termId === term.id && ids.includes(source.chapterId)) || chapters.some((chapter) => `${chapter.title}\n${chapter.content}`.includes(term.sourceTerm)));

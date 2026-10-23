@@ -153,3 +153,38 @@ test('failed AI suggestions and undo after a later edit preserve valid translati
     assert.equal(f.db.listChapterTranslationParagraphs('test', 'n', 'a')[0]?.translatedText, '人工修订');
   } finally { f.cleanup(); }
 });
+
+test('a fresh preview never expands a new name containing the old name twice', () => {
+  const f = fixture();
+  try {
+    f.db.updateTranslationTerm('test', 'n', f.term.id, { targetTerm: '爱丽丝小姐' });
+    f.db.replaceChapterTranslationParagraphs('test', 'n', 'a', [{ paragraphIndex: 1, sourceText: 'アリスは来た。', translatedText: '爱丽丝来了。' }]);
+    const change = f.db.listTermChanges('test', 'n')[0]!;
+    const first = f.service.preview('test', 'n', change.id, ['a']);
+    const paragraph = first.targets.find((target) => target.paragraphIndex === 1)!;
+    f.service.apply('test', 'n', first.id, [paragraph.id]);
+    const again = f.service.preview('test', 'n', change.id, ['a']).targets.find((target) => target.paragraphIndex === 1)!;
+    assert.equal(again.classification, 'aligned');
+    assert.equal(again.suggestion, null);
+    f.db.replaceChapterTranslationParagraphs('test', 'n', 'a', [{ paragraphIndex: 1, sourceText: 'アリスは来た。', translatedText: '爱丽丝小姐看见了爱丽丝。' }]);
+    assert.equal(f.service.preview('test', 'n', change.id, ['a']).targets.find((target) => target.paragraphIndex === 1)?.classification, 'review');
+  } finally { f.cleanup(); }
+});
+
+test('AI suggestions preserve emphasis, strikeout and quotes and require a general model', async () => {
+  const f = fixture();
+  try {
+    for (const before of ['**艾莉丝**', '~~艾莉丝~~', '> 艾莉丝']) {
+      f.db.replaceChapterTranslationParagraphs('test', 'n', 'a', [{ paragraphIndex: 1, sourceText: 'アリスは来た。', translatedText: before }]);
+      const record = f.service.preview('test', 'n', f.change.id, ['a']);
+      const target = record.targets.find((item) => item.paragraphIndex === 1)!;
+      assert.equal(target.suggestion, before.replace('艾莉丝', '爱丽丝'));
+      const stripped = new TermCorrectionService(f.db, f.translation, f.preferences, async () => '爱丽丝');
+      await assert.rejects(stripped.suggest('test', 'n', record.id, target.id), /格式/);
+      assert.equal(f.db.listChapterTranslationParagraphs('test', 'n', 'a')[0]?.translatedText, before);
+    }
+    f.preferences.updateLlmProviders(f.preferences.getLlmState().providers.map((provider) => ({ ...provider, models: provider.models.map((model) => ({ ...model, translationMessageFormat: 'hy-mt2' })) })));
+    const record = f.service.preview('test', 'n', f.change.id, ['a']);
+    await assert.rejects(f.service.suggest('test', 'n', record.id, record.targets[0]!.id), /普通对话模型/);
+  } finally { f.cleanup(); }
+});

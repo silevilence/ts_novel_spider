@@ -64,6 +64,7 @@ export class LibraryTermExtractionService {
       throw new Error('术语提取模型不可用，请检查单本配置、全局翻译偏好或默认对话模型。');
     }
     const sourceLang = local?.sourceLang ?? global.sourceLang;
+    if (resolved.model.translationMessageFormat !== 'general') throw new Error('术语提取需要普通对话模型，请调整术语提取模型配置。');
     if (options.incremental && !options.fromScratch) chapters = chapters.filter((chapter) => this.#repository.getChapterExtractionFingerprint(sourceId, novelId, chapter.id) !== extractionFingerprint(chapter, sourceLang));
     const windows = buildGlossarySourceWindows(chapters).flatMap((window) => splitTextForContext(window.source,
       (source) => textRequestFits(resolved.model.contextWindowTokens, buildGlossaryExtractionPrompt(sourceLang), source))
@@ -167,6 +168,8 @@ export class LibraryTermExtractionService {
         if (this.getRun(run.sourceId, run.novelId)?.id !== run.id) return;
         const novelStatus = this.#repository.getNovelPurgeStatus(run.sourceId, run.novelId);
         if (!novelStatus || novelStatus.deletedAt) throw new Error('小说已删除或移入回收站，提取已停止。');
+        const currentSourceLang = this.#repository.getTranslationProfile(run.sourceId, run.novelId)?.sourceLang ?? this.#preferences.getTranslationState().config.sourceLang;
+        if (currentSourceLang !== sourceLang) throw new Error('源语言已变化，旧响应未写入，请重新提取。');
         for (const chapter of chapters) {
           const current = this.#repository.getChapter(run.sourceId, run.novelId, chapter.id);
           if (!current || current.title !== chapter.title || current.content !== chapter.content) throw new Error('原文已变化，请重新提取；旧响应未写入。');

@@ -49,6 +49,7 @@ import type { StoredTranslationTermRow, TranslationTermStatus } from '../../serv
 import type { NoticeInput } from './control-center-model';
 
 export interface TranslationBuildState {
+  chapterIds?: string[] | null;
   status: string;
   stage: string;
   progressPercent: number;

@@ -11,7 +11,7 @@ test('chapter actions submit only their chapter and discard the dialog on chapte
     ResizeObserver: window.ResizeObserver, MutationObserver: window.MutationObserver, IS_REACT_ACT_ENVIRONMENT: true,
     fetch: async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') requests.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
-      return Response.json({ translation: { translationModels: [], termExtractionModel: null, message: '完成', progressPercent: 100 } });
+      return Response.json({ translation: { chapterIds: ['c1'], translationModels: [], termExtractionModel: null, message: '完成', progressPercent: 100 } });
     },
   };
   const descriptors = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -34,6 +34,10 @@ test('chapter actions submit only their chapter and discard the dialog on chapte
     await act(async () => root.render(render('c2')));
     await act(async () => { await new Promise((r) => setTimeout(r, 220)); });
     assert.equal(window.document.querySelector('[role="dialog"]'), null);
+    await act(async () => button('本章术语与翻译').click());
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    assert.match(window.document.body.textContent, /最近一次翻译运行不包含本章/);
+    assert.equal(window.document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow'), '0');
     assert.equal(requests.length, 1);
   } finally {
     await act(async () => root.unmount()); await window.happyDOM.close();

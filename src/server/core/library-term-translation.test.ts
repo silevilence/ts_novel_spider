@@ -48,6 +48,25 @@ function translatePrompt(prompt: string) {
   return JSON.stringify({ terms: terms.map((term) => ({ id: term.id, targetTerm: `译文-${term.sourceTerm}` })) });
 }
 
+test('late glossary replies do not write translations after the language pair changes', async () => {
+  const { repository, preferences, add, cleanup } = fixture();
+  let release!: () => void;
+  const service = new LibraryTermTranslationService(repository, preferences, async (_p, _route, _system, prompt) => {
+    await new Promise<void>((resolve) => { release = resolve; });
+    return translatePrompt(prompt);
+  });
+  try {
+    add('アリス');
+    service.start('test', 'novel');
+    preferences.updateTranslationPreferences({ targetLang: 'en' });
+    release();
+    await waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(service.getRun('test', 'novel')?.status, 'failed');
+    assert.match(service.getRun('test', 'novel')!.errorMessage!, /语言已变化/);
+    assert.equal(repository.listTranslationTerms('test', 'novel')[0]?.targetTerm, null);
+  } finally { cleanup(); }
+});
+
 async function waitFor(predicate: () => boolean) {
   for (let i = 0; i < 500; i++) {
     if (predicate()) return;

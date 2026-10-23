@@ -6,8 +6,18 @@ import type { SystemPreferencesService } from './system-preferences';
 import { splitChapterParagraphs } from './translation/nodes/segment-node';
 import { generateRefinedTranslationText } from './translation/nodes/translate-node';
 import { resolveCapabilityRoute } from './library-intelligence';
+import { marked, type Token } from 'marked';
 
-function protectedMarkdown(text: string): string { return JSON.stringify(text.match(/!?\[[^\]]*\]\([^)]*\)|`[^`]*`|https?:\/\/\S+|<[^>]*>|^\s*(?:#{1,6} |[-*+] |\d+\. )|\|/gm) ?? []); }
+/** Ignore prose while retaining formatting, links, code and embedded HTML. */
+function protectedMarkdown(text: string): string {
+  const structure = (tokens: Token[]): unknown[] => tokens.map((token): unknown => {
+    if (['code', 'codespan', 'html', 'image'].includes(token.type)) return [token.type, token.raw];
+    if (token.type === 'list') return [token.type, token.ordered, token.start, token.items.map((item: { task?: boolean; checked?: boolean; tokens: Token[] }) => [item.task, item.checked, structure(item.tokens)])];
+    if (token.type === 'table') return [token.type, token.align, token.header.map((cell: { tokens: Token[] }) => structure(cell.tokens)), token.rows.map((row: Array<{ tokens: Token[] }>) => row.map((cell) => structure(cell.tokens)))];
+    return [token.type, token.type === 'heading' ? token.depth : null, token.type === 'link' ? [token.href, token.title] : null, 'tokens' in token && token.tokens ? structure(token.tokens) : null];
+  });
+  return JSON.stringify(structure(marked.lexer(text)));
+}
 
 /** Previews and approved edits stay scoped to saved library translations, never refined snapshots. */
 export class TermCorrectionService {
@@ -38,9 +48,10 @@ export class TermCorrectionService {
       for (const candidate of candidates) {
         if (!candidate.translated || (!candidate.source.includes(term.sourceTerm) && !candidate.termIds.includes(term.id))) continue;
         const oldTerm = change.before ?? '';
-        const hasOld = Boolean(oldTerm && candidate.translated.includes(oldTerm));
+        const includesExpandedName = Boolean(oldTerm && change.after.includes(oldTerm) && candidate.translated.includes(change.after));
+        const hasOld = Boolean(oldTerm && (includesExpandedName ? candidate.translated.split(change.after).join('') : candidate.translated).includes(oldTerm));
         const aligned = !hasOld && candidate.translated.includes(change.after);
-        const ambiguous = saved.sourceContentHash !== simpleHash(unit.content) || !candidate.source.includes(term.sourceTerm) || (candidate.index !== null && segments[candidate.index] !== candidate.source)
+        const ambiguous = includesExpandedName || saved.sourceContentHash !== simpleHash(unit.content) || !candidate.source.includes(term.sourceTerm) || (candidate.index !== null && segments[candidate.index] !== candidate.source)
           || terms.some((other) => other.id !== term.id && (other.targetTerm === oldTerm || Boolean(other.targetTerm?.includes(oldTerm) && candidate.translated!.includes(other.targetTerm)) || other.sourceTerm.includes(term.sourceTerm) && candidate.source.includes(other.sourceTerm)));
         const suggested = hasOld ? candidate.translated.split(oldTerm).join(change.after) : null;
         const safe = hasOld && !ambiguous && suggested !== null && protectedMarkdown(candidate.translated) === protectedMarkdown(suggested);
@@ -79,7 +90,7 @@ export class TermCorrectionService {
     this.checkTarget(record, target);
     const override = this.translation.getTranslationProfile(sourceId, novelId)?.termExtractionModel;
     const route = resolveCapabilityRoute(this.preferences.getLlmState(), 'chat', override?.providerId && override.modelId ? { providerId: override.providerId, modelId: override.modelId } : null, this.preferences.getModelGateway());
-    if (!route) throw new Error('未配置普通对话模型用于术语修订。');
+    if (!route || !route.provider.isConfigured || !route.model.isConfigured || route.model.translationMessageFormat !== 'general') throw new Error('术语修订需要可用的普通对话模型，请调整术语提取模型或默认对话模型。');
     const suggestion = await this.generate(this.preferences, { providerId: route.provider.id, modelId: route.model.modelId },
       `只修正当前译文中对应源术语的译法，统一为“${record.newTerm}”。保留其他内容和 Markdown 结构，不能添加解释。只输出修正后的当前段落或标题。`, JSON.stringify({ source: target.sourceText, translation: target.before, oldTerm: record.oldTerm, newTerm: record.newTerm }), AbortSignal.timeout(120000));
     const current = this.checked(sourceId, novelId, id);

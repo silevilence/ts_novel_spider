@@ -47,6 +47,7 @@ interface TranslationUnit {
 
 /** 一轮执行的稳定标识；首条构建记录和后续进度均沿用相同值。 */
 interface TranslationRunStats {
+  chapterIds: string[] | null;
   runId: string;
   runStartedAt: number;
   totalUnits: number;
@@ -116,6 +117,8 @@ export interface TranslationProfileInput {
 }
 
 export interface TranslationBuild {
+  /** null 表示全书运行；非空数组固定本轮章节范围。 */
+  chapterIds?: string[] | null;
   status: TranslationBuildStatus;
   stage: TranslationBuildStage;
   progressPercent: number;
@@ -298,6 +301,7 @@ export class TranslationService {
       startedAt: build.startedAt,
       completedAt: build.completedAt,
       totalUnits: this.#getTotalUnits(sourceId, novelId, build),
+      chapterIds: this.#getBuildChapterIds(build),
       translatedChapters: build.translatedChapters,
       failedChapters: build.failedChapters,
       currentChapterParagraphs: build.currentChapterParagraphs,
@@ -341,6 +345,11 @@ export class TranslationService {
         };
       }),
     };
+  }
+
+  #getBuildChapterIds(build: StoredTranslationBuildRow): string[] | null {
+    try { return z.object({ chapterIds: z.array(z.string()).nonempty().nullable().default(null) }).parse(JSON.parse(build.modelStatsJson)).chapterIds; }
+    catch { return null; }
   }
 
   /** 新任务使用持久化的固定分母；旧记录按同一单元构建规则兼容恢复。 */
@@ -595,6 +604,7 @@ export class TranslationService {
       startedAt: build.startedAt,
       completedAt: build.completedAt,
       totalUnits: this.#getTotalUnits(sourceId, novelId, build),
+      chapterIds: this.#getBuildChapterIds(build),
       translatedChapters: build.translatedChapters,
       failedChapters: build.failedChapters,
       currentChapterParagraphs: build.currentChapterParagraphs,
@@ -743,6 +753,7 @@ export class TranslationService {
     console.log(`[translation] ${canResume ? '继续翻译' : '开始翻译'}，剩余 ${remainingUnits.length} 单元`);
 
     const run: TranslationRunStats = {
+      chapterIds: chapterIds ? [...chapterIds] : null,
       runStartedAt: Date.now(), runId: randomUUID(), totalUnits: allUnits.length,
       units: allUnits.map((unit) => ({
         id: unit.id, kind: unit.kind, index: unit.index, title: unit.title,
@@ -798,6 +809,7 @@ export class TranslationService {
       startedAt: build.startedAt,
       completedAt: build.completedAt,
       totalUnits: this.#getTotalUnits(sourceId, novelId, build),
+      chapterIds: this.#getBuildChapterIds(build),
       translatedChapters: build.translatedChapters,
       failedChapters: build.failedChapters,
       currentChapterParagraphs: build.currentChapterParagraphs,
