@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { ChapterProcessingActions } from './chapter-processing-actions';
 import { Alert, Badge, Button, Drawer, Group, Modal, NumberInput, Paper, Progress, SegmentedControl, Slider, Stack, Text, TextInput, Title } from '@mantine/core';
 import MDEditor from '@uiw/react-md-editor';
 import ReactMarkdown from 'react-markdown';
@@ -104,6 +105,7 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
           <Button variant="subtle" size="compact-sm" onClick={() => setIsReaderDirectoryOpen(true)}>打开目录</Button>
           {isManual ? <Button variant="default" size="compact-sm" onClick={() => setEditingContent(true)}>编辑正文</Button> : null}
           {!isManual ? <Button variant="default" size="compact-sm" onClick={() => void refetchLibraryChapter(detail.sourceId, detail.metadata.novelId, readerChapter.id).then((result) => model.refresh().then(() => onNotify({ tone: result.changed ? 'success' : 'info', title: result.changed ? '章节已更新' : '章节内容无变化', message: result.changed ? '远端内容已保存为新版本，翻译会在下次继续时更新。' : '未写入新版本。' }))).catch((error: unknown) => onNotify({ tone: 'error', title: '更新失败', message: error instanceof Error ? error.message : '现有内容保持不变。' }))}>重新抓取本章</Button> : null}
+          <ChapterProcessingActions sourceId={detail.sourceId} novelId={detail.metadata.novelId} chapterId={readerChapter.id} title={readerChapter.title} />
           <Button variant="subtle" size="compact-sm" onClick={() => setChapterHistoryOpen(true)}>章节历史</Button>
           <Button color="brand" size="compact-sm" onClick={() => { void model.addBookmark(readerChapter.id, readerBookmarkNote); setReaderBookmarkNote(''); }}
             loading={model.mutationBusyKey === 'bookmark-create'}>加入书签</Button>

@@ -46,6 +46,7 @@ interface ChapterDirectoryProps {
   onPickChapter?: (chapterId: string) => void;
   onRefetchChapter?: (chapterId: string) => void;
   management?: ReactNode;
+  renderChapterActions?: (chapter: ChapterDirectoryEntry) => ReactNode;
 }
 
 export function ChapterDirectory({
@@ -66,6 +67,7 @@ export function ChapterDirectory({
   onPickChapter,
   onRefetchChapter,
   management,
+  renderChapterActions,
 }: ChapterDirectoryProps) {
   const selectionMode = mode === 'select';
   const selectedSet = new Set(selectedChapterIds);
@@ -241,6 +243,7 @@ export function ChapterDirectory({
                                   </Group>
                                 </Group>
                               )}
+                              {!selectionMode ? renderChapterActions?.(chapter) : null}
                             </Paper>
                           );
                         })}

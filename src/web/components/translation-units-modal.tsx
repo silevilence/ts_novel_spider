@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ChapterProcessingActions } from './chapter-processing-actions';
 import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Pagination, Paper, ScrollArea, SegmentedControl, Stack, Text } from '@mantine/core';
 import { fetchLibraryTranslationUnits, type TranslationUnitStatus, type TranslationUnitStatuses } from '../services/api';
 import { buildLibraryReaderPath } from '../services/app-routes';
@@ -37,7 +38,7 @@ export function TranslationUnitsModal({ sourceId, novelId, status, revision, onS
     <Modal opened={opened} onClose={onClose} title="翻译明细" size="lg">
       <Stack gap="sm">
         <Text size="sm" c="dimmed">包含书名与简介、卷标题和已下载章节。待译包括尚未完成及正在翻译的单元；失败章节可能已有部分译文。</Text>
-        {error ? <Alert color="red" title="加载失败">{error}<Button variant="subtle" size="compact-xs" onClick={() => setRefresh((value) => value + 1)}>重试</Button></Alert> : null}
+        {error ? <Alert color="red" title="加载失败">{error}<Button variant="subtle" size="compact-xs" onClick={() => setRefresh((value) => value + 1)}>重新加载明细</Button></Alert> : null}
         {!detail && !error ? <Loader size="sm" aria-label="加载翻译明细" /> : null}
         {detail ? <>
           <Text size="xs" c="dimmed">{detail.scope === 'run' ? '本轮翻译明细' : '当前内容明细（旧任务按已保存的译文和检查点恢复，可能与历史统计不同）'}</Text>
@@ -76,6 +77,7 @@ export function TranslationUnitList({ sourceId, novelId, units }: {
                   ? <Anchor size="sm" href={buildLibraryReaderPath(sourceId, novelId, unit.id)} style={{ overflowWrap: 'anywhere' }}>{unit.title}</Anchor>
                   : <Text size="sm" style={{ overflowWrap: 'anywhere' }}>{unit.title}</Text>}
               </Group>
+              {unit.kind === 'chapter' ? <ChapterProcessingActions sourceId={sourceId} novelId={novelId} chapterId={unit.id} title={unit.title} /> : null}
               {unit.status === 'failed' ? <Text size="xs" c="red.3" mt="xs" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
                 {unit.errorMessage || '未保存失败详情，可继续翻译重试。'}
               </Text> : null}

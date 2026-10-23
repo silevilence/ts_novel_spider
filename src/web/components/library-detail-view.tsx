@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChapterProcessingActions } from './chapter-processing-actions';
 import {
   Accordion,
   ActionIcon,
@@ -706,6 +707,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
               readingProgress: detail.readingProgress,
               bookmarks: detail.bookmarks,
             })}
+            renderChapterActions={(chapter) => <ChapterProcessingActions sourceId={detail.sourceId} novelId={detail.metadata.novelId} chapterId={chapter.id} title={chapter.title} />}
             mode="inspect"
             loading={model.loading}
             title="章节目录"
