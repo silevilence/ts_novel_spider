@@ -1378,8 +1378,8 @@ export async function startLibraryTermTranslation(sourceId: string, novelId: str
 export async function cancelLibraryTermTranslation(sourceId: string, novelId: string): Promise<{ run: StoredTermTranslationRun | null }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-translation/cancel`, { method: 'POST' });
 }
-export async function startLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun }> {
-  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction`, { method: 'POST' });
+export async function startLibraryTermExtraction(sourceId: string, novelId: string, options: import("../../server/contracts/chapter-processing").ExtractionOptions = {}): Promise<{ run: StoredTermExtractionRun }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options) });
 }
 export async function cancelLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun | null }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction/cancel`, { method: 'POST' });

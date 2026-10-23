@@ -341,6 +341,8 @@ export type TranslationTermStatus = 'pending' | 'confirmed' | 'excluded';
 
 export interface StoredTermExtractionRun {
   id: string; sourceId: string; novelId: string;
+  chapterIds?: string[];
+  message?: string;
   status: 'running' | 'completed' | 'cancelled' | 'failed';
   totalBatches: number; completedBatches: number; candidates: number; added: number;
   /** Optional for legacy run_json rows, which have no resumable window checkpoints. */
@@ -2857,8 +2859,15 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
   }
 
   saveTermExtractionRun(run: StoredTermExtractionRun): void {
+    this.#database.prepare('INSERT INTO novel_term_extraction_history (id, source_id, novel_id, run_json) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET run_json = excluded.run_json')
+      .run(run.id, run.sourceId, run.novelId, JSON.stringify(run));
     this.#database.prepare('INSERT INTO novel_term_extraction_runs (source_id, novel_id, run_json) VALUES (?, ?, ?) ON CONFLICT(source_id, novel_id) DO UPDATE SET run_json = excluded.run_json')
       .run(run.sourceId, run.novelId, JSON.stringify(run));
+  }
+
+  getTermExtractionHistory(sourceId: string, novelId: string): StoredTermExtractionRun[] {
+    return (this.#database.prepare('SELECT run_json FROM novel_term_extraction_history WHERE source_id = ? AND novel_id = ? ORDER BY rowid DESC').all(sourceId, novelId) as Array<{ run_json: string }>)
+      .map((row) => JSON.parse(row.run_json) as StoredTermExtractionRun);
   }
 
   recoverTermExtractionRuns(): void {
@@ -5006,6 +5015,11 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       CREATE TABLE IF NOT EXISTS novel_term_extraction_runs (
         source_id TEXT NOT NULL, novel_id TEXT NOT NULL, run_json TEXT NOT NULL,
         PRIMARY KEY (source_id, novel_id),
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_term_extraction_history (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL, novel_id TEXT NOT NULL, run_json TEXT NOT NULL,
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
       );
 

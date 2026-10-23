@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { extractionOptionsSchema } from '../contracts/chapter-processing';
 
 import {
   type CrawlTaskSnapshot,
@@ -861,7 +862,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     response.json({ run: service.cancelLibraryTermTranslation(request.params.sourceId, request.params.novelId) });
   });
   router.post('/novels/:sourceId/:novelId/translate/term-extraction', (request, response) => {
-    try { response.status(202).json({ run: service.startLibraryTermExtraction(request.params.sourceId, request.params.novelId) }); }
+    try { response.status(202).json({ run: service.startLibraryTermExtraction(request.params.sourceId, request.params.novelId, extractionOptionsSchema.parse(request.body ?? {})) }); }
     catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法启动术语提取。' }); }
   });
   router.post('/novels/:sourceId/:novelId/translate/term-extraction/cancel', (request, response) => {

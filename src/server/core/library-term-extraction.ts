@@ -8,6 +8,7 @@ import { generateRefinedTranslationText } from './translation/nodes/translate-no
 import { LlmInteractionLogger, type LlmInteractionLoggerOptions } from './translation/nodes/llm-logger';
 import { classifyTranslationFailure } from './translation/nodes/translation-failure';
 import { redactSecrets } from './translation/nodes/redact-secrets';
+import { extractionOptionsSchema, selectDownloadedChapters, type ExtractionOptions } from '../contracts/chapter-processing';
 
 const MAX_EXTRACTION_ATTEMPTS = 3;
 
@@ -39,12 +40,15 @@ export class LibraryTermExtractionService {
     return this.#repository.getTermExtractionRun(sourceId, novelId);
   }
 
-  start(sourceId: string, novelId: string): StoredTermExtractionRun {
-    const previous = this.getRun(sourceId, novelId);
-    if (previous?.status === 'running') throw new Error('术语提取正在运行。');
+  start(sourceId: string, novelId: string, input: ExtractionOptions = {}): StoredTermExtractionRun {
+    const options = extractionOptionsSchema.parse(input);
+    if (this.getRun(sourceId, novelId)?.status === 'running') throw new Error('术语提取正在运行。');
+    const scopeKey = JSON.stringify(options.chapterIds ? [...options.chapterIds].sort() : null);
+    const previous = this.#repository.getTermExtractionHistory(sourceId, novelId).find((run) => JSON.stringify(run.chapterIds ? [...run.chapterIds].sort() : null) === scopeKey)
+      ?? (scopeKey === 'null' ? this.getRun(sourceId, novelId) : null);
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
     if (!snapshot || this.#repository.getNovelPurgeStatus(sourceId, novelId)?.deletedAt) throw new Error('小说不存在或已在回收站。');
-    const chapters = snapshot.chapters.flatMap((chapter) => chapter.content?.trim()
+    const chapters = selectDownloadedChapters(snapshot.chapters, options.chapterIds).flatMap((chapter) => chapter.content?.trim()
       ? [{ id: chapter.id, index: chapter.index, title: chapter.title, content: chapter.content }] : []);
     if (!chapters.length) throw new Error('没有已下载的原文可用于提取术语。');
     const local = this.#repository.getTranslationProfile(sourceId, novelId);
@@ -61,10 +65,12 @@ export class LibraryTermExtractionService {
       .map((source) => ({ ...window, source })));
     // Model changes are allowed when retrying failures; only changed source invalidates completed work.
     const sourceFingerprint = createHash('sha256').update(JSON.stringify({ sourceLang, windows })).digest('hex');
-    const resumable = previous && previous.status !== 'completed' && previous.sourceFingerprint === sourceFingerprint;
+    const resumable = !options.fromScratch && previous && previous.status !== 'completed' && previous.sourceFingerprint === sourceFingerprint;
     const now = new Date().toISOString();
     const run: StoredTermExtractionRun = {
       id: randomUUID(), sourceId, novelId, status: 'running', totalBatches: windows.length,
+      ...(options.chapterIds ? { chapterIds: options.chapterIds } : {}),
+      message: resumable ? '继续有效批次检查点。' : previous && !options.fromScratch && previous.sourceFingerprint !== sourceFingerprint ? '原文或分批条件已变化，本次重新提取所选范围。' : '开始提取所选范围。',
       completedBatches: resumable ? previous.completedBatches : 0,
       candidates: resumable ? previous.candidates : 0, added: resumable ? previous.added : 0,
       sourceFingerprint, completedBatchIndexes: resumable ? [...previous.completedBatchIndexes ?? []] : [],

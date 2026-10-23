@@ -41,6 +41,8 @@ const ENTITY_TYPE_OPTIONS = [
 
 export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: TranslationGlossaryModalProps) {
   const [sourceTerm, setSourceTerm] = useState('');
+  const [extractionChapter, setExtractionChapter] = useState<string | null>(null);
+  const [extractFromScratch, setExtractFromScratch] = useState(false);
   const [targetTerm, setTargetTerm] = useState('');
   const [entityType, setEntityType] = useState<string | null>('');
   const [note, setNote] = useState('');
@@ -71,7 +73,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
     if (!opened || !sourceId || !novelId) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    setRun(null); setTranslationRun(null); setSelectedTermIds(new Set()); setLoadError(''); setPage(1);
+    setRun(null); setTranslationRun(null); setExtractionChapter(null); setSelectedTermIds(new Set()); setLoadError(''); setPage(1);
     const poll = async () => {
       try {
         const [payload, translationPayload] = await Promise.all([
@@ -214,6 +216,8 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
         <Select label="术语状态" value={statusFilter} onChange={(value) => { setStatusFilter(value ?? 'all'); setSelectedTermIds(new Set()); setPage(1); }} data={[{ value: 'all', label: '全部状态' }, ...Object.entries(statusLabels).map(([value, label]) => ({ value, label }))]} />
         <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
           <Stack gap="xs">
+            <Select label="提取范围" placeholder="整本已下载章节" clearable searchable value={extractionChapter} onChange={setExtractionChapter} disabled={actionBusy || run?.status === 'running'} data={(model.detail?.novel.chapters ?? []).map((chapter) => ({ value: chapter.id, label: chapter.title }))} />
+            <Checkbox label="重新提取（不复用成功批次）" checked={extractFromScratch} onChange={(event) => setExtractFromScratch(event.currentTarget.checked)} disabled={actionBusy || run?.status === 'running'} />
             <Select label="本书术语提取模型" description="留空继承全局术语提取模型，再回退默认对话模型。" data={modelOptions} value={extractionModelKey || null} onChange={(value) => setExtractionModelKey(value ?? '')} disabled={configLocked || actionBusy || run?.status === 'running'} searchable clearable />
             <Switch label="术语提取启用模型思考" description="默认关闭，仅影响术语提取。需模型支持原生思考切换；保存后下次提取生效。" checked={extractionThinkingEnabled} disabled={configLocked || actionBusy || run?.status === 'running'} onChange={(event) => setExtractionThinkingEnabled(event.currentTarget.checked)} />
             <Group gap="xs">
@@ -227,8 +231,8 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
               }}>保存提取配置</Button>
               <Button size="compact-sm" loading={actionBusy} disabled={!sourceId || !novelId || run?.status === 'running'} onClick={() => {
                 if (!sourceId || !novelId) return;
-                void perform(async () => { const result = await startLibraryTermExtraction(sourceId, novelId); setRun(result.run); });
-              }}>{run && (run.status === 'failed' || run.status === 'cancelled') ? '继续提取 / 重试失败批次' : 'AI 提取候选'}</Button>
+                void perform(async () => { const result = await startLibraryTermExtraction(sourceId, novelId, { ...(extractionChapter ? { chapterIds: [extractionChapter] } : {}), fromScratch: extractFromScratch }); setRun(result.run); });
+              }}>{extractFromScratch ? '重新提取所选范围' : extractionChapter ? '提取本章 / 重试失败批次' : '提取全书 / 继续失败批次'}</Button>
               {run?.status === 'running' ? <Button size="compact-sm" variant="outline" color="red" disabled={actionBusy} onClick={() => {
                 if (!sourceId || !novelId) return;
                 void perform(async () => { const result = await cancelLibraryTermExtraction(sourceId, novelId); setRun(result.run); });
@@ -237,6 +241,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
             <Text size="xs" c="dimmed">提取在后台分批执行，关闭浮窗后仍会继续。失败批次自动尝试 3 次后跳过，不影响后续批次；继续提取会跳过原文未变的已成功批次。修改模型后请先保存。</Text>
             {loadError ? <Alert color="red">{loadError}</Alert> : null}
             {run ? <Stack gap={4}>
+              <Text size="xs">{run.chapterIds ? `范围：${run.chapterIds.map((id) => model.detail?.novel.chapters.find((chapter) => chapter.id === id)?.title ?? id).join("、")}` : "范围：整本已下载章节"} · {run.message}</Text>
               <Text size="sm" fw={600}>{run.status === 'running' ? '正在提取候选' : run.status === 'completed' ? '提取完成' : run.status === 'cancelled' ? '提取已取消' : '提取失败'}</Text>
               <Progress value={run.totalBatches ? (run.completedBatches + (run.failedBatches?.length ?? 0)) / run.totalBatches * 100 : 0} animated={run.status === 'running'} />
               <Text size="xs">成功 {run.completedBatches}/{run.totalBatches} 批 · 失败 {run.failedBatches?.length ?? 0} 批 · 识别 {run.candidates} 条候选 · 累计新增 {run.added} 条</Text>

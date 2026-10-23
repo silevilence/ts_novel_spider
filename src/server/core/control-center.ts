@@ -981,7 +981,7 @@ export class ControlCenterService {
   getLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.getTermTranslation(sourceId, novelId); }
   startLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.startTermTranslation(sourceId, novelId); }
   cancelLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.cancelTermTranslation(sourceId, novelId); }
-  startLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.start(sourceId, novelId); }
+  startLibraryTermExtraction(sourceId: string, novelId: string, options: import("../contracts/chapter-processing").ExtractionOptions = {}) { return this.#termExtraction.start(sourceId, novelId, options); }
   cancelLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.cancel(sourceId, novelId); }
   bulkUpdateLibraryTermStatus(sourceId: string, novelId: string, termIds: string[], status: TranslationTermStatus) { return this.#translation.bulkUpdateTermStatus(sourceId, novelId, termIds, status); }
 

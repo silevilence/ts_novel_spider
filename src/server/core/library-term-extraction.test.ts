@@ -54,6 +54,41 @@ async function waitFor(predicate: () => boolean) {
   assert.fail('background task timed out');
 }
 
+test('chapter extraction validates scope and preserves independent resumable histories', async () => {
+  const { repository, preferences, cleanup } = fixture('アリス '.repeat(5000));
+  repository.saveChapterIndex('test', 'novel', [{ id: 'c1', index: 1, title: '序章', url: '' }, { id: 'c2', index: 2, title: '第二章', url: '' }]);
+  repository.saveChapterContent('test', 'novel', { chapterId: 'c2', index: 2, title: '第二章', url: '', content: '王都' });
+  let calls = 0;
+  let fail = true;
+  const prompts: string[] = [];
+  const service = new LibraryTermExtractionService(repository, preferences, async (_p, _r, _s, prompt) => {
+    calls++; prompts.push(prompt);
+    if (fail && calls > 1) throw new Error('fixture failure');
+    return '{"terms":[]}';
+  });
+  try {
+    assert.throws(() => service.start('test', 'novel', { chapterIds: [] }));
+    assert.throws(() => service.start('test', 'novel', { chapterIds: ['foreign'] }));
+    const first = service.start('test', 'novel', { chapterIds: ['c1'] });
+    assert.throws(() => service.start('test', 'novel', { chapterIds: ['c2'] }), /正在运行/);
+    await waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(service.getRun('test', 'novel')?.status, 'failed');
+    assert(prompts.every((prompt) => !prompt.includes('第二章')));
+    fail = false;
+    service.start('test', 'novel', { chapterIds: ['c2'] });
+    await waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+    const before = calls;
+    const resumed = service.start('test', 'novel', { chapterIds: ['c1'] });
+    assert.equal(resumed.completedBatches, 1);
+    await waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(calls - before, first.totalBatches - 1);
+    const fresh = service.start('test', 'novel', { chapterIds: ['c1'], fromScratch: true });
+    assert.equal(fresh.completedBatches, 0);
+    await waitFor(() => service.getRun('test', 'novel')?.status !== 'running');
+    assert.equal(repository.getTermExtractionHistory('test', 'novel').length, 4);
+  } finally { cleanup(); }
+});
+
 test('shared extraction windows preserve the refined first window and all source provenance', () => {
   const chapters = [{ id: 'c1', index: 1, title: '一', content: 'あ'.repeat(20_000) }, { id: 'c2', index: 2, title: '二', content: '王都' }];
   const full = chapters.map((c) => `【第 ${c.index} 章 ${c.title}】\n${c.content}`).join('\n\n');
