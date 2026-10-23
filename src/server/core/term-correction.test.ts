@@ -137,3 +137,19 @@ test('correction refuses overlapping names and preserves Markdown targets and un
     assert.match(f.db.getTranslationBuildCheckpoint('test', 'n', 'a')!.pipelineStateJson, /有效草稿/);
   } finally { f.cleanup(); }
 });
+
+test('failed AI suggestions and undo after a later edit preserve valid translations', async () => {
+  const f = fixture();
+  try {
+    const record = f.service.preview('test', 'n', f.change.id, ['a']);
+    const target = record.targets.find((item) => item.paragraphIndex === 1)!;
+    const failing = new TermCorrectionService(f.db, f.translation, f.preferences, async () => { throw new Error('model offline'); });
+    await assert.rejects(failing.suggest('test', 'n', record.id, target.id), /model offline/);
+    assert.equal(f.db.listChapterTranslationParagraphs('test', 'n', 'a')[0]?.translatedText, target.before);
+    f.service.apply('test', 'n', record.id, [target.id]);
+    const paragraphs = f.db.listChapterTranslationParagraphs('test', 'n', 'a');
+    f.db.replaceChapterTranslationParagraphs('test', 'n', 'a', paragraphs.map((paragraph) => ({ ...paragraph, translatedText: paragraph.paragraphIndex === 1 ? '人工修订' : paragraph.translatedText })));
+    assert.throws(() => f.service.apply('test', 'n', record.id, [target.id], true), /已变化/);
+    assert.equal(f.db.listChapterTranslationParagraphs('test', 'n', 'a')[0]?.translatedText, '人工修订');
+  } finally { f.cleanup(); }
+});
