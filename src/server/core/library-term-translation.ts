@@ -27,11 +27,11 @@ export class LibraryTermTranslationService {
   getRun(sourceId: string, novelId: string) { return this.#repository.getTermTranslationRun(sourceId, novelId); }
 
   /** Snapshots all confirmed gaps; later edits are checked again before each write. */
-  start(sourceId: string, novelId: string): StoredTermTranslationRun {
+  start(sourceId: string, novelId: string, termIds?: string[]): StoredTermTranslationRun {
     if (this.getRun(sourceId, novelId)?.status === 'running') throw new Error('术语翻译正在运行。');
     const novel = this.#repository.getNovelPurgeStatus(sourceId, novelId);
     if (!novel || novel.deletedAt) throw new Error('小说不存在或已在回收站。');
-    const terms = this.#repository.listMissingTranslationTerms(sourceId, novelId);
+    const terms = this.#repository.listMissingTranslationTerms(sourceId, novelId).filter((term) => !termIds || termIds.includes(term.id));
     if (!terms.length) throw new Error('没有已确认且未翻译的术语。');
     const local = this.#repository.getTranslationProfile(sourceId, novelId);
     const global = this.#preferences.getTranslationState().config;
@@ -88,6 +88,12 @@ export class LibraryTermTranslationService {
         controller.signal.throwIfAborted();
         const currentNovel = this.#repository.getNovelPurgeStatus(run.sourceId, run.novelId);
         if (!currentNovel || currentNovel.deletedAt) throw new Error('小说不存在或已移入回收站，翻译已停止。');
+        const currentTerms = this.#repository.listTranslationTerms(run.sourceId, run.novelId);
+        translations = translations.filter((value) => {
+          const original = batch.find((term) => term.id === value.id);
+          const current = currentTerms.find((term) => term.id === value.id);
+          return original && current && original.sourceTerm === current.sourceTerm && original.note === current.note && original.entityType === current.entityType;
+        });
         run = this.#repository.saveTermTranslationBatch(run, translations, batch.length);
       }
       this.#repository.saveTermTranslationRun({ ...run, status: 'completed', updatedAt: new Date().toISOString() });

@@ -1,4 +1,5 @@
 import { resolveNovelTarget } from '../contracts/novel-target';
+import { LibraryProcessingService } from './library-processing';
 import { LibraryTermExtractionService } from './library-term-extraction';
 import type { TranslationTermStatus } from './novel-repository';
 import crypto from 'node:crypto';
@@ -246,6 +247,7 @@ export class ControlCenterService {
   readonly #exportEngine: LocalExportEngine;
   readonly #libraryIntelligence: LibraryIntelligenceService;
   readonly #translation: TranslationService;
+  readonly #processing: LibraryProcessingService;
   readonly #termExtraction: LibraryTermExtractionService;
   readonly #refinedTranslation: RefinedTranslationService;
   readonly #taskLogDispatcher: SpiderLogDispatcher;
@@ -283,6 +285,8 @@ export class ControlCenterService {
     this.#termExtraction = new LibraryTermExtractionService(this.#repository, this.#systemPreferences);
     this.#termExtraction.recoverInterruptedRuns();
     this.#translation.recoverInterruptedTermTranslations();
+    this.#processing = new LibraryProcessingService(this.#repository, this.#termExtraction, this.#translation);
+    this.#processing.start();
     this.#refinedTranslation = new RefinedTranslationService(this.#repository, this.#systemPreferences, this.#exportEngine);
     this.#refinedTranslation.recoverInterruptedTasks();
     this.#registry = new Map(
@@ -316,6 +320,7 @@ export class ControlCenterService {
       logger: this.#taskLogDispatcher,
       translation: this.#translation,
       summary: schedulingSummary,
+      processUpdate: (sourceId, novelId, chapterIds) => this.#processing.enqueue(sourceId, novelId, "scheduled", {}, chapterIds),
     });
     this.#scheduling.start();
 
@@ -336,6 +341,7 @@ export class ControlCenterService {
       task.listeners.clear();
     }
 
+    this.#processing.stop();
     this.#scheduling.stop();
     this.#opdsCompilation.stop();
 
@@ -977,6 +983,10 @@ export class ControlCenterService {
     return this.#translation.getChapterTranslationDetail(sourceId, novelId, chapterId, sourceLang, targetLang);
   }
 
+  getLibraryProcessing(sourceId: string, novelId: string) { return { settings: this.#processing.settings(sourceId, novelId), jobs: this.#repository.listProcessingJobs(sourceId, novelId) }; }
+  updateLibraryProcessing(sourceId: string, novelId: string, input: unknown) { return this.#processing.configure(sourceId, novelId, input); }
+  controlLibraryProcessing(sourceId: string, novelId: string, id: string, action: 'pause' | 'resume' | 'cancel') { return this.#processing.control(sourceId, novelId, id, action); }
+
   getLibraryTermExtraction(sourceId: string, novelId: string) { return this.#termExtraction.getRun(sourceId, novelId); }
   getLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.getTermTranslation(sourceId, novelId); }
   startLibraryTermTranslation(sourceId: string, novelId: string) { return this.#translation.startTermTranslation(sourceId, novelId); }
@@ -1183,10 +1193,12 @@ export class ControlCenterService {
     const stored = this.#repository.getChapter(sourceId, novelId, chapterId);
     const spider = this.#registry.get(sourceId)?.spider;
     if (!stored || !spider) throw new Error('章节或爬虫来源不存在。');
+    const before = this.#processing.hashes(sourceId, novelId);
     const fetched = await spider.fetchChapter({ novelId }, { id: stored.id, index: stored.index, title: stored.title, ...(stored.volumeTitle ? { volumeTitle: stored.volumeTitle } : {}), url: stored.url });
     const result = this.#repository.replaceCrawledChapterIfChanged(sourceId, novelId, fetched);
     const chapter = this.getLibraryChapter(sourceId, novelId, chapterId);
     if (!chapter) throw new Error('章节更新后无法读取。');
+    if (result.changed) this.#processing.enqueue(sourceId, novelId, 'refetch', before, [chapterId]);
     return { changed: result.changed, chapter };
   }
 
@@ -1407,11 +1419,13 @@ export class ControlCenterService {
       ...(task.options.chapterIds.length > 0 ? { chapterIds: task.options.chapterIds } : {}),
     };
 
+    const beforeProcessing = this.#processing.hashes(task.sourceId, task.novelId);
     try {
       const result = await runner.crawlNovel(options);
       this.#repository.markNovelCaptureTransport(task.sourceId, task.novelId, task.kind);
       const currentSnapshot = this.#repository.getSnapshot(task.sourceId, task.novelId);
 
+      this.#processing.enqueue(task.sourceId, task.novelId, 'capture', beforeProcessing, task.options.chapterIds.length ? task.options.chapterIds : undefined);
       task.status = 'completed';
       task.completedAt = new Date().toISOString();
       task.metadata = result.metadata;

@@ -188,7 +188,7 @@ export class TranslationService {
 
   recoverInterruptedTermTranslations(): void { this.#termTranslation.recoverInterruptedRuns(); }
   getTermTranslation(sourceId: string, novelId: string) { return this.#termTranslation.getRun(sourceId, novelId); }
-  startTermTranslation(sourceId: string, novelId: string) { return this.#termTranslation.start(sourceId, novelId); }
+  startTermTranslation(sourceId: string, novelId: string, termIds?: string[]) { return this.#termTranslation.start(sourceId, novelId, termIds); }
   cancelTermTranslation(sourceId: string, novelId: string) { return this.#termTranslation.cancel(sourceId, novelId); }
 
   /** 获取单本小说的翻译配置——合并全局默认 */
@@ -878,8 +878,9 @@ export class TranslationService {
       assertCurrent: (state) => {
         ac.signal.throwIfAborted();
         const snapshot = this.#repository.getSnapshot(sourceId, novelId);
+        const currentProfile = this.getTranslationProfile(sourceId, novelId);
         const current = snapshot && TranslationService.buildTranslationUnits(snapshot, sourceLang, targetLang).find((unit) => unit.id === state.chapterId);
-        if (!current || current.content !== state.sourceContent || this.#repository.getNovelPurgeStatus(sourceId, novelId)?.deletedAt
+        if (!current || current.content !== state.sourceContent || currentProfile?.sourceLang !== sourceLang || currentProfile?.targetLang !== targetLang || this.#repository.getNovelPurgeStatus(sourceId, novelId)?.deletedAt
           || JSON.stringify(this.#repository.listTranslationTerms(sourceId, novelId, 'confirmed')) !== JSON.stringify(terms)
           || translationKey(state.chapterId) !== currentTranslationKey) throw new Error('材料已变化，请重新发起翻译；保留当前译文。');
       },

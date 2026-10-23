@@ -2871,6 +2871,25 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .map((row) => JSON.parse(row.run_json) as StoredTermExtractionRun);
   }
 
+  getProcessingSettings(sourceId: string, novelId: string): import('../contracts/library-processing').ProcessingSettings | null {
+    const row = this.#database.prepare('SELECT config_json FROM novel_processing_settings WHERE source_id = ? AND novel_id = ?').get(sourceId, novelId) as { config_json: string } | undefined;
+    return row ? JSON.parse(row.config_json) as import('../contracts/library-processing').ProcessingSettings : null;
+  }
+
+  saveProcessingSettings(sourceId: string, novelId: string, settings: import('../contracts/library-processing').ProcessingSettings): void {
+    this.assertNovelExists(sourceId, novelId);
+    this.#database.prepare('INSERT INTO novel_processing_settings VALUES (?, ?, ?) ON CONFLICT(source_id, novel_id) DO UPDATE SET config_json = excluded.config_json').run(sourceId, novelId, JSON.stringify(settings));
+  }
+
+  listProcessingJobs(sourceId?: string, novelId?: string): import('../contracts/library-processing').ProcessingJob[] {
+    const rows = this.#database.prepare('SELECT job_json FROM novel_processing_jobs WHERE (? IS NULL OR source_id = ?) AND (? IS NULL OR novel_id = ?) ORDER BY rowid').all(sourceId ?? null, sourceId ?? null, novelId ?? null, novelId ?? null) as Array<{ job_json: string }>;
+    return rows.map((row) => JSON.parse(row.job_json) as import('../contracts/library-processing').ProcessingJob);
+  }
+
+  saveProcessingJob(job: import('../contracts/library-processing').ProcessingJob): void {
+    this.#database.prepare('INSERT INTO novel_processing_jobs VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET job_json = excluded.job_json').run(job.id, job.sourceId, job.novelId, JSON.stringify(job));
+  }
+
   getChapterExtractionFingerprint(sourceId: string, novelId: string, chapterId: string): string | null {
     const row = this.#database.prepare('SELECT fingerprint FROM novel_chapter_extractions WHERE source_id = ? AND novel_id = ? AND chapter_id = ?').get(sourceId, novelId, chapterId) as { fingerprint: string } | undefined;
     return row?.fingerprint ?? null;
@@ -5047,6 +5066,14 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         source_id TEXT NOT NULL, novel_id TEXT NOT NULL, chapter_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
         PRIMARY KEY (source_id, novel_id, chapter_id),
         FOREIGN KEY (source_id, novel_id, chapter_id) REFERENCES chapters(source_id, novel_id, chapter_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_processing_settings (
+        source_id TEXT NOT NULL, novel_id TEXT NOT NULL, config_json TEXT NOT NULL,
+        PRIMARY KEY (source_id, novel_id), FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_processing_jobs (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL, novel_id TEXT NOT NULL, job_json TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
       );
       CREATE TABLE IF NOT EXISTS novel_term_chapter_sources (
         source_id TEXT NOT NULL, novel_id TEXT NOT NULL, term_id TEXT NOT NULL, chapter_id TEXT NOT NULL,

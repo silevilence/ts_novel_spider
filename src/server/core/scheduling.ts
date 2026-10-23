@@ -39,6 +39,7 @@ export interface SchedulingServiceDependencies {
   logger: SpiderLogDispatcher;
   translation: SchedulingTranslationCoordinator;
   summary: SchedulingSummaryCoordinator;
+  processUpdate?: (sourceId: string, novelId: string, chapterIds: string[]) => boolean;
 }
 
 const TICK_INTERVAL_MS = 60_000; // 每分钟 tick 一次
@@ -51,6 +52,7 @@ export class SchedulingService {
   readonly #logger: SpiderLogDispatcher;
   readonly #translation: SchedulingTranslationCoordinator;
   readonly #summary: SchedulingSummaryCoordinator;
+  readonly #processUpdate: SchedulingServiceDependencies["processUpdate"];
 
   #timer: ReturnType<typeof setInterval> | null = null;
   #nextTickAt: number | null = null;
@@ -66,6 +68,7 @@ export class SchedulingService {
     this.#logger = deps.logger;
     this.#translation = deps.translation;
     this.#summary = deps.summary;
+    this.#processUpdate = deps.processUpdate;
   }
 
   /** 服务启动时调用：恢复状态并启动定时器 */
@@ -360,6 +363,8 @@ export class SchedulingService {
         }
       }
     }
+
+    if (this.#processUpdate?.(novel.sourceId, novel.novelId, downloadedNewChapters.map((chapter) => chapter.id))) return;
 
     if (!novel.autoTranslate) {
       return;

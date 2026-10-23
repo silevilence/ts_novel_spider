@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { chapterScopeSchema, extractionOptionsSchema } from '../contracts/chapter-processing';
+import { z } from 'zod';
 
 import {
   type CrawlTaskSnapshot,
@@ -734,6 +735,19 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     };
 
     response.json(payload);
+  });
+
+  router.get('/novels/:sourceId/:novelId/processing', (request, response) => {
+    response.json(service.getLibraryProcessing(request.params.sourceId, request.params.novelId));
+  });
+  router.put('/novels/:sourceId/:novelId/processing', (request, response) => {
+    try { response.json({ settings: service.updateLibraryProcessing(request.params.sourceId, request.params.novelId, request.body) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '设置无效' }); }
+  });
+  router.post('/novels/:sourceId/:novelId/processing/:jobId/control', (request, response) => {
+    try { const action = z.object({ action: z.enum(['pause', 'resume', 'cancel']) }).parse(request.body).action;
+      response.json({ job: service.controlLibraryProcessing(request.params.sourceId, request.params.novelId, request.params.jobId, action) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '操作失败' }); }
   });
 
   router.post('/novels/:sourceId/:novelId/translate/start', (request, response) => {
