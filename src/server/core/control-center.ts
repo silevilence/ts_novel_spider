@@ -80,6 +80,10 @@ import {
 import { SqliteNovelRepository, type StoredNovelLibraryRow } from './novel-repository';
 import { SchedulingService, type SchedulingServiceDependencies } from './scheduling';
 import { SchedulingSummaryService } from './scheduling-summary';
+import { NotificationService } from './notification-service';
+import { AstrBotNotificationChannel } from './astrbot-notification';
+import type { NotificationChannel } from './notification-channel';
+import type { NotificationConfigInput } from '../contracts/notification';
 import { OpdsCompilationService, type OpdsCompilationServiceDependencies } from './opds-compilation';
 import { SpiderRunner } from './spider-runner';
 import {
@@ -219,6 +223,8 @@ export type ControlCenterStreamEvent =
     };
 
 export interface ControlCenterServiceOptions {
+  notificationChannel?: NotificationChannel;
+  notificationFetchImpl?: typeof fetch;
   databasePath?: string;
   repository?: SqliteNovelRepository;
   spiders?: SpiderRegistryEntry[];
@@ -254,6 +260,8 @@ export class ControlCenterService {
   readonly #refinedTranslation: RefinedTranslationService;
   readonly #taskLogDispatcher: SpiderLogDispatcher;
   readonly #scheduling: SchedulingService;
+  readonly #notifications: NotificationService;
+  readonly #astrbot: AstrBotNotificationChannel;
   readonly #opdsCompilation: OpdsCompilationService;
   readonly #opdsArtifactsRoot: string;
   readonly #browserCapture: BrowserCaptureService;
@@ -269,6 +277,9 @@ export class ControlCenterService {
       options.networkProxy ?? new NetworkProxyService({ storageFilePath: defaultNetworkProxyConfigPath() });
     this.#systemPreferences =
       options.systemPreferences ?? new SystemPreferencesService({ storageFilePath: defaultSystemPreferencesPath() });
+    this.#astrbot = new AstrBotNotificationChannel(options.notificationFetchImpl);
+    this.#notifications = new NotificationService(this.#repository, this.#systemPreferences,
+      new Map([['astrbot', options.notificationChannel ?? this.#astrbot]]));
     this.#browserCapture = options.browserCapture ?? new BrowserCaptureService({ store: this.#repository });
     this.#offlineLibrary = new OfflineLibraryAssetService({
       ...(options.offlineAssetStoragePath ? { storageRoot: options.offlineAssetStoragePath } : {}),
@@ -323,6 +334,7 @@ export class ControlCenterService {
       logger: this.#taskLogDispatcher,
       translation: this.#translation,
       summary: schedulingSummary,
+      notifications: this.#notifications,
       processUpdate: (sourceId, novelId, chapterIds) => this.#processing.enqueue(sourceId, novelId, "scheduled", {}, chapterIds),
     });
     this.#scheduling.start();
@@ -346,6 +358,7 @@ export class ControlCenterService {
 
     this.#processing.stop();
     this.#scheduling.stop();
+    this.#notifications.close();
     this.#opdsCompilation.stop();
 
     if (this.#ownsRepository) {
@@ -686,6 +699,13 @@ export class ControlCenterService {
     return this.#repository.getScheduledNovel(sourceId, novelId);
   }
 
+  getNotificationConfig() { return this.#systemPreferences.getNotification(); }
+  updateNotificationConfig(input: NotificationConfigInput) { return this.#systemPreferences.updateNotification(input); }
+  listNotificationRecords() { return this.#repository.listNotifications(); }
+  drainNotifications() { return this.#notifications.drain(); }
+  testNotification(input: NotificationConfigInput) { return this.#notifications.test(this.#systemPreferences.resolveNotification(input)); }
+  listNotificationTargets(input: NotificationConfigInput) { return this.#astrbot.listTargets(this.#systemPreferences.resolveNotification(input)); }
+
   upsertScheduledNovel(
     sourceId: string,
     novelId: string,
@@ -693,8 +713,9 @@ export class ControlCenterService {
     autoTranslate?: boolean,
     autoSummarize?: boolean,
     summarizeModel?: LlmModelGatewayRoute | null,
+    notifyOnUpdate?: boolean,
   ): void {
-    this.#repository.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate, autoSummarize, summarizeModel);
+    this.#repository.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate, autoSummarize, summarizeModel, notifyOnUpdate);
   }
 
   getAllScheduledNovels(): StoredScheduledNovelRow[] {
@@ -707,6 +728,7 @@ export class ControlCenterService {
     enabled: boolean;
     autoTranslate?: boolean;
     autoSummarize?: boolean;
+    notifyOnUpdate?: boolean;
     summarizeModel?: LlmModelGatewayRoute | null;
   }>): void {
     if (entries.some((entry) => entry.sourceId === 'manual')) {
@@ -1474,6 +1496,14 @@ export class ControlCenterService {
         );
       }
       this.emitTaskUpdate(task);
+    }
+    if (task.status === 'failed' || (task.status === 'completed' && task.failures.length > 0)) {
+      this.#notifications.submit({
+        id: `crawl:${task.id}`, kind: '采集结果', sourceId: task.sourceId, novelId: task.novelId,
+        runId: task.id, title: task.metadata?.title ?? `${task.sourceId}/${task.novelId}`,
+        summary: task.errorMessage ?? `成功 ${task.progress.completedChapters} 章，失败 ${task.failures.length} 章：${task.failures.slice(0, 3).map((failure) => failure.errorMessage).join('；')}`,
+        occurredAt: task.completedAt ?? new Date().toISOString(), error: true,
+      });
     }
   }
 

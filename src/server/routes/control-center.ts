@@ -1,5 +1,6 @@
 import { isTranslationMessageFormat } from '../contracts/translation-message-format';
 import { Router } from 'express';
+import { notificationInputSchema } from '../contracts/notification';
 import CronExpressionParser from 'cron-parser';
 
 import {
@@ -167,6 +168,25 @@ interface UpdateReaderTypographyRequestBody {
 
 export function createControlCenterRouter({ service }: ControlCenterRouterOptions): Router {
   const router = Router();
+
+  router.get('/preferences/notifications', (_request, response) => response.json(service.getNotificationConfig()));
+  router.put('/preferences/notifications', (request, response) => {
+    try {
+      const parsed = notificationInputSchema.safeParse(request.body);
+      if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => issue.message).join('；'));
+      response.json(service.updateNotificationConfig(parsed.data));
+    } catch (error) { response.status(400).json({ message: error instanceof Error ? error.message : '通知配置无效' }); }
+  });
+  router.get('/notifications/records', (_request, response) => response.json({ records: service.listNotificationRecords() }));
+  for (const operation of ['test', 'targets'] as const) {
+    router.post(`/notifications/${operation}`, async (request, response) => {
+      try {
+        const parsed = notificationInputSchema.safeParse(request.body);
+        if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => issue.message).join('；'));
+        response.json(operation === 'test' ? await service.testNotification(parsed.data) : await service.listNotificationTargets(parsed.data));
+      } catch (error) { response.status(400).json({ message: error instanceof Error ? error.message : '通知操作失败' }); }
+    });
+  }
 
   router.get('/sources', (_request, response) => {
     const payload: ControlSourcesPayload = {

@@ -14,6 +14,12 @@ import { createOllama } from 'ai-sdk-ollama';
 import neo4j from 'neo4j-driver';
 
 import { toError } from './spider';
+import { notificationInputSchema, type NotificationConfig, type NotificationConfigInput } from '../contracts/notification';
+
+export interface StoredNotificationConfig extends Omit<NotificationConfig, 'keyConfigured'> { apiKey: string }
+const NOTIFICATION_DEFAULTS: StoredNotificationConfig = {
+  enabled: false, errorEnabled: false, channel: 'astrbot', baseUrl: '', target: { umo: '' }, apiKey: '',
+};
 
 export type ModelCapability = 'chat' | 'embedding' | 'rerank';
 export type ModelCapabilityMode = 'manual' | 'auto';
@@ -471,6 +477,7 @@ export interface SystemPreferencesServiceOptions {
 }
 
 interface PersistedSystemPreferences {
+  notification?: StoredNotificationConfig;
   llmProviders: LlmProviderConfigInput[];
   neo4j: Neo4jConfigInput & { updatedAt?: string | null };
   modelGateway?: LlmModelGatewayConfig;
@@ -499,6 +506,7 @@ export class SystemPreferencesService {
   #modelGateway: LlmModelGatewayConfig;
   #scheduling: SchedulingConfig;
   #opds: OpdsConfig;
+  #notification: StoredNotificationConfig;
   #updatedAt: string | null;
 
   constructor(options: SystemPreferencesServiceOptions = {}) {
@@ -525,6 +533,34 @@ export class SystemPreferencesService {
       ? { ...normalizeOpdsInput(persisted.opds), updatedAt: persisted.updatedAt ?? null }
       : { ...OPDS_DEFAULTS };
     this.#updatedAt = persisted?.updatedAt ?? null;
+    this.#notification = persisted?.notification ?? { ...NOTIFICATION_DEFAULTS, target: { umo: '' } };
+  }
+
+  getNotification(): NotificationConfig {
+    const { apiKey, ...config } = this.#notification;
+    return { ...config, target: { ...config.target }, keyConfigured: Boolean(apiKey) };
+  }
+
+  /** 仅供后端发送使用，HTTP 设置读取不得返回此对象。 */
+  resolveNotification(input?: NotificationConfigInput): StoredNotificationConfig {
+    if (!input) return { ...this.#notification, target: { ...this.#notification.target } };
+    const parsed = notificationInputSchema.safeParse(input);
+    if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => issue.message).join('；'));
+    const { keyAction, apiKey, ...config } = parsed.data;
+    const resolved = { ...config, baseUrl: config.baseUrl.replace(/\/+$/, ''),
+      apiKey: keyAction === 'keep' ? this.#notification.apiKey : keyAction === 'replace' ? apiKey! : '' };
+    if (resolved.enabled && !resolved.apiKey) throw new Error('启用通知需要 API Key');
+    return resolved;
+  }
+
+  updateNotification(input: NotificationConfigInput): NotificationConfig {
+    const next = this.resolveNotification(input);
+    const updatedAt = new Date().toISOString();
+    // 先持久化再发布，写盘失败不改变运行配置。
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, next);
+    this.#notification = next;
+    this.#updatedAt = updatedAt;
+    return this.getNotification();
   }
 
   getLlmState(): LlmPreferencesState {
@@ -541,7 +577,7 @@ export class SystemPreferencesService {
     this.#llmProviders = normalizeProviderInputs(inputs);
     this.#llmValidations = filterValidations(this.#llmValidations, this.#llmProviders);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, this.#notification);
     return this.getLlmState();
   }
 
@@ -649,7 +685,7 @@ export class SystemPreferencesService {
     };
     this.#neo4jValidation = null;
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, this.#notification);
     return this.getNeo4jState();
   }
 
@@ -699,7 +735,7 @@ export class SystemPreferencesService {
     this.#readerTypography = normalizeReaderTypographyInput(input);
     this.#readerTypographyUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, this.#notification);
     return this.getReaderTypography();
   }
 
@@ -714,7 +750,7 @@ export class SystemPreferencesService {
     this.#translation = normalizeTranslationPreferencesInput({ ...this.#translation, ...input });
     this.#translationUpdatedAt = new Date().toISOString();
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, this.#notification);
     return this.getTranslationState();
   }
 
@@ -725,7 +761,7 @@ export class SystemPreferencesService {
   updateModelGateway(input: LlmModelGatewayConfig): LlmModelGatewayConfig {
     this.#modelGateway = normalizeModelGatewayConfig(input);
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, this.#notification);
     return this.getModelGateway();
   }
 
@@ -740,7 +776,7 @@ export class SystemPreferencesService {
     this.#scheduling = normalizeSchedulingInput({ ...this.#scheduling, ...input });
     this.#scheduling = { ...this.#scheduling, updatedAt: new Date().toISOString() };
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, this.#notification);
     return this.getScheduling();
   }
 
@@ -751,7 +787,7 @@ export class SystemPreferencesService {
   updateOpds(input: OpdsConfigInput): OpdsConfig {
     this.#opds = { ...normalizeOpdsInput({ ...this.#opds, ...input }), updatedAt: new Date().toISOString() };
     this.touch();
-    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds);
+    persistPreferences(this.#storageFilePath, this.#llmProviders, this.#neo4jConfig, this.#updatedAt, this.#readerTypography, this.#translation, this.#modelGateway, this.#scheduling, this.#opds, this.#notification);
     return this.getOpds();
   }
 
@@ -1507,6 +1543,7 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       translation?: unknown;
       scheduling?: unknown;
       opds?: unknown;
+      notification?: unknown;
       updatedAt?: unknown;
     };
 
@@ -1542,6 +1579,18 @@ function loadPersistedPreferences(storageFilePath: string): PersistedSystemPrefe
       updatedAt:
         typeof parsed.updatedAt === 'string' || parsed.updatedAt === null ? parsed.updatedAt : null,
     };
+
+    // 旧偏好无通知字段时默认关闭；无效配置只重置通知部分。
+    result.notification = { ...NOTIFICATION_DEFAULTS, target: { umo: '' } };
+    if (isRecord(parsed.notification)) {
+      const raw = parsed.notification;
+      const parsedNotification = notificationInputSchema.safeParse({ ...raw,
+        keyAction: raw.apiKey ? 'replace' : 'clear' });
+      if (parsedNotification.success) {
+        const { keyAction: _action, apiKey, ...config } = parsedNotification.data;
+        result.notification = { ...config, apiKey: apiKey ?? '' };
+      }
+    }
 
     // 存量模型缺少格式字段时显式迁移为通用格式，不按模型名称猜测。
     result.llmProviders = result.llmProviders.map((provider) => ({
@@ -1638,6 +1687,7 @@ function persistPreferences(
   modelGateway?: LlmModelGatewayConfig,
   scheduling?: SchedulingConfig,
   opds?: OpdsConfig,
+  notification?: StoredNotificationConfig,
 ): void {
   if (!storageFilePath) {
     return;
@@ -1645,6 +1695,7 @@ function persistPreferences(
 
   fs.mkdirSync(path.dirname(storageFilePath), { recursive: true });
   const payload: Record<string, unknown> = {
+    ...(notification ? { notification } : {}),
     llmProviders,
     neo4j: {
       enabled: neo4jConfig.enabled,

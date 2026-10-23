@@ -1,4 +1,17 @@
 import type { TranslationMessageFormat } from '../../server/contracts/translation-message-format';
+import type { KnownNotificationTargets, NotificationConfig, NotificationConfigInput, NotificationRecord } from '../../server/contracts/notification';
+
+export function fetchNotificationConfig(): Promise<NotificationConfig> { return requestJson('/api/control/preferences/notifications'); }
+export function saveNotificationConfig(input: NotificationConfigInput): Promise<NotificationConfig> {
+  return requestJson('/api/control/preferences/notifications', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+export function fetchNotificationTargets(input: NotificationConfigInput): Promise<KnownNotificationTargets> {
+  return requestJson('/api/control/notifications/targets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+export function sendTestNotification(input: NotificationConfigInput): Promise<NotificationRecord> {
+  return requestJson('/api/control/notifications/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+export function fetchNotificationRecords(): Promise<{ records: NotificationRecord[] }> { return requestJson('/api/control/notifications/records'); }
 import type { StoredTermExtractionRun, StoredTermTranslationRun, TranslationTermStatus } from '../../server/core/novel-repository';
 import type { TranslationProfile, TranslationProfileInput, TranslationChapterDetail, TranslationUnitStatuses } from '../../server/core/translation-service';
 export type { TranslationUnitStatus, TranslationUnitStatuses } from '../../server/core/translation-service';
@@ -953,6 +966,7 @@ export interface SchedulingNovelEntry {
   enabled: boolean;
   autoTranslate: boolean;
   autoSummarize: boolean;
+  notifyOnUpdate: boolean;
   summarizeModel: { providerId: string; modelId: string } | null;
   lastCheckedAt: string | null;
   lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
@@ -966,6 +980,7 @@ export interface SchedulingNovelDetail {
   enabled: boolean;
   autoTranslate: boolean;
   autoSummarize: boolean;
+  notifyOnUpdate: boolean;
   summarizeModel: { providerId: string; modelId: string } | null;
   lastCheckedAt: string | null;
   lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
@@ -1041,6 +1056,7 @@ export async function updateNovelScheduling(
     enabled: boolean;
     autoTranslate?: boolean;
     autoSummarize?: boolean;
+    notifyOnUpdate?: boolean;
     summarizeModel?: { providerId: string; modelId: string } | null;
   },
 ): Promise<SchedulingNovelDetail> {
@@ -1070,6 +1086,7 @@ export async function updateSchedulingNovels(
     enabled: boolean;
     autoTranslate?: boolean;
     autoSummarize?: boolean;
+    notifyOnUpdate?: boolean;
     summarizeModel?: { providerId: string; modelId: string } | null;
   }>,
 ): Promise<void> {

@@ -27,6 +27,7 @@ import {
   IconAdjustments,
   IconBrain,
   IconBrowser,
+  IconBell,
   IconDatabase,
   IconDeviceFloppy,
   IconLanguage,
@@ -41,6 +42,7 @@ import { Neo4jPanel } from './neo4j-panel';
 import { NetworkProxyPanel } from './network-proxy-panel';
 import { ReaderTypographyPanel } from './reader-typography-panel';
 import { BrowserCapturePanel } from './browser-capture-panel';
+import { NotificationPanel } from './notification-panel';
 import {
   fetchLlmProvidersPreferences,
   fetchTranslationPreferences,
@@ -132,6 +134,13 @@ export function SystemPreferences({ model, onNotify }: SystemPreferencesProps) {
         title: '浏览器采集桥接',
         description: '生成一次性配对令牌、查看连接状态并撤销已授权浏览器。',
         content: <BrowserCapturePanel onNotice={onNotify} />,
+      },
+      {
+        id: 'notifications',
+        icon: <IconBell size={PANEL_ICON_SIZE} />,
+        title: '消息通知',
+        description: '通过 AstrBot 接收后台错误告警与按书更新结果。',
+        content: <NotificationPanel onNotice={onNotify} />,
       },
       {
         id: 'proxy',

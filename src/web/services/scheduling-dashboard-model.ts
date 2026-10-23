@@ -28,6 +28,7 @@ export interface SchedulingDashboardModel {
     enabled: boolean;
     autoTranslate?: boolean;
     autoSummarize?: boolean;
+    notifyOnUpdate?: boolean;
     summarizeModel?: { providerId: string; modelId: string } | null;
   }>) => Promise<void>;
   loadMoreRuns: () => Promise<void>;
@@ -80,6 +81,7 @@ export function useSchedulingDashboardModel(): SchedulingDashboardModel {
     enabled: boolean;
     autoTranslate?: boolean;
     autoSummarize?: boolean;
+    notifyOnUpdate?: boolean;
     summarizeModel?: { providerId: string; modelId: string } | null;
   }>) => {
     await apiUpdateSchedulingNovels(entries);

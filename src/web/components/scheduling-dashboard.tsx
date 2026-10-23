@@ -44,6 +44,7 @@ interface SchedulingNovelDraft {
   enabled: boolean;
   autoTranslate: boolean;
   autoSummarize: boolean;
+  notifyOnUpdate: boolean;
   summarizeModel: { providerId: string; modelId: string } | null;
 }
 
@@ -59,6 +60,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
         enabled: novel.enabled,
         autoTranslate: novel.autoTranslate,
         autoSummarize: novel.autoSummarize,
+        notifyOnUpdate: novel.notifyOnUpdate,
         summarizeModel: novel.summarizeModel,
       },
     ])));
@@ -84,6 +86,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
           enabled: novel.enabled,
           autoTranslate: novel.autoTranslate,
           autoSummarize: novel.autoSummarize,
+          notifyOnUpdate: novel.notifyOnUpdate,
           summarizeModel: novel.summarizeModel,
         };
 
@@ -93,6 +96,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
           enabled: draft.enabled,
           autoTranslate: draft.autoTranslate,
           autoSummarize: draft.autoSummarize,
+          notifyOnUpdate: draft.notifyOnUpdate,
           summarizeModel: draft.summarizeModel,
         };
       });
@@ -318,6 +322,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                   <Table.Tr>
                     <Table.Th>作品</Table.Th>
                     <Table.Th>定时更新</Table.Th>
+                    <Table.Th>更新时通知</Table.Th>
                     <Table.Th>自动翻译</Table.Th>
                     <Table.Th>自动总结</Table.Th>
                     <Table.Th>单书总结模型</Table.Th>
@@ -332,6 +337,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                       enabled: novel.enabled,
                       autoTranslate: novel.autoTranslate,
                       autoSummarize: novel.autoSummarize,
+                      notifyOnUpdate: novel.notifyOnUpdate,
                       summarizeModel: novel.summarizeModel,
                     };
 
@@ -356,6 +362,16 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                               updateDraft(setDrafts, key, { enabled: event.currentTarget.checked });
                             }}
                           />
+                        </Table.Td>
+                        <Table.Td>
+                          <Switch
+                            size="sm"
+                            aria-label={`${novel.title} 更新时通知`}
+                            checked={draft.notifyOnUpdate}
+                            disabled={!draft.enabled}
+                            onChange={(event) => updateDraft(setDrafts, key, { notifyOnUpdate: event.currentTarget.checked })}
+                          />
+                          <Text size="xs" c="dimmed">使用全局通知渠道和目标</Text>
                         </Table.Td>
                         <Table.Td>
                           <Switch
@@ -499,6 +515,7 @@ function updateDraft(
       enabled: false,
       autoTranslate: false,
       autoSummarize: false,
+      notifyOnUpdate: false,
       summarizeModel: null,
     };
     next.set(key, { ...previous, ...patch });
@@ -519,6 +536,7 @@ function applyBatchEnabled(
         enabled: novel.enabled,
         autoTranslate: novel.autoTranslate,
         autoSummarize: novel.autoSummarize,
+        notifyOnUpdate: novel.notifyOnUpdate,
         summarizeModel: novel.summarizeModel,
       };
       next.set(key, { ...previous, enabled });

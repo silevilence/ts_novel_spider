@@ -1103,6 +1103,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
         sourceId, novelId, enabled: false,
         autoTranslate: false,
         autoSummarize: false,
+        notifyOnUpdate: false,
         summarizeModel: null,
         lastCheckedAt: null, lastCheckResult: null, lastCheckMessage: null, updatedAt: '',
         hasSummary: false,
@@ -1117,13 +1118,15 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   router.put('/novels/:sourceId/:novelId/scheduling', (request, response) => {
     try {
       const { sourceId, novelId } = request.params;
-      const body = request.body as { enabled?: unknown; autoTranslate?: unknown; autoSummarize?: unknown; summarizeModel?: unknown };
+      const body = request.body as { enabled?: unknown; autoTranslate?: unknown; autoSummarize?: unknown; notifyOnUpdate?: unknown; summarizeModel?: unknown };
       const enabled = typeof body.enabled === 'boolean' ? body.enabled : false;
       const autoTranslate = typeof body.autoTranslate === 'boolean' ? body.autoTranslate : undefined;
       const autoSummarize = typeof body.autoSummarize === 'boolean' ? body.autoSummarize : undefined;
+      if (body.notifyOnUpdate !== undefined && typeof body.notifyOnUpdate !== 'boolean') throw new Error('更新通知开关必须为布尔值');
+      const notifyOnUpdate = body.notifyOnUpdate;
       const summarizeModel = parseOptionalModelRoute(body.summarizeModel);
 
-      service.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate, autoSummarize, summarizeModel);
+      service.upsertScheduledNovel(sourceId, novelId, enabled, autoTranslate, autoSummarize, summarizeModel, notifyOnUpdate);
       const row = service.getScheduledNovel(sourceId, novelId);
       response.json(row);
     } catch (error) {
@@ -1151,6 +1154,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
           enabled: scheduled?.enabled ?? false,
           autoTranslate: scheduled?.autoTranslate ?? false,
           autoSummarize: scheduled?.autoSummarize ?? false,
+          notifyOnUpdate: scheduled?.notifyOnUpdate ?? false,
           summarizeModel: scheduled?.summarizeModel ?? null,
           lastCheckedAt: scheduled?.lastCheckedAt ?? null,
           lastCheckResult: scheduled?.lastCheckResult ?? null,
@@ -1181,6 +1185,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
               return [];
             }
 
+            if (raw.notifyOnUpdate !== undefined && typeof raw.notifyOnUpdate !== 'boolean') throw new Error('更新通知开关必须为布尔值');
             const summarizeModel = 'summarizeModel' in raw
               ? parseOptionalModelRoute(raw.summarizeModel)
               : undefined;
@@ -1191,6 +1196,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
               enabled: raw.enabled,
               ...(typeof raw.autoTranslate === 'boolean' ? { autoTranslate: raw.autoTranslate } : {}),
               ...(typeof raw.autoSummarize === 'boolean' ? { autoSummarize: raw.autoSummarize } : {}),
+              ...(typeof raw.notifyOnUpdate === 'boolean' ? { notifyOnUpdate: raw.notifyOnUpdate } : {}),
               ...(summarizeModel !== undefined ? { summarizeModel } : {}),
             }];
           })

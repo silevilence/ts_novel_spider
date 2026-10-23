@@ -15,6 +15,8 @@ import type { ChapterIndexEntry, StoredChapterRecord } from './spider';
 import type { ControlCenterService, SpiderRegistryEntry } from './control-center';
 import type { AutoTranslationReadiness, TranslationBuild } from './translation-service';
 import type { AutoSummaryReadiness, SchedulingSummaryResult } from './scheduling-summary';
+import type { NotificationEvent } from '../contracts/notification';
+import type { NotificationService } from './notification-service';
 
 export interface SchedulingTranslationCoordinator {
   getAutoTranslationReadiness(sourceId: string, novelId: string): AutoTranslationReadiness;
@@ -32,10 +34,11 @@ export interface SchedulingSummaryCoordinator {
 }
 
 export interface SchedulingServiceDependencies {
+  notifications?: Pick<NotificationService, 'submit'>;
   repository: SqliteNovelRepository;
   preferences: SystemPreferencesService;
   spiderRegistry: SpiderRegistryEntry[];
-  controlCenter: ControlCenterService;
+  controlCenter: Pick<ControlCenterService, 'getActiveTaskNovelKeys'>;
   logger: SpiderLogDispatcher;
   translation: SchedulingTranslationCoordinator;
   summary: SchedulingSummaryCoordinator;
@@ -43,16 +46,18 @@ export interface SchedulingServiceDependencies {
 }
 
 const TICK_INTERVAL_MS = 60_000; // 每分钟 tick 一次
+class ScheduledDownloadError extends Error {}
 
 export class SchedulingService {
   readonly #repository: SqliteNovelRepository;
   readonly #preferences: SystemPreferencesService;
   readonly #spiderRegistry: Map<string, SpiderRegistryEntry>;
-  readonly #controlCenter: ControlCenterService;
+  readonly #controlCenter: SchedulingServiceDependencies['controlCenter'];
   readonly #logger: SpiderLogDispatcher;
   readonly #translation: SchedulingTranslationCoordinator;
   readonly #summary: SchedulingSummaryCoordinator;
   readonly #processUpdate: SchedulingServiceDependencies["processUpdate"];
+  readonly #notifications: SchedulingServiceDependencies['notifications'];
 
   #timer: ReturnType<typeof setInterval> | null = null;
   #nextTickAt: number | null = null;
@@ -69,6 +74,7 @@ export class SchedulingService {
     this.#translation = deps.translation;
     this.#summary = deps.summary;
     this.#processUpdate = deps.processUpdate;
+    this.#notifications = deps.notifications;
   }
 
   /** 服务启动时调用：恢复状态并启动定时器 */
@@ -183,6 +189,12 @@ export class SchedulingService {
       } catch (error) {
         errored++;
         const message = error instanceof Error ? error.message : String(error);
+        if (!(error instanceof ScheduledDownloadError)) this.#notify({
+          id: `schedule-check:${runId}:${novel.sourceId}:${novel.novelId}`, kind: '更新检查失败',
+          sourceId: novel.sourceId, novelId: novel.novelId, runId,
+          title: this.#repository.getSnapshot(novel.sourceId, novel.novelId)?.metadata.title ?? novel.novelId,
+          summary: message, occurredAt: new Date().toISOString(), error: true,
+        });
         this.#repository.updateScheduledNovelCheckResult(
           novel.sourceId, novel.novelId, 'error', message,
         );
@@ -291,15 +303,26 @@ export class SchedulingService {
       timestamp: new Date().toISOString(),
     });
 
-    await runner.crawlNovel({
-      novelId: novel.novelId,
-      chapterIds: newChapterIds,
-      forceRefetch: false,
-    });
+    let downloadError: Error | undefined;
+    try {
+      await runner.crawlNovel({ novelId: novel.novelId, chapterIds: newChapterIds, forceRefetch: false });
+    } catch (error) { downloadError = new ScheduledDownloadError(error instanceof Error ? error.message : String(error)); }
 
     const downloadedNewChapters = newChapterIds
       .map((chapterId) => this.#repository.getChapter(novel.sourceId, novel.novelId, chapterId))
       .filter((chapter): chapter is StoredChapterRecord => Boolean(chapter && chapter.status === 'downloaded' && chapter.content));
+
+    const failed = newChapters.length - downloadedNewChapters.length;
+    const current = this.#repository.getScheduledNovel(novel.sourceId, novel.novelId);
+    this.#notify({
+      id: `schedule-download:${runId}:${novel.sourceId}:${novel.novelId}`, kind: '定时更新下载结果',
+      sourceId: novel.sourceId, novelId: novel.novelId, runId, title: metadata.title,
+      summary: downloadError?.message ?? (failed ? '本轮新章节下载存在失败，请在书库查看失败章节' : '本轮新章节下载完成'),
+      occurredAt: new Date().toISOString(), error: failed > 0 || Boolean(downloadError),
+      update: { discovered: newChapters.length, downloaded: downloadedNewChapters.length, failed,
+        enabled: Boolean(current?.enabled && current.notifyOnUpdate) },
+    });
+    if (downloadError) throw downloadError;
 
     if (novel.autoSummarize) {
       const readiness = this.#summary.getAutoSummaryReadiness(novel);
@@ -404,6 +427,11 @@ export class SchedulingService {
         timestamp: new Date().toISOString(),
       });
     }
+  }
+
+  #notify(event: NotificationEvent): void {
+    try { this.#notifications?.submit(event); }
+    catch { console.warn('[notification] 调度通知入队失败；继续业务处理'); }
   }
 }
 

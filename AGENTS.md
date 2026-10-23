@@ -160,7 +160,7 @@
 
 ### 4.7 系统偏好：SystemPreferencesService
 
-- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理七类全局配置，均持久化至 `.data/system-preferences.json`：
+- `SystemPreferencesService`（`src/server/core/system-preferences.ts`）管理八类全局配置，均持久化至 `.data/system-preferences.json`：
   - **LLM 提供商配置**（`LlmProviderConfig`）：支持 openai-compatible / anthropic / google-generative-ai / ollama 四种类型，每个提供商可配置多个模型，每个模型可手动或自动映射能力标签（chat / embedding / rerank），并可单独指定**翻译消息格式**（见 4.10）。
   - **模型网关配置**（`LlmModelGatewayConfig`）：为 chat / embedding / rerank 三种能力分别指定默认模型路由，AI 功能（伴读、图谱、翻译）按能力自动选择相应模型。
   - **Neo4j 图数据库连接**（`Neo4jConfig`）：URI、用户名、密码，支持连接验证。
@@ -168,6 +168,7 @@
   - **翻译偏好**（`TranslationPreferencesConfig`）：默认源语言、目标语言、翻译模型池与段落并发数、术语提取模型、翻译交互日志开关、默认导出模式等。
   - **定时更新配置**（`SchedulingConfig`）：启用/禁用开关、三种调度模式（`interval` / `cron` / `weekly`）及对应参数（轮询间隔、Cron 表达式、每周几+时刻）。
   - **OPDS 配置**（`OpdsConfig`）：启用/禁用开关、扫描 Cron 表达式。
+  - **消息通知配置**：单个 AstrBot 渠道与 UMO 目标、总开关及错误通知开关；读取只返回 `keyConfigured`，密钥保留/替换/清除使用共享契约 `contracts/notification.ts`。
 - LLM API Key 以明文存储于 JSON 文件中，注意安全边界。
 - 模型能力检测通过发送轻量 API 请求验证，结果缓存在内存中。
 
@@ -344,6 +345,15 @@
 - 经浏览器传输采集的书籍标记 `novels.capture_transport = 'browser'`，写标记时删除 `scheduled_novels` 行：这类书籍**不得**参与定时更新与远端图片缓存。
 - 注册表：`SpiderRegistryEntry` 需同时声明 `transports`（含 `browser`）与 `createBrowserSpider` 才算支持浏览器传输，`GET /api/control/sources` 会暴露 `transports`；现有 Syosetu / Syosetu18 / Kakuyomu 三者均支持。解析始终留在站点适配器内，`BrowserTransportSpiderAdapter` 只做委托与解析失败等待重试，**不得**在适配器中绕过站点校验（ADR-0003）。
 - 测试：`browser-capture.test.ts`、`browser-transport-spider.test.ts`、`browser-capture-websocket.test.ts`、`routes/control-center.test.ts`（配对一次性、作用域受限、可撤销、Host 校验）、`browser-extension/src/shared/bridge.test.ts`，均不得依赖真实浏览器或站点网络。
+
+### 4.15 消息通知：NotificationService
+
+- 通用事件/结果契约位于 `contracts/notification.ts`，渠道接口位于 `core/notification-channel.ts`，首版 `AstrBotNotificationChannel` 通过实例 OpenAPI 确定消息路径，POST 后不得切换路径重投。
+- `notification_deliveries` 持久化事件去重键与脱敏后的发送记录；后台发送单次 15 秒、最多 3 次，仅明确可重试拒绝允许重试。发送超时及未知结果不自动重投；异常仅落本地日志。
+- 采集告警在任务终态提交；定时更新检查错误按小说/轮次提交；新章下载结果在翻译/总结前提交，错误告警与更新提醒合并。不得从所有错误日志自动派生通知。
+- `scheduled_novels.notify_on_update` 默认为 0，部分更新保留旧值，回收站快照恢复该值。只有全局通知开启、该书更新检查及更新通知均开启才发送更新提醒；独立错误告警不受单书通知开关影响。
+- 设置位于 `notification-panel.tsx`；UMO 查询经后端，输入始终允许手写，连接变化同步失效候选并忽略迟到结果。所有自动测试使用模拟渠道/HTTP，不发送真实外部消息。
+- API、兼容范围和实机验收边界见 `docs/notifications.md`。
 
 ## 5. API 路由速查 (API Routes)
 

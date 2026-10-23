@@ -2,6 +2,7 @@ import { defaultParagraphRevisionState, paragraphRevisionLimit, type ParagraphRe
 import type { RefinedRevisionRecord } from '../contracts/refined-revision';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
+import type { NotificationRecord } from '../contracts/notification';
 
 import type { KnowledgeGraphBuildModelStat } from './library-intelligence-rag';
 import type { LlmModelGatewayRoute } from './system-preferences';
@@ -114,6 +115,7 @@ export interface StoredScheduledNovelRow {
   enabled: boolean;
   autoTranslate: boolean;
   autoSummarize: boolean;
+  notifyOnUpdate: boolean;
   summarizeModel: LlmModelGatewayRoute | null;
   lastCheckedAt: string | null;
   lastCheckResult: 'new_chapters' | 'up_to_date' | 'error' | null;
@@ -2158,7 +2160,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     if (!row?.deleted_at) return false;
     const transaction = this.#database.transaction(() => {
       this.#database.prepare(`UPDATE novels SET deleted_at=NULL, opds_visible=?, deleted_scheduling_json=NULL, deleted_opds_visible=NULL WHERE source_id=? AND novel_id=?`).run(row.deleted_opds_visible ?? 0, sourceId, novelId);
-      if (row.deleted_scheduling_json) { try { const state = JSON.parse(row.deleted_scheduling_json) as StoredScheduledNovelRow; this.upsertScheduledNovel(sourceId, novelId, state.enabled, state.autoTranslate, state.autoSummarize, state.summarizeModel); } catch { /* old snapshot is optional */ } }
+      if (row.deleted_scheduling_json) { try { const state = JSON.parse(row.deleted_scheduling_json) as StoredScheduledNovelRow; this.upsertScheduledNovel(sourceId, novelId, state.enabled, state.autoTranslate, state.autoSummarize, state.summarizeModel, state.notifyOnUpdate ?? false); } catch { /* old snapshot is optional */ } }
     }); transaction(); return true;
   }
 
@@ -3669,10 +3671,43 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   // ── 定时更新: scheduled_novels ──
 
+  /** 事件 ID 是跨重启去重键，发送记录独立于任务历史保留。 */
+  insertNotification(record: NotificationRecord): boolean {
+    return this.#database.prepare('INSERT OR IGNORE INTO notification_deliveries (id, state_json) VALUES (?, ?)')
+      .run(record.id, JSON.stringify(record)).changes > 0;
+  }
+
+  saveNotification(record: NotificationRecord): void {
+    this.#database.prepare('UPDATE notification_deliveries SET state_json = ? WHERE id = ?').run(JSON.stringify(record), record.id);
+  }
+
+  getNotification(id: string): NotificationRecord | null {
+    const row = this.#database.prepare('SELECT state_json FROM notification_deliveries WHERE id = ?').get(id) as { state_json: string } | undefined;
+    return row ? JSON.parse(row.state_json) as NotificationRecord : null;
+  }
+
+  listNotifications(limit = 100): NotificationRecord[] {
+    const rows = this.#database.prepare('SELECT state_json FROM notification_deliveries ORDER BY rowid DESC LIMIT ?').all(Math.max(1, Math.min(1000, limit))) as Array<{ state_json: string }>;
+    return rows.map((row) => JSON.parse(row.state_json) as NotificationRecord);
+  }
+
+  recoverNotifications(): void {
+    const rows = this.#database.prepare("SELECT state_json FROM notification_deliveries WHERE json_extract(state_json, '$.status') IN ('queued', 'sending')").all() as Array<{ state_json: string }>;
+    for (const row of rows) {
+      const record = JSON.parse(row.state_json) as NotificationRecord;
+      const sending = record.status === 'sending';
+      record.status = sending ? 'unknown' : 'failed';
+      record.updatedAt = new Date().toISOString();
+      record.result = { status: record.status, category: 'interrupted', retryable: false,
+        message: sending ? '服务中断，投递结果不确定；未自动重发' : '服务中断，待发送通知未投递' };
+      this.saveNotification(record);
+    }
+  }
+
   getScheduledNovels(): StoredScheduledNovelRow[] {
     const rows = this.#database
       .prepare(
-        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize,
+        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize, sn.notify_on_update,
                 sn.summarize_model_json, sn.last_checked_at, sn.last_check_result, sn.last_check_message,
                 sn.updated_at,
                 EXISTS (
@@ -3686,7 +3721,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
          ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
-      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number; notify_on_update: number;
       summarize_model_json: string | null;
       last_checked_at: string | null; last_check_result: string | null;
       last_check_message: string | null; updated_at: string; has_summary: number;
@@ -3698,6 +3733,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       enabled: row.enabled === 1,
       autoTranslate: row.auto_translate === 1,
       autoSummarize: row.auto_summarize === 1,
+      notifyOnUpdate: row.notify_on_update === 1,
       summarizeModel: parseStoredModelRoute(row.summarize_model_json),
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
@@ -3710,7 +3746,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
   getEnabledScheduledNovels(): StoredScheduledNovelRow[] {
     const rows = this.#database
       .prepare(
-        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize,
+        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize, sn.notify_on_update,
                 sn.summarize_model_json, sn.last_checked_at, sn.last_check_result, sn.last_check_message,
                 sn.updated_at,
                 EXISTS (
@@ -3724,7 +3760,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
          ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
-      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number; notify_on_update: number;
       summarize_model_json: string | null;
       last_checked_at: string | null; last_check_result: string | null;
       last_check_message: string | null; updated_at: string; has_summary: number;
@@ -3736,6 +3772,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       enabled: row.enabled === 1,
       autoTranslate: row.auto_translate === 1,
       autoSummarize: row.auto_summarize === 1,
+      notifyOnUpdate: row.notify_on_update === 1,
       summarizeModel: parseStoredModelRoute(row.summarize_model_json),
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
@@ -3748,7 +3785,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
   getScheduledNovel(sourceId: string, novelId: string): StoredScheduledNovelRow | undefined {
     const row = this.#database
       .prepare(
-        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize,
+        `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize, sn.notify_on_update,
                 sn.summarize_model_json, sn.last_checked_at, sn.last_check_result, sn.last_check_message,
                 sn.updated_at,
                 EXISTS (
@@ -3761,7 +3798,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
            AND COALESCE(n.capture_transport, 'direct') <> 'browser'`,
       )
       .get(sourceId, novelId) as {
-      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number;
+      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number; notify_on_update: number;
       summarize_model_json: string | null;
       last_checked_at: string | null; last_check_result: string | null;
       last_check_message: string | null; updated_at: string; has_summary: number;
@@ -3775,6 +3812,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       enabled: row.enabled === 1,
       autoTranslate: row.auto_translate === 1,
       autoSummarize: row.auto_summarize === 1,
+      notifyOnUpdate: row.notify_on_update === 1,
       summarizeModel: parseStoredModelRoute(row.summarize_model_json),
       lastCheckedAt: row.last_checked_at,
       lastCheckResult: row.last_check_result as StoredScheduledNovelRow['lastCheckResult'],
@@ -3791,6 +3829,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     autoTranslate?: boolean,
     autoSummarize?: boolean,
     summarizeModel?: LlmModelGatewayRoute | null,
+    notifyOnUpdate?: boolean,
   ): void {
     if (sourceId === 'manual') throw new Error('手动小说不能加入定时更新。');
     if (this.isBrowserCapturedNovel(sourceId, novelId)) throw new Error('浏览器采集小说不能加入定时更新。');
@@ -3801,13 +3840,14 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const resolvedSummarizeModel = summarizeModel === undefined ? (existing?.summarizeModel ?? null) : summarizeModel;
     this.#database
       .prepare(
-        `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, auto_summarize, summarize_model_json, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, auto_summarize, summarize_model_json, notify_on_update, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(source_id, novel_id) DO UPDATE SET
            enabled = excluded.enabled,
            auto_translate = excluded.auto_translate,
            auto_summarize = excluded.auto_summarize,
            summarize_model_json = excluded.summarize_model_json,
+           notify_on_update = excluded.notify_on_update,
            updated_at = excluded.updated_at`,
       )
       .run(
@@ -3817,6 +3857,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         resolvedAutoTranslate ? 1 : 0,
         resolvedAutoSummarize ? 1 : 0,
         serializeStoredModelRoute(resolvedSummarizeModel),
+        (notifyOnUpdate ?? existing?.notifyOnUpdate ?? false) ? 1 : 0,
         now,
       );
   }
@@ -3844,19 +3885,21 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     autoTranslate?: boolean;
     autoSummarize?: boolean;
     summarizeModel?: LlmModelGatewayRoute | null;
+    notifyOnUpdate?: boolean;
   }>): void {
     if (entries.some((entry) => entry.sourceId === 'manual' || this.isBrowserCapturedNovel(entry.sourceId, entry.novelId))) {
       throw new Error('手动小说或浏览器采集小说不能加入定时更新。');
     }
     const now = new Date().toISOString();
     const upsert = this.#database.prepare(
-      `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, auto_summarize, summarize_model_json, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO scheduled_novels (source_id, novel_id, enabled, auto_translate, auto_summarize, summarize_model_json, notify_on_update, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_id, novel_id) DO UPDATE SET
          enabled = excluded.enabled,
          auto_translate = excluded.auto_translate,
          auto_summarize = excluded.auto_summarize,
          summarize_model_json = excluded.summarize_model_json,
+           notify_on_update = excluded.notify_on_update,
          updated_at = excluded.updated_at`,
     );
 
@@ -3875,6 +3918,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
           resolvedAutoTranslate ? 1 : 0,
           resolvedAutoSummarize ? 1 : 0,
           serializeStoredModelRoute(resolvedSummarizeModel),
+          (entry.notifyOnUpdate ?? existing?.notifyOnUpdate ?? false) ? 1 : 0,
           now,
         );
       }
@@ -4741,6 +4785,10 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   private migrate(): void {
     this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS notification_deliveries (
+        id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS novels (
         source_id TEXT NOT NULL,
         novel_id TEXT NOT NULL,
@@ -5056,6 +5104,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     this.ensureColumnExists('novel_graph_profiles', 'extraction_concurrency', 'INTEGER NOT NULL DEFAULT 2');
     this.ensureColumnExists('novel_graph_builds', 'model_stats_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumnExists('novel_graph_build_checkpoints', 'status', "TEXT NOT NULL DEFAULT 'success'");
+    this.ensureColumnExists('scheduled_novels', 'notify_on_update', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('scheduled_novels', 'auto_translate', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('scheduled_novels', 'auto_summarize', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('scheduled_novels', 'summarize_model_json', 'TEXT');
