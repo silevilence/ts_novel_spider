@@ -740,6 +740,24 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
   router.get('/novels/:sourceId/:novelId/processing', (request, response) => {
     response.json(service.getLibraryProcessing(request.params.sourceId, request.params.novelId));
   });
+  router.get('/novels/:sourceId/:novelId/translate/term-corrections', (request, response) => {
+    response.json(service.listLibraryTermCorrections(request.params.sourceId, request.params.novelId));
+  });
+  router.post('/novels/:sourceId/:novelId/translate/term-corrections/preview', (request, response) => {
+    try { const body = z.object({ changeId: z.string().min(1), chapterIds: chapterScopeSchema.optional() }).parse(request.body);
+      response.json({ correction: service.previewLibraryTermCorrection(request.params.sourceId, request.params.novelId, body.changeId, body.chapterIds) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法生成预览' }); }
+  });
+  router.post('/novels/:sourceId/:novelId/translate/term-corrections/:id/suggest', async (request, response) => {
+    try { const body = z.object({ targetId: z.string().min(1) }).parse(request.body);
+      response.json({ correction: await service.suggestLibraryTermCorrection(request.params.sourceId, request.params.novelId, request.params.id, body.targetId) }); }
+    catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '无法生成修订建议' }); }
+  });
+  router.post('/novels/:sourceId/:novelId/translate/term-corrections/:id/apply', (request, response) => {
+    try { const body = z.object({ targetIds: z.array(z.string().min(1)).min(1), undo: z.boolean().optional() }).parse(request.body);
+      response.json({ correction: service.applyLibraryTermCorrection(request.params.sourceId, request.params.novelId, request.params.id, body.targetIds, body.undo) }); }
+    catch (error) { response.status(409).json({ message: error instanceof Error ? error.message : '无法应用修正' }); }
+  });
   router.put('/novels/:sourceId/:novelId/processing', (request, response) => {
     try { response.json({ settings: service.updateLibraryProcessing(request.params.sourceId, request.params.novelId, request.body) }); }
     catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '设置无效' }); }

@@ -1,3 +1,4 @@
+import { TermCorrectionModal } from './term-correction-modal';
 import { useState, useEffect, useEffectEvent } from 'react';
 import type { StoredTermExtractionRun, StoredTermTranslationRun, TranslationTermStatus } from '../../server/core/novel-repository';
 import { fetchLibraryTermTranslation, startLibraryTermTranslation, cancelLibraryTermTranslation } from '../services/api';
@@ -213,6 +214,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
           仅已确认术语参与翻译。待确认候选不计入缺译；已排除术语不会因重复提取而重新出现。
         </Text>
 
+        {sourceId && novelId ? <TermCorrectionModal sourceId={sourceId} novelId={novelId} chapters={model.detail?.novel.chapters ?? []} /> : null}
         <Select label="术语状态" value={statusFilter} onChange={(value) => { setStatusFilter(value ?? 'all'); setSelectedTermIds(new Set()); setPage(1); }} data={[{ value: 'all', label: '全部状态' }, ...Object.entries(statusLabels).map(([value, label]) => ({ value, label }))]} />
         <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
           <Stack gap="xs">

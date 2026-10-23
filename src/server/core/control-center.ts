@@ -1,4 +1,5 @@
 import { resolveNovelTarget } from '../contracts/novel-target';
+import { TermCorrectionService } from './term-correction';
 import { LibraryProcessingService } from './library-processing';
 import { LibraryTermExtractionService } from './library-term-extraction';
 import type { TranslationTermStatus } from './novel-repository';
@@ -248,6 +249,7 @@ export class ControlCenterService {
   readonly #libraryIntelligence: LibraryIntelligenceService;
   readonly #translation: TranslationService;
   readonly #processing: LibraryProcessingService;
+  readonly #termCorrection: TermCorrectionService;
   readonly #termExtraction: LibraryTermExtractionService;
   readonly #refinedTranslation: RefinedTranslationService;
   readonly #taskLogDispatcher: SpiderLogDispatcher;
@@ -287,6 +289,7 @@ export class ControlCenterService {
     this.#translation.recoverInterruptedTermTranslations();
     this.#processing = new LibraryProcessingService(this.#repository, this.#termExtraction, this.#translation);
     this.#processing.start();
+    this.#termCorrection = new TermCorrectionService(this.#repository, this.#translation, this.#systemPreferences);
     this.#refinedTranslation = new RefinedTranslationService(this.#repository, this.#systemPreferences, this.#exportEngine);
     this.#refinedTranslation.recoverInterruptedTasks();
     this.#registry = new Map(
@@ -982,6 +985,11 @@ export class ControlCenterService {
   ): TranslationChapterDetail | null {
     return this.#translation.getChapterTranslationDetail(sourceId, novelId, chapterId, sourceLang, targetLang);
   }
+
+  listLibraryTermCorrections(sourceId: string, novelId: string) { return this.#termCorrection.list(sourceId, novelId); }
+  previewLibraryTermCorrection(sourceId: string, novelId: string, changeId: string, chapterIds?: string[]) { return this.#termCorrection.preview(sourceId, novelId, changeId, chapterIds); }
+  suggestLibraryTermCorrection(sourceId: string, novelId: string, id: string, targetId: string) { return this.#termCorrection.suggest(sourceId, novelId, id, targetId); }
+  applyLibraryTermCorrection(sourceId: string, novelId: string, id: string, targetIds: string[], undo = false) { return this.#termCorrection.apply(sourceId, novelId, id, targetIds, undo); }
 
   getLibraryProcessing(sourceId: string, novelId: string) { return { settings: this.#processing.settings(sourceId, novelId), jobs: this.#repository.listProcessingJobs(sourceId, novelId) }; }
   updateLibraryProcessing(sourceId: string, novelId: string, input: unknown) { return this.#processing.configure(sourceId, novelId, input); }

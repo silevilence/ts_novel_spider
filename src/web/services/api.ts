@@ -1368,6 +1368,18 @@ export async function refetchLibraryChapter(sourceId: string, novelId: string, c
 function libraryTranslationUrl(sourceId: string, novelId: string) {
   return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate`;
 }
+export function fetchTermCorrections(sourceId: string, novelId: string): Promise<{ changes: import('../../server/contracts/term-correction').TermChange[]; corrections: import('../../server/contracts/term-correction').TermCorrection[] }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-corrections`);
+}
+export function previewTermCorrection(sourceId: string, novelId: string, changeId: string, chapterIds?: string[]): Promise<{ correction: import('../../server/contracts/term-correction').TermCorrection }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-corrections/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changeId, chapterIds }) });
+}
+export function suggestTermCorrection(sourceId: string, novelId: string, id: string, targetId: string): Promise<{ correction: import('../../server/contracts/term-correction').TermCorrection }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-corrections/${encodeURIComponent(id)}/suggest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetId }) });
+}
+export function applyTermCorrection(sourceId: string, novelId: string, id: string, targetIds: string[], undo = false): Promise<{ correction: import('../../server/contracts/term-correction').TermCorrection }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-corrections/${encodeURIComponent(id)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetIds, undo }) });
+}
 export async function fetchLibraryProcessing(sourceId: string, novelId: string): Promise<{ settings: import('../../server/contracts/library-processing').ProcessingSettings; jobs: import('../../server/contracts/library-processing').ProcessingJob[] }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId).replace(/\/translate$/, '')}/processing`);
 }

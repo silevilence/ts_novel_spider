@@ -2993,32 +2993,77 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       status?: TranslationTermStatus;
     },
   ): StoredTranslationTermRow | null {
-    const timestamp = new Date().toISOString();
-    const existing = this.listTranslationTerms(sourceId, novelId).find((t) => t.id === termId);
-    if (!existing) {
-      return null;
+    return this.#database.transaction(() => {
+      const timestamp = new Date().toISOString();
+      const existing = this.listTranslationTerms(sourceId, novelId).find((t) => t.id === termId);
+      if (!existing) {
+        return null;
+      }
+
+      this.#database
+        .prepare(
+          `
+            UPDATE novel_translation_terms
+            SET
+              target_term = ?, entity_type = ?, note = ?, priority = ?,
+              updated_at = ?, status = ?
+            WHERE term_id = ? AND source_id = ? AND novel_id = ?
+          `,
+        )
+        .run(
+          'targetTerm' in updates ? (updates.targetTerm?.trim() ?? null) : existing.targetTerm,
+          'entityType' in updates ? (updates.entityType?.trim() ?? null) : existing.entityType,
+          'note' in updates ? (updates.note?.trim() ?? null) : existing.note,
+          'priority' in updates ? (updates.priority ?? existing.priority) : existing.priority,
+          timestamp, updates.status ?? existing.status,
+          termId, sourceId, novelId,
+        );
+
+      const result = this.listTranslationTerms(sourceId, novelId).find((t) => t.id === termId) ?? null;
+      if (result && result.targetTerm !== existing.targetTerm) {
+        const change: import('../contracts/term-correction').TermChange = { id: crypto.randomUUID(), sourceId, novelId, termId, sourceTerm: existing.sourceTerm, before: existing.targetTerm, after: result.targetTerm, createdAt: timestamp };
+        this.#database.prepare('INSERT INTO novel_term_changes VALUES (?, ?, ?, ?)').run(change.id, sourceId, novelId, JSON.stringify(change));
+      }
+      return result;
+    })();
+  }
+
+  listTermChanges(sourceId: string, novelId: string): import('../contracts/term-correction').TermChange[] {
+    return (this.#database.prepare('SELECT change_json FROM novel_term_changes WHERE source_id = ? AND novel_id = ? ORDER BY rowid DESC').all(sourceId, novelId) as Array<{ change_json: string }>).map((row) => JSON.parse(row.change_json) as import('../contracts/term-correction').TermChange);
+  }
+
+  listTermCorrections(sourceId: string, novelId: string): import('../contracts/term-correction').TermCorrection[] {
+    return (this.#database.prepare('SELECT correction_json FROM novel_term_corrections WHERE source_id = ? AND novel_id = ? ORDER BY rowid DESC').all(sourceId, novelId) as Array<{ correction_json: string }>).map((row) => JSON.parse(row.correction_json) as import('../contracts/term-correction').TermCorrection);
+  }
+
+  saveTermCorrection(record: import('../contracts/term-correction').TermCorrection): void {
+    this.#database.prepare('INSERT INTO novel_term_corrections VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET correction_json = excluded.correction_json').run(record.id, record.sourceId, record.novelId, JSON.stringify(record));
+  }
+
+  /** Synchronous transaction keeps checked edits and their audit record atomic. */
+  withTranslationTransaction<T>(action: () => T): T { return this.#database.transaction(action)(); }
+
+  writeTermCorrectionTarget(record: import('../contracts/term-correction').TermCorrection, target: import('../contracts/term-correction').TermCorrectionTarget, undo: boolean): void {
+    const value = undo ? target.before : target.suggestion;
+    const expected = undo ? target.suggestion : target.before;
+    const now = new Date().toISOString();
+    const result = target.paragraphIndex === null
+      ? this.#database.prepare('UPDATE chapter_translations SET translated_title = ?, updated_at = ? WHERE source_id = ? AND novel_id = ? AND chapter_id = ? AND source_lang = ? AND target_lang = ? AND translated_title = ?')
+        .run(value, now, record.sourceId, record.novelId, target.chapterId, record.sourceLang, record.targetLang, expected)
+      : this.#database.prepare('UPDATE chapter_translation_paragraphs SET translated_text = ?, updated_at = ? WHERE source_id = ? AND novel_id = ? AND chapter_id = ? AND paragraph_index = ? AND translated_text = ?')
+        .run(value, now, record.sourceId, record.novelId, target.chapterId, target.paragraphIndex, expected);
+    if (result.changes !== 1) throw new Error('译文已变化，未应用过期修正。');
+    // Preserve unrelated successful drafts; the selected draft must agree with the reviewed text.
+    const checkpoint = this.getTranslationBuildCheckpoint(record.sourceId, record.novelId, target.chapterId);
+    if (checkpoint && checkpoint.stage !== 'completed') {
+      const payload = JSON.parse(checkpoint.pipelineStateJson) as { drafts?: Array<{ paragraphIndex: number; sourceText: string; translatedText: string }> };
+      const draft = payload.drafts?.find((item) => item.paragraphIndex === (target.paragraphIndex ?? 0) && item.sourceText === target.sourceText);
+      if (draft) {
+        if (draft.translatedText !== expected) throw new Error('检查点中存在不同的段落译文，请先完成补译后重新预览。');
+        draft.translatedText = value!;
+        this.saveTranslationBuildCheckpoint({ ...checkpoint, sourceId: record.sourceId, novelId: record.novelId, pipelineStateJson: JSON.stringify(payload) });
+      }
     }
-
-    this.#database
-      .prepare(
-        `
-          UPDATE novel_translation_terms
-          SET
-            target_term = ?, entity_type = ?, note = ?, priority = ?,
-            updated_at = ?, status = ?
-          WHERE term_id = ? AND source_id = ? AND novel_id = ?
-        `,
-      )
-      .run(
-        'targetTerm' in updates ? (updates.targetTerm?.trim() ?? null) : existing.targetTerm,
-        'entityType' in updates ? (updates.entityType?.trim() ?? null) : existing.entityType,
-        'note' in updates ? (updates.note?.trim() ?? null) : existing.note,
-        'priority' in updates ? (updates.priority ?? existing.priority) : existing.priority,
-        timestamp, updates.status ?? existing.status,
-        termId, sourceId, novelId,
-      );
-
-    return this.listTranslationTerms(sourceId, novelId).find((t) => t.id === termId) ?? null;
   }
 
   deleteTranslationTerm(sourceId: string, novelId: string, termId: string): boolean {
@@ -4172,7 +4217,8 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   /** 章节入库或翻译完成后调用，bump 内容更新时间 */
   bumpNovelContentUpdatedAt(sourceId: string, novelId: string): void {
-    const now = new Date().toISOString();
+    const state = this.getOpdsNovel(sourceId, novelId);
+    const now = new Date(Math.max(Date.now(), Date.parse(state?.contentUpdatedAt ?? '') + 1 || 0, Date.parse(state?.epubCompiledAt ?? '') + 1 || 0)).toISOString();
     this.#database
       .prepare(
         `UPDATE novels SET content_updated_at = ? WHERE source_id = ? AND novel_id = ?`,
@@ -5073,6 +5119,14 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       );
       CREATE TABLE IF NOT EXISTS novel_processing_jobs (
         id TEXT PRIMARY KEY, source_id TEXT NOT NULL, novel_id TEXT NOT NULL, job_json TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_term_changes (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL, novel_id TEXT NOT NULL, change_json TEXT NOT NULL,
+        FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_term_corrections (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL, novel_id TEXT NOT NULL, correction_json TEXT NOT NULL,
         FOREIGN KEY (source_id, novel_id) REFERENCES novels(source_id, novel_id) ON DELETE CASCADE
       );
       CREATE TABLE IF NOT EXISTS novel_term_chapter_sources (
