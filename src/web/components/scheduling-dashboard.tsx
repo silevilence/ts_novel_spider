@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { LibraryProcessingPanel } from './library-processing-panel';
 import parseExpression from 'cron-parser';
 import {
   Accordion,
@@ -346,6 +347,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                             ) : null}
                           </Group>
                           <Text size="xs" c="dimmed">{novel.sourceId}/{novel.novelId}</Text>
+                          <LibraryProcessingPanel sourceId={novel.sourceId} novelId={novel.novelId} />
                         </Table.Td>
                         <Table.Td>
                           <Checkbox

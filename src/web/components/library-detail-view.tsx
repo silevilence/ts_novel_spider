@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { LibraryProcessingPanel } from './library-processing-panel';
 import { ChapterProcessingActions } from './chapter-processing-actions';
 import {
   Accordion,
@@ -431,6 +432,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
         </SimpleGrid>
 
         <TranslationLaunchPanel model={model} onNotify={onNotify} />
+        <LibraryProcessingPanel sourceId={detail.sourceId} novelId={detail.metadata.novelId} />
 
         {/* ====== 工具面板（别名 + 书签 + 导出 + 图片缓存） ====== */}
         <Paper p="md" radius="lg" data-scrollspy id="detail-tools" data-scrollspy-label="工具" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>

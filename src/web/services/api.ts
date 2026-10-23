@@ -1368,6 +1368,15 @@ export async function refetchLibraryChapter(sourceId: string, novelId: string, c
 function libraryTranslationUrl(sourceId: string, novelId: string) {
   return `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate`;
 }
+export async function fetchLibraryProcessing(sourceId: string, novelId: string): Promise<{ settings: import('../../server/contracts/library-processing').ProcessingSettings; jobs: import('../../server/contracts/library-processing').ProcessingJob[] }> {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId).replace(/\/translate$/, '')}/processing`);
+}
+export async function saveLibraryProcessing(sourceId: string, novelId: string, settings: import('../../server/contracts/library-processing').ProcessingSettings) {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId).replace(/\/translate$/, '')}/processing`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+}
+export async function controlLibraryProcessing(sourceId: string, novelId: string, jobId: string, action: 'pause' | 'resume' | 'cancel') {
+  return requestJson(`${libraryTranslationUrl(sourceId, novelId).replace(/\/translate$/, '')}/processing/${encodeURIComponent(jobId)}/control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+}
 export async function fetchLibraryTermExtraction(sourceId: string, novelId: string): Promise<{ run: StoredTermExtractionRun | null }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-extraction`);
 }
