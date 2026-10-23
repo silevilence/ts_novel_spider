@@ -1029,8 +1029,8 @@ export class ControlCenterService {
     return { imported: result.created, updated: result.updated, skipped: result.skipped };
   }
 
-  startLibraryTranslation(sourceId: string, novelId: string, modelOverride?: string, fromScratch?: boolean): TranslationBuild {
-    return this.#translation.startTranslation(sourceId, novelId, modelOverride, fromScratch);
+  startLibraryTranslation(sourceId: string, novelId: string, modelOverride?: string, fromScratch?: boolean, chapterIds?: string[]): TranslationBuild {
+    return this.#translation.startTranslation(sourceId, novelId, modelOverride, fromScratch, chapterIds);
   }
 
   cancelLibraryTranslation(sourceId: string, novelId: string): TranslationBuild | null {

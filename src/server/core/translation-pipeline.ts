@@ -23,6 +23,8 @@ export interface TranslationPipelineRuntime {
   abortSignal?: AbortSignal;
   /** 显式继续任务时恢复有效草稿；从零重译不得复用检查点。 */
   resumeIncomplete?: boolean;
+  assertCurrent?: (state: TranslationPipelineState) => void;
+  onCheckpointInvalidated?: (chapterId: string) => void;
   /** 每批翻译完成后的回调（段落数，累计总段数） */
   onBatchProgress?: (batchParagraphs: number, totalCompleted: number) => void;
 }
@@ -151,7 +153,10 @@ export function createTranslationPipelineGraph(runtime: TranslationPipelineRunti
       const modelKey = checkpointModelKey();
       const input = runtime.resumeIncomplete
         ? { ...state, draftParagraphs: restoreTranslationDrafts(runtime.repository, state, modelKey) } : state;
+      const saved = runtime.repository.getTranslationBuildCheckpoint(state.sourceId, state.novelId, state.chapterId);
+      if (runtime.resumeIncomplete && saved && saved.stage !== 'completed' && !input.draftParagraphs.length) runtime.onCheckpointInvalidated?.(state.chapterId);
       const result = await translateNode(input, runtime);
+      if (!runtime.abortSignal?.aborted) runtime.assertCurrent?.(state);
       if (result.draftParagraphs) saveTranslationDrafts(runtime.repository, { ...input, ...result }, modelKey);
       return result;
     })
@@ -159,6 +164,7 @@ export function createTranslationPipelineGraph(runtime: TranslationPipelineRunti
       return assembleNode(state);
     })
     .addNode('finalize', async (state: TranslationPipelineState) => {
+      runtime.assertCurrent?.(state);
       const result = await finalizeNode(state, runtime.repository);
       if (!result.errorMessage && !state.pauseRequested) saveTranslationDrafts(runtime.repository, state, checkpointModelKey(), { completed: true });
       return result;

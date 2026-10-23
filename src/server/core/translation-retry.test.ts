@@ -33,6 +33,39 @@ function repository() {
 }
 const input = { sourceId: 'manual', novelId: 'n', chapterId: 'c', sourceLang: 'ja', targetLang: 'zh-CN', glossary };
 
+test('scoped translation excludes metadata and other chapters, rejects conflicts and preserves old text on failure', async (t) => {
+  const db = repository();
+  const preferences = prefs('bilibili-index-translate');
+  preferences.updateTranslationPreferences({ enableLlmInteractionLog: false, translationConcurrency: 1 });
+  const service = new TranslationService(db, preferences);
+  let fail = false;
+  const prompts: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    prompts.push(String(init.body));
+    return completion(fail ? '' : '译文');
+  });
+  const wait = async () => { for (let i = 0; service.isRunning('manual', 'n'); i++) { assert(i < 500); await new Promise((r) => setTimeout(r, 10)); } };
+  try {
+    db.saveChapterIndex('manual', 'n', [{ id: 'c', index: 1, title: '章题', url: '' }, { id: 'd', index: 2, title: '未选择章', url: '' }]);
+    for (const [chapterId, index] of [['c', 1], ['d', 2]] as const) db.saveChapterContent('manual', 'n', { chapterId, index, title: chapterId, url: '', content: chapterId === 'c' ? '正文' : '未选择正文' });
+    assert.throws(() => service.startTranslation('manual', 'n', undefined, false, ['foreign']));
+    const started = service.startTranslation('manual', 'n', undefined, false, ['c']);
+    assert.equal(started.totalUnits, 1);
+    assert.throws(() => service.startTranslation('manual', 'n'), /正在运行/);
+    await wait();
+    assert.equal(db.getChapterTranslation('manual', 'n', 'd', 'ja', 'zh-CN'), null);
+    assert.equal(db.getChapterTranslation('manual', 'n', '__novel_meta__', 'ja', 'zh-CN'), null);
+    assert(prompts.every((prompt) => !prompt.includes('未选择正文')));
+    assert.throws(() => service.startTranslation('manual', 'n', undefined, false, ['c']), /无需继续/);
+    fail = true;
+    service.startTranslation('manual', 'n', undefined, true, ['c']);
+    await wait();
+    assert.equal(db.getChapterTranslation('manual', 'n', 'c', 'ja', 'zh-CN')?.translatedTitle, '译文');
+    assert.equal(db.listChapterTranslationParagraphs('manual', 'n', 'c')[0]?.translatedText, '译文');
+    assert.equal(db.getTranslationBuild('manual', 'n')?.failedChapters, 1);
+  } finally { db.close(); }
+});
+
 for (const format of ['hy-mt2', 'bilibili-index-translate'] as const) {
   for (const echoed of ['glossary', 'background'] as const) for (const batchSize of [1, 2]) {
     test(`${format}: ${echoed} echo retries preserve the other material in batches of ${batchSize}`, async (t) => {

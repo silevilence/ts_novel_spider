@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { extractionOptionsSchema } from '../contracts/chapter-processing';
+import { chapterScopeSchema, extractionOptionsSchema } from '../contracts/chapter-processing';
 
 import {
   type CrawlTaskSnapshot,
@@ -742,7 +742,7 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
       const body = (request.body ?? {}) as Record<string, unknown>;
       const modelOverride = typeof body.modelOverride === 'string' ? body.modelOverride : undefined;
       const fromScratch = body.fromScratch === true;
-      const build = service.startLibraryTranslation(sourceId, novelId, modelOverride, fromScratch);
+      const build = service.startLibraryTranslation(sourceId, novelId, modelOverride, fromScratch, body.chapterIds === undefined ? undefined : chapterScopeSchema.parse(body.chapterIds));
 
       response.status(202).json({
         translation: build,

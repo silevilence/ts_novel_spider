@@ -685,10 +685,12 @@ export async function startLibraryTranslation(
   novelId: string,
   modelOverride?: string,
   fromScratch?: boolean,
+  chapterIds?: string[],
 ): Promise<TranslationBuildPayload> {
   const body: Record<string, unknown> = {};
   if (modelOverride) body.modelOverride = modelOverride;
   if (fromScratch) body.fromScratch = true;
+  if (chapterIds) body.chapterIds = chapterIds;
 
   const response = await fetch(
     `/api/library/novels/${encodeURIComponent(sourceId)}/${encodeURIComponent(novelId)}/translate/start`,
