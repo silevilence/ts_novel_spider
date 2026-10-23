@@ -52,15 +52,6 @@ export function TranslationLaunchPanel({ model, onNotify }: TranslationLaunchPan
     }
   }
 
-  // 轮询翻译构建状态（运行时每3秒更新，驱动进度条）
-  useEffect(() => {
-    if (!model.detail?.novel || !(model.translationBuild?.status === 'running' || model.translationBuild?.status === 'queued')) return;
-    const timer = setInterval(() => {
-      model.syncTranslationBuild?.().catch(() => {});
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [model.translationBuild?.status, model.detail?.novel]);
-
   const build = model.translationBuild;
   const isRunning = build?.status === 'running' || build?.status === 'queued';
   const isPaused = build?.status === 'paused';

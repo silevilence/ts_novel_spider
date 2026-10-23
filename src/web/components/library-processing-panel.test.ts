@@ -11,7 +11,7 @@ test('processing settings default to manual confirmation and save without enabli
     ResizeObserver: window.ResizeObserver, MutationObserver: window.MutationObserver, IS_REACT_ACT_ENVIRONMENT: true,
     fetch: async (url: string, init?: RequestInit) => {
       if (init?.method === 'PUT') requests.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
-      return Response.json(url.endsWith('/terms') ? { terms: [] } : { settings: { extractTerms: false, translate: false, candidatePolicy: 'manual' }, jobs: [] });
+      return Response.json(url.endsWith('/terms') ? { terms: [] } : { settings: { extractTerms: false, translate: false, candidatePolicy: 'manual' }, jobs: [{ id: 'job', status: 'running', stage: 'translation', chapterHashes: { c1: 'hash' }, chapterTitles: ['第一章'], message: '正在翻译本轮章节', progress: { percent: 50, message: '当前单元段落 1/2' } }] });
     },
   };
   const descriptors = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -28,6 +28,10 @@ test('processing settings default to manual confirmation and save without enabli
     await act(async () => root.render(render('c1')));
     await act(async () => button('更新后处理与进度').click());
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    assert.match(window.document.body.textContent, /目标：第一章/);
+    assert.match(window.document.body.textContent, /进行中/);
+    assert.match(window.document.body.textContent, /当前单元段落 1\/2/);
+    assert.equal(window.document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow'), '50');
     await act(async () => window.document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click());
     await act(async () => button('保存后处理设置').click());
     assert.deepEqual(requests[0]?.body, { extractTerms: true, translate: false, candidatePolicy: 'manual' });

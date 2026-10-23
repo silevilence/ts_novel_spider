@@ -86,7 +86,7 @@ export class LibraryProcessingService {
       const run = this.repository.getTermExtractionHistory(sourceId, novelId).find((item) => item.id === job.extractionRunId) ?? activeRun;
       if (run?.id === job.extractionRunId) {
         job.candidateIds = [...new Set([...job.candidateIds, ...run.addedTermIds ?? []])];
-        if (run.status === 'running') { job.message = '正在提取更新章节术语'; return; }
+        if (run.status === 'running') { job.status = 'running'; job.message = '正在提取更新章节术语'; return; }
         if (run.status === 'completed') { job.stage = 'confirmation'; job.extractionRunId = null; return; }
         if (!job.retryRequested && !run.errorMessage?.includes('服务重启')) throw new Error(run.errorMessage ?? '术语提取已取消，请继续');
       }
@@ -109,7 +109,7 @@ export class LibraryProcessingService {
       const missing = this.repository.listMissingTranslationTerms(sourceId, novelId).filter((term) => sources.some((source) => source.termId === term.id && ids.includes(source.chapterId)) || chapters.some((chapter) => `${chapter.title}\n${chapter.content}`.includes(term.sourceTerm)));
       if (!missing.length) { job.stage = 'translation'; job.termRunId = null; return; }
       const run = this.translation.getTermTranslation(sourceId, novelId);
-      if (run?.status === 'running') { job.message = '等待术语翻译完成'; return; }
+      if (run?.status === 'running') { job.status = run.id === job.termRunId ? 'running' : 'waiting'; job.message = run.id === job.termRunId ? '正在翻译本轮术语' : '等待已有术语翻译完成'; return; }
       if (run?.id === job.termRunId && !job.retryRequested && !run.errorMessage?.includes('服务重启')) throw new Error(run.errorMessage ?? '相关术语仍缺译，请重试');
       job.termRunId = this.translation.startTermTranslation(sourceId, novelId, missing.map((term) => term.id)).id;
       job.retryRequested = false;
@@ -117,7 +117,10 @@ export class LibraryProcessingService {
     }
     if (job.stage === 'translation') {
       const build = this.translation.getTranslationBuild(sourceId, novelId);
-      if (this.translation.isRunning(sourceId, novelId)) { job.message = '等待本书翻译完成'; return; }
+      if (this.translation.isRunning(sourceId, novelId)) {
+        const owned = Boolean(job.translationStartedAt && build?.startedAt === job.translationStartedAt);
+        job.status = owned ? 'running' : 'waiting'; job.message = owned ? '正在翻译本轮章节' : '等待本书已有翻译完成'; return;
+      }
       if (job.translationStartedAt && build?.startedAt === job.translationStartedAt) {
         if (build.status === 'completed') { job.stage = 'completed'; job.status = 'completed'; job.message = '本轮更新译文已准备完成'; return; }
         if (build.status === 'failed' && !job.retryRequested) throw new Error(build.errorMessage ?? '章节翻译失败，请继续');

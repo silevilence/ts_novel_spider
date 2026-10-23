@@ -113,6 +113,8 @@ test('pausing an in-flight extraction ignores its late response and resumes with
   try {
     service.configure('test', 'n', { extractTerms: true, translate: false, candidatePolicy: 'automatic' });
     service.enqueue('test', 'n', 'capture', {}, ['a']); service.tick();
+    service.tick();
+    assert.equal(job().status, 'running');
     service.control('test', 'n', job().id, 'pause');
     release('{"terms":[{"sourceTerm":"迟到候选"}]}');
     await new Promise((resolve) => setTimeout(resolve, 10)); service.tick();

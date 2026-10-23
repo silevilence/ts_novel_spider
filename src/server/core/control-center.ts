@@ -991,7 +991,20 @@ export class ControlCenterService {
   suggestLibraryTermCorrection(sourceId: string, novelId: string, id: string, targetId: string) { return this.#termCorrection.suggest(sourceId, novelId, id, targetId); }
   applyLibraryTermCorrection(sourceId: string, novelId: string, id: string, targetIds: string[], undo = false) { return this.#termCorrection.apply(sourceId, novelId, id, targetIds, undo); }
 
-  getLibraryProcessing(sourceId: string, novelId: string) { return { settings: this.#processing.settings(sourceId, novelId), jobs: this.#repository.listProcessingJobs(sourceId, novelId) }; }
+  getLibraryProcessing(sourceId: string, novelId: string) {
+    const chapters = this.#repository.getSnapshot(sourceId, novelId)?.chapters ?? [];
+    const extraction = this.#termExtraction.getRun(sourceId, novelId);
+    const terms = this.#translation.getTermTranslation(sourceId, novelId);
+    const build = this.#translation.getTranslationBuild(sourceId, novelId);
+    const jobs = this.#repository.listProcessingJobs(sourceId, novelId).map((job): import('../contracts/library-processing').ProcessingJobView => {
+      let progress: { percent: number; message: string } | undefined;
+      if (job.stage === 'extraction' && extraction?.id === job.extractionRunId) progress = { percent: extraction.totalBatches ? extraction.completedBatches / extraction.totalBatches * 100 : 0, message: `已完成 ${extraction.completedBatches}/${extraction.totalBatches} 批，新增 ${extraction.added} 条候选` };
+      if (job.stage === 'terms' && terms?.id === job.termRunId) progress = { percent: terms.totalTerms ? terms.processedTerms / terms.totalTerms * 100 : 0, message: `已处理 ${terms.processedTerms}/${terms.totalTerms} 条术语` };
+      if (job.stage === 'translation' && job.translationStartedAt && build?.startedAt === job.translationStartedAt) progress = { percent: build.progressPercent, message: `${build.message}；当前单元段落 ${build.currentChapterTranslatedParagraphs}/${build.currentChapterParagraphs}` };
+      return { ...job, chapterTitles: Object.keys(job.chapterHashes).map((id) => chapters.find((chapter) => chapter.id === id)?.title ?? id), ...(progress ? { progress } : {}) };
+    });
+    return { settings: this.#processing.settings(sourceId, novelId), jobs };
+  }
   updateLibraryProcessing(sourceId: string, novelId: string, input: unknown) { return this.#processing.configure(sourceId, novelId, input); }
   controlLibraryProcessing(sourceId: string, novelId: string, id: string, action: 'pause' | 'resume' | 'cancel') { return this.#processing.control(sourceId, novelId, id, action); }
 

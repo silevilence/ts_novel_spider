@@ -21,6 +21,7 @@ export function TranslationUnitsModal({ sourceId, novelId, status, revision, onS
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const opened = status !== null;
+  const [chapterDialogOpened, setChapterDialogOpened] = useState(false);
 
   useEffect(() => {
     if (!opened) return;
@@ -35,7 +36,7 @@ export function TranslationUnitsModal({ sourceId, novelId, status, revision, onS
   }, [sourceId, novelId, opened, revision, refresh]);
 
   return (
-    <Modal opened={opened} onClose={onClose} title="翻译明细" size="lg">
+    <Modal opened={opened} closeOnEscape={!chapterDialogOpened} onClose={onClose} title="翻译明细" size="lg">
       <Stack gap="sm">
         <Text size="sm" c="dimmed">包含书名与简介、卷标题和已下载章节。待译包括尚未完成及正在翻译的单元；失败章节可能已有部分译文。</Text>
         {error ? <Alert color="red" title="加载失败">{error}<Button variant="subtle" size="compact-xs" onClick={() => setRefresh((value) => value + 1)}>重新加载明细</Button></Alert> : null}
@@ -47,7 +48,7 @@ export function TranslationUnitsModal({ sourceId, novelId, status, revision, onS
             data={(Object.keys(labels) as TranslationStatusFilter[]).map((value) => ({
               value, label: `${labels[value]} ${detail.units.filter((unit) => unit.status === value).length}`,
             }))} />
-          <TranslationUnitList key={status} sourceId={sourceId} novelId={novelId}
+          <TranslationUnitList onChapterOpenedChange={setChapterDialogOpened} key={status} sourceId={sourceId} novelId={novelId}
             units={detail.units.filter((unit) => unit.status === status)} />
         </> : null}
       </Stack>
@@ -55,8 +56,8 @@ export function TranslationUnitsModal({ sourceId, novelId, status, revision, onS
   );
 }
 
-export function TranslationUnitList({ sourceId, novelId, units }: {
-  sourceId: string; novelId: string; units: TranslationUnitStatus[];
+export function TranslationUnitList({ sourceId, novelId, units, onChapterOpenedChange }: {
+  sourceId: string; novelId: string; units: TranslationUnitStatus[]; onChapterOpenedChange?: (opened: boolean) => void;
 }) {
   const [page, setPage] = useState(1);
   const pages = Math.max(1, Math.ceil(units.length / 50));
@@ -77,7 +78,7 @@ export function TranslationUnitList({ sourceId, novelId, units }: {
                   ? <Anchor size="sm" href={buildLibraryReaderPath(sourceId, novelId, unit.id)} style={{ overflowWrap: 'anywhere' }}>{unit.title}</Anchor>
                   : <Text size="sm" style={{ overflowWrap: 'anywhere' }}>{unit.title}</Text>}
               </Group>
-              {unit.kind === 'chapter' ? <ChapterProcessingActions sourceId={sourceId} novelId={novelId} chapterId={unit.id} title={unit.title} /> : null}
+              {unit.kind === 'chapter' ? <ChapterProcessingActions onOpenedChange={onChapterOpenedChange} sourceId={sourceId} novelId={novelId} chapterId={unit.id} title={unit.title} /> : null}
               {unit.status === 'failed' ? <Text size="xs" c="red.3" mt="xs" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
                 {unit.errorMessage || '未保存失败详情，可继续翻译重试。'}
               </Text> : null}

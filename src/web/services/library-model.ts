@@ -1,5 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useEffectEvent, useRef, useState } from 'react';
 
+import { useLibraryTranslationStatus } from './use-library-translation-status';
 import type { AppLocation } from './app-routes';
 import {
   buildLibraryNovelPath,
@@ -186,9 +187,8 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const [readerTypographyBusy, setReaderTypographyBusy] = useState(false);
   const [translationViewMode, setTranslationViewMode] = useState<TranslationExportMode>('original');
   const [translationLanguages, setTranslationLanguages] = useState<LibraryModel['translationLanguages']>(null);
-  const [translationBuild, setTranslationBuild] = useState<TranslationBuildState | null>(null);
+  const { build: translationBuild, setBuild: setTranslationBuild, terms: translationTerms, setTerms: setTranslationTerms } = useLibraryTranslationStatus(location.sourceId, location.novelId);
   const [readerTranslationNotice, setReaderTranslationNotice] = useState<string | null>(null);
-  const [translationTerms, setTranslationTerms] = useState<StoredTranslationTermRow[]>([]);
   const [translationBusy, setTranslationBusy] = useState(false);
   const [mediaBatchBusy, setMediaBatchBusy] = useState(false);
   const [mediaBatchProgress, setMediaBatchProgress] = useState<LibraryModel['mediaBatchProgress']>(null);
@@ -963,13 +963,6 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
       () => setTranslationLanguages(null),
     );
 
-    // 加载翻译构建状态
-    if (location.sourceId && location.novelId) {
-      fetchLibraryTranslationBuild(location.sourceId, location.novelId).then(
-        (payload) => setTranslationBuild(payload.translation as TranslationBuildState),
-        () => setTranslationBuild(null),
-      );
-    }
   }, [location.sourceId, location.novelId]);
 
   // 翻译视图模式切换时，重新加载当前章节（以获取双语/译文内容）

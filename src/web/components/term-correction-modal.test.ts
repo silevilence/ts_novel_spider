@@ -40,6 +40,12 @@ test('correction selection does not write until explicit confirmation and naviga
     assert.equal(writes.length, 0);
     assert.match(window.document.body.textContent, /艾莉丝来了/);
     assert.match(window.document.body.textContent, /爱丽丝来了/);
+    await act(async () => window.document.querySelector<TestHTMLElement>('input[placeholder="全书（含书名、简介和卷标题）"]')!.click());
+    await act(async () => [...window.document.querySelectorAll<TestHTMLElement>('[role="option"]')].find((option) => option.textContent === '第一章')!.click());
+    assert.equal(Boolean(button('确认应用选中修正')), false, 'changing scope must invalidate the old preview and selection');
+    await act(async () => window.document.querySelector<TestHTMLElement>('input[placeholder="查看修改前后文本或撤销"]')!.click());
+    await act(async () => [...window.document.querySelectorAll<TestHTMLElement>('[role="option"]')].find((option) => option.textContent?.includes('艾莉丝 → 爱丽丝'))!.click());
+    await act(async () => button('选择全部可应用建议').click());
     await act(async () => button('确认应用选中修正').click());
     assert.equal(writes.length, 1);
     assert.match(writes[0]!.url, /term-corrections\/preview\/apply$/);

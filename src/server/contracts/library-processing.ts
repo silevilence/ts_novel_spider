@@ -16,3 +16,8 @@ export interface ProcessingJob {
   languageKey?: string;
 }
 export const processingStageLabels: Record<ProcessingStage, string> = { extraction: '提取术语', confirmation: '确认候选', terms: '翻译术语', translation: '翻译章节', completed: '处理完成' };
+export const processingStatusLabels: Record<ProcessingJob['status'], string> = { queued: '排队中', running: '进行中', waiting: '等待中', paused: '已暂停', cancelled: '已取消', failed: '失败', completed: '已完成' };
+export interface ProcessingJobView extends ProcessingJob {
+  chapterTitles?: string[];
+  progress?: { percent: number; message: string };
+}

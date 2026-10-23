@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Badge, Button, Checkbox, Group, Modal, Paper, Select, Stack, Switch, Text } from '@mantine/core';
-import { defaultProcessingSettings, processingStageLabels, type ProcessingJob, type ProcessingSettings } from '../../server/contracts/library-processing';
+import { Alert, Badge, Button, Checkbox, Group, Modal, Paper, Progress, Select, Stack, Switch, Text } from '@mantine/core';
+import { defaultProcessingSettings, processingStageLabels, processingStatusLabels, type ProcessingJobView, type ProcessingSettings } from '../../server/contracts/library-processing';
 import { bulkUpdateLibraryTermStatus, controlLibraryProcessing, fetchLibraryProcessing, fetchLibraryTranslationTerms, saveLibraryProcessing } from '../services/api';
 import type { StoredTranslationTermRow } from '../../server/core/novel-repository';
 
@@ -11,7 +11,7 @@ export function LibraryProcessingPanel({ sourceId, novelId }: { sourceId: string
 function ProcessingPanel({ sourceId, novelId }: { sourceId: string; novelId: string }) {
   const [opened, setOpened] = useState(false);
   const [settings, setSettings] = useState<ProcessingSettings>(defaultProcessingSettings);
-  const [jobs, setJobs] = useState<ProcessingJob[]>([]);
+  const [jobs, setJobs] = useState<ProcessingJobView[]>([]);
   const [terms, setTerms] = useState<StoredTranslationTermRow[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [candidateJob, setCandidateJob] = useState<string | null>(null);
@@ -57,8 +57,9 @@ function ProcessingPanel({ sourceId, novelId }: { sourceId: string; novelId: str
         {error ? <Alert color="red">{error}</Alert> : null}{notice ? <Text role="status">{notice}</Text> : null}
         {jobs.length === 0 ? <Text c="dimmed">尚无后处理记录。采集完成与译文准备完成会分别记录。</Text> : null}
         {[...jobs].reverse().map((job) => <Paper key={job.id} withBorder p="sm"><Stack gap="xs">
-          <Group justify="space-between"><Text fw={600}>{processingStageLabels[job.stage]}</Text><Badge>{job.status}</Badge></Group>
-          <Text size="sm">目标：{Object.keys(job.chapterHashes).join('、')} · {job.message}</Text>
+          <Group justify="space-between"><Text fw={600}>{processingStageLabels[job.stage]}</Text><Badge>{processingStatusLabels[job.status]}</Badge></Group>
+          <Text size="sm">目标：{(job.chapterTitles ?? Object.keys(job.chapterHashes)).join('、')} · {job.message}</Text>
+          {job.progress ? <><Text size="xs" role="status">{job.progress.message}</Text><Progress value={job.progress.percent} aria-label={`${processingStageLabels[job.stage]}进度`} /></> : null}
           <Group gap="xs">
             {job.stage === 'confirmation' ? <Button size="compact-sm" onClick={() => { setCandidateJob(job.id); setSelected([]); }}>查看本轮候选（{job.candidateIds.length}）</Button> : null}
             {['paused', 'failed'].includes(job.status) ? <Button size="compact-sm" disabled={busy} onClick={() => void perform(() => controlLibraryProcessing(sourceId, novelId, job.id, 'resume'), '已请求继续')}>继续 / 重试</Button> : null}
@@ -67,6 +68,7 @@ function ProcessingPanel({ sourceId, novelId }: { sourceId: string; novelId: str
           </Group>
         </Stack></Paper>)}
         {candidateJob ? <Paper withBorder p="sm"><Stack gap="xs"><Text fw={600}>本轮待确认术语</Text>
+          {!candidates.length ? <Text size="sm" c="dimmed">本轮候选已处理，无需再次确认。</Text> : null}
           {candidates.map((term) => <Checkbox key={term.id} label={`${term.sourceTerm} → ${term.targetTerm ?? '待翻译'} · ${term.note ?? ''}`} checked={selected.includes(term.id)} onChange={(event) => setSelected(event.currentTarget.checked ? [...selected, term.id] : selected.filter((id) => id !== term.id))} />)}
           <Button variant="subtle" size="compact-sm" onClick={() => setSelected(candidates.map((term) => term.id))}>选择本轮全部候选</Button>
           <Group>{(['confirmed', 'excluded'] as const).map((status) => <Button key={status} disabled={!selected.length || busy} variant={status === 'excluded' ? 'default' : 'filled'} onClick={() => void perform(async () => { await bulkUpdateLibraryTermStatus(sourceId, novelId, selected, status); if (alive.current) setSelected([]); }, '候选已处理，满足条件后将自动继续。')}>{status === 'confirmed' ? '确认选中' : '排除选中'}</Button>)}</Group>

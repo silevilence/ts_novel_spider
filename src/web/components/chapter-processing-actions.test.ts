@@ -31,6 +31,7 @@ test('chapter actions submit only their chapter and discard the dialog on chapte
     await act(async () => button('开始处理本章').click());
     assert.deepEqual(requests[0]?.body, { chapterIds: ['c1'] });
     assert.match(requests[0]!.url, /translate\/start$/);
+    assert.equal(button('本书任务进行中').disabled, true);
     await act(async () => root.render(render('c2')));
     await act(async () => { await new Promise((r) => setTimeout(r, 220)); });
     assert.equal(window.document.querySelector('[role="dialog"]'), null);

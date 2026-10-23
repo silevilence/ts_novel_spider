@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, Modal, Progress, Select, Stack, Text } from '@mantine/core';
 import { fetchLibraryTermExtraction, fetchLibraryTranslationBuild, fetchLibraryTranslationProfile, startLibraryTermExtraction, startLibraryTranslation } from '../services/api';
 
-interface Props { sourceId: string; novelId: string; chapterId: string; title: string; }
+interface Props { sourceId: string; novelId: string; chapterId: string; title: string; onOpenedChange?: ((opened: boolean) => void) | undefined; }
 
 /** All library entry points share the same chapter scope and confirmation dialog. */
 export function ChapterProcessingActions(props: Props) {
@@ -10,11 +10,13 @@ export function ChapterProcessingActions(props: Props) {
   return <ChapterProcessingDialog key={identity} {...props} />;
 }
 
-function ChapterProcessingDialog({ sourceId, novelId, chapterId, title }: Props) {
+function ChapterProcessingDialog({ sourceId, novelId, chapterId, title, onOpenedChange }: Props) {
   const [opened, setOpened] = useState(false);
+  useEffect(() => { onOpenedChange?.(opened); return () => onOpenedChange?.(false); }, [opened, onOpenedChange]);
   const [operation, setOperation] = useState('retry');
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [taskRunning, setTaskRunning] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState(0);
@@ -42,12 +44,17 @@ function ChapterProcessingDialog({ sourceId, novelId, chapterId, title }: Props)
       try {
         if (operation.startsWith('extract')) {
           const { run } = await fetchLibraryTermExtraction(sourceId, novelId);
-          if (active && run?.chapterIds?.includes(chapterId)) {
-            setMessage(`${run.status}：成功 ${run.completedBatches}/${run.totalBatches} 批，新增 ${run.added} 条。${run.errorMessage ?? run.message ?? ''}`);
+          if (active) setTaskRunning(run?.status === 'running');
+          if (active && run && (!run.chapterIds || run.chapterIds.includes(chapterId))) {
+            const status = { running: '提取中', completed: '提取完成', cancelled: '已取消', failed: '提取失败' }[run.status];
+            setMessage(`${run.chapterIds ? '所选章节' : '全书'} · ${status}：成功 ${run.completedBatches}/${run.totalBatches} 批，新增 ${run.added} 条。${run.errorMessage ?? (run.status === 'running' ? run.message ?? '' : '')}`);
             setProgress(run.totalBatches ? run.completedBatches / run.totalBatches * 100 : 0);
+          } else if (active) {
+            setMessage(run ? '最近一次术语提取运行不包含本章。' : ''); setProgress(0);
           }
         } else {
           const { translation } = await fetchLibraryTranslationBuild(sourceId, novelId);
+          if (active) setTaskRunning(translation?.status === 'running');
           if (active && translation) {
             if (translation.chapterIds && !translation.chapterIds.includes(chapterId)) {
               setMessage('最近一次翻译运行不包含本章。可在翻译面板查看该运行的明细。'); setProgress(0);
@@ -68,7 +75,7 @@ function ChapterProcessingDialog({ sourceId, novelId, chapterId, title }: Props)
     try {
       if (operation.startsWith('extract')) await startLibraryTermExtraction(sourceId, novelId, { chapterIds: [chapterId], fromScratch: operation === 'extract-new' });
       else await startLibraryTranslation(sourceId, novelId, undefined, operation === 'retranslate', [chapterId]);
-      if (alive.current) setMessage('已提交后台任务，关闭窗口后仍会继续。');
+      if (alive.current) { setTaskRunning(true); setMessage('已提交后台任务，关闭窗口后仍会继续。'); }
     } catch (cause) { if (alive.current) setError(cause instanceof Error ? cause.message : '无法启动'); }
     finally { if (alive.current) setBusy(false); }
   }
@@ -85,7 +92,7 @@ function ChapterProcessingDialog({ sourceId, novelId, chapterId, title }: Props)
         {operation === 'retranslate' ? <Checkbox label="确认重新生成本章标题与正文译文" checked={confirmed} onChange={(event) => setConfirmed(event.currentTarget.checked)} /> : null}
         {error ? <Alert color="red" title="操作未完成">{error}</Alert> : null}
         {message ? <><Text size="sm" role="status">{message}</Text><Progress value={progress} aria-label="章节处理进度" /></> : null}
-        <Button loading={busy} disabled={!ready || (operation === 'retranslate' && !confirmed)} onClick={() => void start()}>开始处理本章</Button>
+        <Button loading={busy} disabled={!ready || taskRunning || (operation === 'retranslate' && !confirmed)} onClick={() => void start()}>{taskRunning ? '本书任务进行中' : '开始处理本章'}</Button>
       </Stack>
     </Modal>
   </>;

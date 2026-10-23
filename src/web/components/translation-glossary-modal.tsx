@@ -41,6 +41,7 @@ const ENTITY_TYPE_OPTIONS = [
 ];
 
 export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: TranslationGlossaryModalProps) {
+  const [correctionOpened, setCorrectionOpened] = useState(false);
   const [sourceTerm, setSourceTerm] = useState('');
   const [extractionChapter, setExtractionChapter] = useState<string | null>(null);
   const [extractFromScratch, setExtractFromScratch] = useState(false);
@@ -147,6 +148,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
   return (
     <Modal
       opened={opened}
+      closeOnEscape={!correctionOpened}
       onClose={onClose}
       title={<Text fw={700}>管理术语表</Text>}
       size="lg"
@@ -214,7 +216,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
           仅已确认术语参与翻译。待确认候选不计入缺译；已排除术语不会因重复提取而重新出现。
         </Text>
 
-        {sourceId && novelId ? <TermCorrectionModal sourceId={sourceId} novelId={novelId} chapters={model.detail?.novel.chapters ?? []} /> : null}
+        {sourceId && novelId ? <TermCorrectionModal onOpenedChange={setCorrectionOpened} sourceId={sourceId} novelId={novelId} chapters={model.detail?.novel.chapters ?? []} /> : null}
         <Select label="术语状态" value={statusFilter} onChange={(value) => { setStatusFilter(value ?? 'all'); setSelectedTermIds(new Set()); setPage(1); }} data={[{ value: 'all', label: '全部状态' }, ...Object.entries(statusLabels).map(([value, label]) => ({ value, label }))]} />
         <Paper p="sm" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
           <Stack gap="xs">
@@ -243,7 +245,7 @@ export function TranslationGlossaryModal({ opened, onClose, model, onNotify }: T
             <Text size="xs" c="dimmed">提取在后台分批执行，关闭浮窗后仍会继续。失败批次自动尝试 3 次后跳过，不影响后续批次；继续提取会跳过原文未变的已成功批次。修改模型后请先保存。</Text>
             {loadError ? <Alert color="red">{loadError}</Alert> : null}
             {run ? <Stack gap={4}>
-              <Text size="xs">{run.chapterIds ? `范围：${run.chapterIds.map((id) => model.detail?.novel.chapters.find((chapter) => chapter.id === id)?.title ?? id).join("、")}` : "范围：整本已下载章节"} · {run.message}</Text>
+              <Text size="xs">{run.chapterIds ? `范围：${run.chapterIds.map((id) => model.detail?.novel.chapters.find((chapter) => chapter.id === id)?.title ?? id).join("、")}` : "范围：整本已下载章节"}{run.status === 'running' && run.message ? ` · ${run.message}` : ''}</Text>
               <Text size="sm" fw={600}>{run.status === 'running' ? '正在提取候选' : run.status === 'completed' ? '提取完成' : run.status === 'cancelled' ? '提取已取消' : '提取失败'}</Text>
               <Progress value={run.totalBatches ? (run.completedBatches + (run.failedBatches?.length ?? 0)) / run.totalBatches * 100 : 0} animated={run.status === 'running'} />
               <Text size="xs">成功 {run.completedBatches}/{run.totalBatches} 批 · 失败 {run.failedBatches?.length ?? 0} 批 · 识别 {run.candidates} 条候选 · 累计新增 {run.added} 条</Text>

@@ -16,7 +16,7 @@ interface ReaderFabBarProps {
  */
 export function ReaderFabBar({ items }: ReaderFabBarProps) {
   return (
-    <Affix position={{ bottom: 80, right: 24 }} withinPortal>
+    <Affix zIndex="var(--z-fab)" position={{ bottom: 80, right: 24 }} withinPortal>
       <Stack gap="xs" role="toolbar" aria-label="阅读器快捷操作">
         {items.map((item) => (
           <Tooltip key={item.key} label={item.label} position="left" withArrow>
