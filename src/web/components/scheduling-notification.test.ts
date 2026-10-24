@@ -28,11 +28,15 @@ test('book notification status reflects configuration, unsaved preferences and r
         return Response.json(scheduling);
       }
       if (url === '/api/library/scheduling/novels') {
-        if (init?.method === 'PUT') novel = { ...novel, ...(JSON.parse(String(init.body)) as { novels: SchedulingNovelEntry[] }).novels[0] };
+        if (init?.method === 'PUT') {
+          const entry = (JSON.parse(String(init.body)) as { novels: SchedulingNovelEntry[] }).novels[0]!;
+          assert.equal('autoTranslate' in entry, false, 'book saves cannot restore a stale legacy translation switch');
+          novel = { ...novel, ...entry };
+        }
         return Response.json({ novels: [novel] });
       }
       if (url.startsWith('/api/control/scheduling/runs')) return Response.json({ runs: [] });
-      if (url.endsWith('/llm-providers')) return Response.json({ providers: [] });
+      if (url.endsWith('/llm-providers')) return Response.json({ providers: [{ id: 'provider', label: '提供商', enabled: true, models: [{ enabled: true, modelId: 'summary:latest', label: '长名称总结模型', resolvedCapabilities: ['chat'] }] }] });
       throw new Error(`Unexpected local request: ${url}`);
     },
   };
@@ -87,6 +91,15 @@ test('book notification status reflects configuration, unsaved preferences and r
     await act(async () => pendingNotification!(Response.json({ ...notifications, enabled: false })));
     assert.match(text(), /全局通知已启用/, 'late response from an older refresh is ignored');
     assert.equal(toggle().checked, false);
+    await act(async () => window.document.querySelector<HTMLInputElement>('input[aria-label="测试书 自动总结"]')!.click());
+    const modelSelect = window.document.querySelector<HTMLInputElement>('input[aria-label="测试书 单书总结模型"]')!;
+    await act(async () => modelSelect.click());
+    const list = window.document.getElementById(modelSelect.getAttribute('aria-controls')!)!;
+    const option = [...list.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((item) => item.textContent?.includes('长名称总结模型'))!;
+    assert.ok(option, 'the summary model is selectable by its full name');
+    await act(async () => option.click());
+    await act(async () => button('保存书单设置').click());
+    assert.deepEqual(novel.summarizeModel, { providerId: 'provider', modelId: 'summary:latest' });
   } finally {
     await act(async () => root.unmount()); await window.happyDOM.close();
     for (const [key, descriptor] of descriptors) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }

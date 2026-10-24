@@ -6,13 +6,11 @@ import {
   Alert,
   Badge,
   Button,
-  Checkbox,
   Chip,
   Group,
   Input,
   NumberInput,
   Paper,
-  ScrollArea,
   SegmentedControl,
   Select,
   Stack,
@@ -45,7 +43,6 @@ interface SchedulingDashboardProps {
 
 interface SchedulingNovelDraft {
   enabled: boolean;
-  autoTranslate: boolean;
   autoSummarize: boolean;
   notifyOnUpdate: boolean;
   summarizeModel: { providerId: string; modelId: string } | null;
@@ -79,7 +76,6 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
       buildNovelKey(novel),
       {
         enabled: novel.enabled,
-        autoTranslate: novel.autoTranslate,
         autoSummarize: novel.autoSummarize,
         notifyOnUpdate: novel.notifyOnUpdate,
         summarizeModel: novel.summarizeModel,
@@ -105,7 +101,6 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
       const entries = model.novels.map((novel) => {
         const draft = drafts.get(buildNovelKey(novel)) ?? {
           enabled: novel.enabled,
-          autoTranslate: novel.autoTranslate,
           autoSummarize: novel.autoSummarize,
           notifyOnUpdate: novel.notifyOnUpdate,
           summarizeModel: novel.summarizeModel,
@@ -115,7 +110,6 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
           sourceId: novel.sourceId,
           novelId: novel.novelId,
           enabled: draft.enabled,
-          autoTranslate: draft.autoTranslate,
           autoSummarize: draft.autoSummarize,
           notifyOnUpdate: draft.notifyOnUpdate,
           summarizeModel: draft.summarizeModel,
@@ -164,9 +158,15 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
     : !notificationConfig.enabled ? '全局消息通知已关闭'
     : '全局通知已启用';
   const notificationReady = !notificationLoading && !notificationError && Boolean(notificationConfig?.enabled && notificationConfig.keyConfigured && notificationConfig.baseUrl && notificationConfig.target.umo);
+  const unsavedCount = model.novels.filter((novel) => {
+    const draft = drafts.get(buildNovelKey(novel));
+    return draft && (draft.enabled !== novel.enabled || draft.notifyOnUpdate !== novel.notifyOnUpdate
+      || draft.autoSummarize !== novel.autoSummarize
+      || formatModelRouteValue(draft.summarizeModel) !== formatModelRouteValue(novel.summarizeModel));
+  }).length;
 
   return (
-    <Stack gap="lg" p="lg">
+    <Stack gap="lg" p={{ base: 'xs', sm: 'lg' }} className="scheduling-dashboard">
       <Paper
         p="lg"
         radius="lg"
@@ -196,6 +196,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
               <Text size="xs" c="dimmed">开启后，后台会按你设定的节奏自动巡检书库里的作品。</Text>
             </Stack>
             <Switch
+              aria-label="启用定时更新"
               checked={config.enabled}
               onChange={(event) => {
                 void updateConfig({ enabled: event.currentTarget.checked });
@@ -323,7 +324,8 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
           <Group justify="space-between" align="flex-start">
             <Stack gap={2}>
               <Text size="sm" fw={600}>书单管理</Text>
-              <Text size="xs" c="dimmed">支持批量开启追更，也可以逐本控制更新通知、自动翻译、自动总结和单书总结模型覆盖。</Text>
+              <Text size="sm" c="dimmed">管理追更、通知和更新总结。自动翻译与术语提取统一在「更新后处理与进度」中设置。</Text>
+              {unsavedCount > 0 ? <Text size="sm" c="orange" role="status">{unsavedCount} 本书有未保存的修改</Text> : null}
             </Stack>
             <Group gap="xs">
               <Button variant="default" size="compact-sm" onClick={() => applyBatchEnabled(setDrafts, model.novels, true)}>全部开启</Button>
@@ -340,12 +342,12 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
             </Group>
           </Group>
 
-          <Alert color={notificationReady ? 'blue' : 'yellow'} title={notificationStatus} role="status">
+          <Alert color={notificationReady ? 'gray' : 'yellow'} title={notificationStatus} role="status">
             <Stack gap="xs">
               <Text size="sm" style={{ overflowWrap: 'anywhere' }}>{notificationReady
                 ? `接收目标：${notificationConfig?.target.umo}。接口接受后仍需在接收端确认。`
                 : '可先保存按书提醒偏好；全局通知启用且连接与接收目标配置完整后，后续更新才会发送通知。'}</Text>
-              <Text size="sm">单书开关修改后需保存书单设置。定时更新总开关关闭时，不会自动巡检。</Text>
+              <Text size="xs">修改下方开关与模型后，点击「保存书单设置」。更新后处理在弹窗中单独保存。</Text>
               <Group gap="xs">
                 <Button component="a" href="/settings#notifications" target="_blank" rel="noopener noreferrer" size="xs" variant="light">配置全局通知（新标签页）</Button>
                 <Button size="xs" variant="subtle" loading={notificationLoading} onClick={() => setNotificationRefresh((value) => value + 1)}>刷新通知状态</Button>
@@ -356,56 +358,52 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
           {model.novels.length === 0 ? (
             <Text size="sm" c="dimmed">书库里还没有作品，先去采集工作台或本地书库添加作品。</Text>
           ) : (
-            <ScrollArea>
-              <Table striped highlightOnHover withTableBorder withColumnBorders>
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th>作品</Table.Th>
-                    <Table.Th>定时更新</Table.Th>
-                    <Table.Th>更新时通知</Table.Th>
-                    <Table.Th>自动翻译</Table.Th>
-                    <Table.Th>自动总结</Table.Th>
-                    <Table.Th>单书总结模型</Table.Th>
-                    <Table.Th>上次检查</Table.Th>
-                    <Table.Th>结果</Table.Th>
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {model.novels.map((novel) => {
-                    const key = buildNovelKey(novel);
-                    const draft = drafts.get(key) ?? {
-                      enabled: novel.enabled,
-                      autoTranslate: novel.autoTranslate,
-                      autoSummarize: novel.autoSummarize,
-                      notifyOnUpdate: novel.notifyOnUpdate,
-                      summarizeModel: novel.summarizeModel,
-                    };
+            <Table className="scheduling-books" verticalSpacing="md" horizontalSpacing="md">
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>作品</Table.Th>
+                  <Table.Th>追更与通知</Table.Th>
+                  <Table.Th>更新总结</Table.Th>
+                  <Table.Th>最近检查</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {model.novels.map((novel) => {
+                  const key = buildNovelKey(novel);
+                  const draft = drafts.get(key) ?? {
+                    enabled: novel.enabled,
+                    autoSummarize: novel.autoSummarize,
+                    notifyOnUpdate: novel.notifyOnUpdate,
+                    summarizeModel: novel.summarizeModel,
+                  };
 
-                    return (
-                      <Table.Tr key={key}>
-                        <Table.Td>
-                          <Group gap={6} wrap="nowrap">
-                            <Text size="sm" fw={500}>{novel.title}</Text>
-                            {novel.hasSummary ? (
-                              <Badge variant="light" color="blue" leftSection={<IconFileText size={12} />}>
-                                有摘要
-                              </Badge>
-                            ) : null}
-                          </Group>
+                  return (
+                    <Table.Tr key={key}>
+                      <Table.Td>
+                        <Stack gap="xs">
+                          <Text size="sm" fw={500}>{novel.title}</Text>
                           <Text size="xs" c="dimmed">{novel.sourceId}/{novel.novelId}</Text>
-                          <LibraryProcessingPanel sourceId={novel.sourceId} novelId={novel.novelId} />
-                        </Table.Td>
-                        <Table.Td>
-                          <Checkbox
+                          {novel.hasSummary ? (
+                            <Badge variant="light" color="blue" leftSection={<IconFileText size={12} />}>
+                              有摘要
+                            </Badge>
+                          ) : null}
+                          <Group><LibraryProcessingPanel sourceId={novel.sourceId} novelId={novel.novelId} /></Group>
+                        </Stack>
+                      </Table.Td>
+                      <Table.Td>
+                        <Stack gap="sm">
+                          <Switch
+                            label="定时更新"
+                            aria-label={`${novel.title} 定时更新`}
                             checked={draft.enabled}
                             onChange={(event) => {
                               updateDraft(setDrafts, key, { enabled: event.currentTarget.checked });
                             }}
                           />
-                        </Table.Td>
-                        <Table.Td>
                           <Switch
                             size="sm"
+                            label="更新时通知"
                             aria-label={`${novel.title} 更新时通知`}
                             checked={draft.notifyOnUpdate}
                             disabled={!draft.enabled}
@@ -418,31 +416,26 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                             : !notificationReady ? notificationStatus
                             : !config.enabled ? '等待开启定时更新总开关'
                             : '已启用，下载有新章节时通知'}</Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Switch
-                            size="sm"
-                            checked={draft.autoTranslate}
-                            disabled={!draft.enabled}
-                            onChange={(event) => {
-                              updateDraft(setDrafts, key, { autoTranslate: event.currentTarget.checked });
-                            }}
-                          />
-                        </Table.Td>
-                        <Table.Td>
+                        </Stack>
+                      </Table.Td>
+                      <Table.Td>
+                        <Stack gap="sm">
                           <Switch
                             size="sm"
                             label="自动总结"
+                            aria-label={`${novel.title} 自动总结`}
                             checked={draft.autoSummarize}
                             disabled={!draft.enabled}
                             onChange={(event) => {
                               updateDraft(setDrafts, key, { autoSummarize: event.currentTarget.checked });
                             }}
                           />
-                        </Table.Td>
-                        <Table.Td>
                           <Select
-                            placeholder="沿用默认"
+                            label="单书总结模型"
+                            aria-label={`${novel.title} 单书总结模型`}
+                            placeholder="沿用默认总结模型"
+                            comboboxProps={{ width: 400, position: 'bottom-start', withinPortal: true }}
+                            styles={{ dropdown: { maxWidth: 'calc(100vw - 32px)' }, option: { overflowWrap: 'anywhere' } }}
                             data={model.summaryModelOptions}
                             value={formatModelRouteValue(draft.summarizeModel)}
                             searchable
@@ -453,22 +446,24 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                               updateDraft(setDrafts, key, { summarizeModel: parseModelRouteValue(value) });
                             }}
                           />
-                        </Table.Td>
-                        <Table.Td>
-                          <Text size="sm">{novel.lastCheckedAt ? formatDateTime(novel.lastCheckedAt) : '—'}</Text>
-                        </Table.Td>
-                        <Table.Td>
+                        </Stack>
+                      </Table.Td>
+                      <Table.Td>
+                        <Stack gap="xs" align="flex-start">
                           <Badge variant="light" color={resultBadgeColor(novel.lastCheckResult)}>
                             {resultBadgeLabel(novel.lastCheckResult)}
                           </Badge>
-                          <Text size="xs" c="dimmed" mt={4}>{novel.lastCheckMessage ?? '暂无检查消息'}</Text>
-                        </Table.Td>
-                      </Table.Tr>
-                    );
-                  })}
-                </Table.Tbody>
-              </Table>
-            </ScrollArea>
+                          <Text size="xs" c="dimmed">{novel.lastCheckedAt ? formatDateTime(novel.lastCheckedAt) : '尚无检查时间'}</Text>
+                          {novel.lastCheckMessage && novel.lastCheckMessage !== resultBadgeLabel(novel.lastCheckResult) ? (
+                            <Text size="sm">{novel.lastCheckMessage}</Text>
+                          ) : null}
+                        </Stack>
+                      </Table.Td>
+                    </Table.Tr>
+                  );
+                })}
+              </Table.Tbody>
+            </Table>
           )}
         </Stack>
       </Paper>
@@ -478,7 +473,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
           <Group justify="space-between" align="flex-start">
             <Stack gap={2}>
               <Text size="sm" fw={600}>运行记录</Text>
-              <Text size="xs" c="dimmed">每一轮定时更新都会保留检查概览；展开后可以查看小说级的更新总结。</Text>
+              <Text size="sm" c="dimmed">展开查看本轮检查的作品、新章节和下载结果；AI 总结单独展示。</Text>
             </Stack>
             {model.hasMoreRuns ? (
               <Button variant="default" size="compact-sm" onClick={() => void model.loadMoreRuns()}>
@@ -494,7 +489,7 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
               {model.runs.map((run) => (
                 <Accordion.Item key={run.id} value={run.id}>
                   <Accordion.Control>
-                    <Group justify="space-between" wrap="nowrap" align="flex-start">
+                    <Group justify="space-between" wrap="wrap" align="flex-start">
                       <Stack gap={2}>
                         <Text size="sm" fw={600}>{formatDateTime(run.startedAt)}</Text>
                         <Text size="xs" c="dimmed">
@@ -505,10 +500,10 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                         <Badge variant="light" color={run.status === 'completed' ? 'green' : 'yellow'}>
                           {run.status === 'completed' ? '已完成' : '进行中'}
                         </Badge>
-                        <Badge variant="light" color="gray">扫描 {run.totalChecked}</Badge>
-                        <Badge variant="light" color="blue">更新 {run.newChaptersFound}</Badge>
-                        <Badge variant="light" color="gray">跳过 {run.skipped}</Badge>
-                        <Badge variant="light" color="red">出错 {run.errored}</Badge>
+                        <Badge variant="light" color="gray">检查成功 {run.totalChecked} 本</Badge>
+                        <Badge variant="light" color="blue">发现更新 {run.newChaptersFound} 本</Badge>
+                        <Badge variant="light" color="gray">跳过 {run.skipped} 本</Badge>
+                        <Badge variant="light" color="red">出错 {run.errored} 本</Badge>
                       </Group>
                     </Group>
                   </Accordion.Control>
@@ -518,17 +513,18 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
                         开始：{formatDateTime(run.startedAt)}
                         {run.completedAt ? ` · 完成：${formatDateTime(run.completedAt)}` : ''}
                       </Text>
+                      <SchedulingRunDetails run={run} />
                       {run.summaries.length === 0 ? (
-                        <Text size="sm" c="dimmed">本轮没有保存章节总结</Text>
+                        <Text size="sm" c="dimmed">本轮未生成 AI 总结，不影响更新与下载记录。</Text>
                       ) : (
                         run.summaries.map((summary) => (
                           <Paper key={summary.id} p="sm" radius="md" withBorder style={{ background: 'rgba(31,21,16,0.52)' }}>
-                            <Group justify="space-between" align="flex-start" wrap="nowrap">
+                            <Group justify="space-between" align="flex-start">
                               <Stack gap={2}>
                                 <Text size="sm" fw={600}>{findNovelTitle(model.novels, summary.sourceId, summary.novelId)}</Text>
                                 <Text size="xs" c="dimmed">更新章节：{summary.chapterIds.join('、')}</Text>
                               </Stack>
-                              <Badge variant="light" color="blue">{summary.modelId}</Badge>
+                              <Text size="xs" c="dimmed" style={{ overflowWrap: 'anywhere' }}>总结模型：{summary.modelId}</Text>
                             </Group>
                             <Text size="sm" mt="xs" style={{ whiteSpace: 'pre-wrap' }}>{summary.summary}</Text>
                           </Paper>
@@ -546,6 +542,40 @@ export function SchedulingDashboard({ onNotify }: SchedulingDashboardProps) {
   );
 }
 
+export function SchedulingRunDetails({ run }: { run: SchedulingRun }) {
+  if (!run.results) {
+    return <Text size="sm" c="dimmed">旧版运行记录未保存逐书明细，无法还原本轮更新的作品；升级后的新轮次会记录书名和章节。</Text>;
+  }
+  if (run.results.length === 0) {
+    return <Text size="sm" c="dimmed">{run.status === 'running' ? '正在检查，尚无已完成的作品明细。' : '本轮没有作品检查明细。'}</Text>;
+  }
+  const priority = { new_chapters: 0, error: 1, skipped: 2, up_to_date: 3 };
+  return <Stack gap="sm">
+    <Text size="sm" fw={600}>逐书检查明细</Text>
+    {[...run.results].sort((a, b) => priority[a.result] - priority[b.result]).map((result) => (
+      <Paper key={`${result.sourceId}:${result.novelId}`} withBorder p="sm" radius="sm">
+        <Stack gap="xs">
+          <Group justify="space-between" align="flex-start">
+            <Text size="sm" fw={600} style={{ flex: '1 1 240px', overflowWrap: 'anywhere' }}>{result.title}</Text>
+            <Badge variant="light" color={result.result === 'skipped' ? 'gray' : resultBadgeColor(result.result)}>
+              {result.result === 'skipped' ? '已跳过' : resultBadgeLabel(result.result)}
+            </Badge>
+          </Group>
+          <Text size="xs" c="dimmed">{result.sourceId}/{result.novelId} · {formatDateTime(result.checkedAt)}</Text>
+          <Text size="sm">{result.message}</Text>
+          {result.chapters.length > 0 ? (
+            <Stack gap={4}>
+              {result.chapters.map((chapter) => (
+                <Text size="sm" key={chapter.id}>{chapter.title}（{chapter.id}） · {chapter.downloaded ? '已下载' : '未下载成功'}</Text>
+              ))}
+            </Stack>
+          ) : null}
+        </Stack>
+      </Paper>
+    ))}
+  </Stack>;
+}
+
 function buildNovelKey(novel: Pick<SchedulingNovelEntry, 'sourceId' | 'novelId'>): string {
   return `${novel.sourceId}:${novel.novelId}`;
 }
@@ -559,7 +589,6 @@ function updateDraft(
     const next = new Map(current);
     const previous = next.get(key) ?? {
       enabled: false,
-      autoTranslate: false,
       autoSummarize: false,
       notifyOnUpdate: false,
       summarizeModel: null,
@@ -580,7 +609,6 @@ function applyBatchEnabled(
       const key = buildNovelKey(novel);
       const previous = next.get(key) ?? {
         enabled: novel.enabled,
-        autoTranslate: novel.autoTranslate,
         autoSummarize: novel.autoSummarize,
         notifyOnUpdate: novel.notifyOnUpdate,
         summarizeModel: novel.summarizeModel,
@@ -596,7 +624,10 @@ function parseModelRouteValue(value: string | null): { providerId: string; model
     return null;
   }
 
-  const [providerId, modelId] = value.split(':');
+  const separator = value.indexOf(':');
+  if (separator < 0) return null;
+  const providerId = value.slice(0, separator);
+  const modelId = value.slice(separator + 1);
   if (!providerId || !modelId) {
     return null;
   }

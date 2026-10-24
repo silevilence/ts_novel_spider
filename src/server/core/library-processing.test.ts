@@ -31,6 +31,29 @@ async function until(predicate: () => boolean, tick: () => void = () => {}) {
   assert.fail('processing timeout');
 }
 
+test('unified settings expose legacy translation without changing execution, and saving off retires the fallback', () => {
+  const f = fixture();
+  try {
+    f.repository.upsertScheduledNovel('test', 'n', true, true, true, null, true);
+    assert.deepEqual(f.service.settingsForEditing('test', 'n'), {
+      settings: { extractTerms: false, translate: true, candidatePolicy: 'manual' }, legacyAutoTranslate: true,
+    });
+    assert.equal(f.service.settings('test', 'n').translate, false, 'reading does not broaden legacy automation to manual captures');
+    assert.equal(f.service.enqueue('test', 'n', 'capture', {}, ['a']), false);
+    f.service.configure('test', 'n', { extractTerms: false, translate: false, candidatePolicy: 'manual' });
+    const scheduled = f.repository.getScheduledNovel('test', 'n')!;
+    assert.equal(scheduled.autoTranslate, false);
+    assert.equal(scheduled.enabled, true);
+    assert.equal(scheduled.autoSummarize, true);
+    assert.equal(scheduled.notifyOnUpdate, true);
+    assert.equal(f.service.settingsForEditing('test', 'n').legacyAutoTranslate, false);
+    assert.equal(f.service.enqueue('test', 'n', 'scheduled', {}, ['a']), false);
+    f.service.configure('test', 'n', { extractTerms: false, translate: true, candidatePolicy: 'manual' });
+    assert.equal(f.service.enqueue('test', 'n', 'scheduled', {}, ['a']), true);
+    assert.equal(f.repository.listProcessingJobs('test', 'n').length, 1);
+  } finally { f.cleanup(); }
+});
+
 for (const policy of ['manual', 'automatic'] as const) test(`update pipeline ${policy} confirms only new candidates and translates only its scope`, async (t) => {
   const f = fixture(); const { repository, service } = f;
   const calls: string[] = [];

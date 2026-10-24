@@ -145,6 +145,7 @@ export interface StoredScheduledCheckRunRow {
   newChaptersFound: number;
   skipped: number;
   errored: number;
+  results: import('../contracts/scheduling-run').SchedulingNovelResult[] | null;
 }
 
 export interface StoredOpdsNovelRow {
@@ -2880,7 +2881,11 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   saveProcessingSettings(sourceId: string, novelId: string, settings: import('../contracts/library-processing').ProcessingSettings): void {
     this.assertNovelExists(sourceId, novelId);
-    this.#database.prepare('INSERT INTO novel_processing_settings VALUES (?, ?, ?) ON CONFLICT(source_id, novel_id) DO UPDATE SET config_json = excluded.config_json').run(sourceId, novelId, JSON.stringify(settings));
+    this.#database.transaction(() => {
+      this.#database.prepare('INSERT INTO novel_processing_settings VALUES (?, ?, ?) ON CONFLICT(source_id, novel_id) DO UPDATE SET config_json = excluded.config_json').run(sourceId, novelId, JSON.stringify(settings));
+      // Explicitly saving the unified settings retires the legacy fallback, including when turned off.
+      this.#database.prepare('UPDATE scheduled_novels SET auto_translate = 0 WHERE source_id = ? AND novel_id = ?').run(sourceId, novelId);
+    })();
   }
 
   listProcessingJobs(sourceId?: string, novelId?: string): import('../contracts/library-processing').ProcessingJob[] {
@@ -3743,12 +3748,12 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     }));
   }
 
-  getEnabledScheduledNovels(): StoredScheduledNovelRow[] {
+  getEnabledScheduledNovels(): Array<StoredScheduledNovelRow & { title: string }> {
     const rows = this.#database
       .prepare(
         `SELECT sn.source_id, sn.novel_id, sn.enabled, sn.auto_translate, sn.auto_summarize, sn.notify_on_update,
                 sn.summarize_model_json, sn.last_checked_at, sn.last_check_result, sn.last_check_message,
-                sn.updated_at,
+                sn.updated_at, n.title,
                 EXISTS (
                   SELECT 1 FROM scheduled_summaries ss
                   WHERE ss.source_id = sn.source_id AND ss.novel_id = sn.novel_id
@@ -3760,7 +3765,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
          ORDER BY sn.source_id, sn.novel_id`,
       )
       .all() as Array<{
-      source_id: string; novel_id: string; enabled: number; auto_translate: number; auto_summarize: number; notify_on_update: number;
+      source_id: string; novel_id: string; title: string; enabled: number; auto_translate: number; auto_summarize: number; notify_on_update: number;
       summarize_model_json: string | null;
       last_checked_at: string | null; last_check_result: string | null;
       last_check_message: string | null; updated_at: string; has_summary: number;
@@ -3769,6 +3774,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     return rows.map((row) => ({
       sourceId: row.source_id,
       novelId: row.novel_id,
+      title: row.title,
       enabled: row.enabled === 1,
       autoTranslate: row.auto_translate === 1,
       autoSummarize: row.auto_summarize === 1,
@@ -3941,8 +3947,8 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
   createScheduledCheckRun(id: string, startedAt: string): void {
     this.#database
       .prepare(
-        `INSERT INTO scheduled_check_runs (id, started_at, status)
-         VALUES (?, ?, 'running')`,
+        `INSERT INTO scheduled_check_runs (id, started_at, status, results_json)
+         VALUES (?, ?, 'running', '[]')`,
       )
       .run(id, startedAt);
   }
@@ -3969,7 +3975,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const rows = this.#database
       .prepare(
         `SELECT id, started_at, completed_at, status,
-                total_checked, new_chapters_found, skipped, errored
+                total_checked, new_chapters_found, skipped, errored, results_json
          FROM scheduled_check_runs
          ORDER BY started_at DESC
          LIMIT ? OFFSET ?`,
@@ -3977,7 +3983,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .all(limit, offset) as Array<{
         id: string; started_at: string; completed_at: string | null;
         status: string; total_checked: number; new_chapters_found: number;
-        skipped: number; errored: number;
+        skipped: number; errored: number; results_json: string | null;
       }>;
 
     return rows.map((row) => ({
@@ -3989,7 +3995,19 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       newChaptersFound: row.new_chapters_found,
       skipped: row.skipped,
       errored: row.errored,
+      results: row.results_json === null ? null : JSON.parse(row.results_json) as import('../contracts/scheduling-run').SchedulingNovelResult[],
     }));
+  }
+
+  /** Persist each book and its counts atomically, including for interrupted rounds. */
+  appendScheduledCheckResult(runId: string, result: import('../contracts/scheduling-run').SchedulingNovelResult): void {
+    this.#database.prepare(`UPDATE scheduled_check_runs
+      SET results_json = json_insert(COALESCE(results_json, '[]'), '$[#]', json(?)),
+          total_checked = total_checked + ?, new_chapters_found = new_chapters_found + ?,
+          skipped = skipped + ?, errored = errored + ?
+      WHERE id = ?`)
+      .run(JSON.stringify(result), Number(result.result === 'new_chapters' || result.result === 'up_to_date'),
+        Number(result.result === 'new_chapters'), Number(result.result === 'skipped'), Number(result.result === 'error'), runId);
   }
 
   createScheduledSummary(input: {
@@ -4063,7 +4081,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
   getLatestCompletedCheckRun(): StoredScheduledCheckRunRow | undefined {
     const row = this.#database
       .prepare(
-        `SELECT id, started_at, completed_at, status, total_checked, new_chapters_found, skipped, errored
+        `SELECT id, started_at, completed_at, status, total_checked, new_chapters_found, skipped, errored, results_json
          FROM scheduled_check_runs
          WHERE status = 'completed'
          ORDER BY completed_at DESC
@@ -4072,7 +4090,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .get() as {
       id: string; started_at: string; completed_at: string | null;
       status: string; total_checked: number; new_chapters_found: number;
-      skipped: number; errored: number;
+      skipped: number; errored: number; results_json: string | null;
     } | undefined;
 
     if (!row) return undefined;
@@ -4086,6 +4104,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       newChaptersFound: row.new_chapters_found,
       skipped: row.skipped,
       errored: row.errored,
+      results: row.results_json === null ? null : JSON.parse(row.results_json) as import('../contracts/scheduling-run').SchedulingNovelResult[],
     };
   }
 
@@ -5077,7 +5096,8 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
         total_checked      INTEGER NOT NULL DEFAULT 0,
         new_chapters_found INTEGER NOT NULL DEFAULT 0,
         skipped            INTEGER NOT NULL DEFAULT 0,
-        errored            INTEGER NOT NULL DEFAULT 0
+        errored            INTEGER NOT NULL DEFAULT 0,
+        results_json       TEXT
       );
 
       CREATE TABLE IF NOT EXISTS scheduled_summaries (
@@ -5108,6 +5128,8 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     this.ensureColumnExists('scheduled_novels', 'auto_translate', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('scheduled_novels', 'auto_summarize', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('scheduled_novels', 'summarize_model_json', 'TEXT');
+    // NULL distinguishes legacy rounds whose per-book history was never recorded.
+    this.ensureColumnExists('scheduled_check_runs', 'results_json', 'TEXT');
 
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS reader_typography (

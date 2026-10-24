@@ -414,6 +414,40 @@ describe('SchedulingService - auto translation', () => {
     assert.deepEqual(translationCalls, [{ sourceId: 'syosetu', novelId: 'n123' }]);
     assert.equal(repo.getSnapshot('syosetu', 'n123')?.chapters.length, 2);
     assert.ok(logAdapter.events.some((event) => event.message.includes('自动触发翻译')));
+    const run = repo.listScheduledCheckRuns(1, 0)[0]!;
+    assert.equal(run.results?.[0]?.title, '定时更新测试', 'run history identifies the updated book without an AI summary');
+    assert.deepEqual(run.results?.[0]?.chapters, [{ id: 'chapter-2', title: '第二章', downloaded: true }]);
+    assert.equal(run.results?.[0]?.result, 'new_chapters');
+    repo.updateScheduledNovelCheckResult('syosetu', 'n123', 'up_to_date', '已是最新');
+    assert.deepEqual(repo.listScheduledCheckRuns(1, 0)[0]?.results, run.results, 'later checks do not overwrite historical book results');
+  });
+
+  it('persists skipped and failed books independently of summaries', async (t) => {
+    const repo = createAutoTranslateRepo();
+    repo.upsertScheduledNovel('syosetu', 'n123', true);
+    repo.saveMetadata('missing', { novelId: 'broken', title: '失败的作品', author: '', description: '', tags: [], chapterCount: 0, infoPageUrl: '' });
+    repo.upsertScheduledNovel('missing', 'broken', true);
+    let tick: () => void = () => {};
+    t.mock.method(globalThis, 'setInterval', (callback: () => void) => { tick = callback; return 1; });
+    t.mock.method(globalThis, 'clearInterval', () => {});
+    const service = new SchedulingService({
+      repository: repo,
+      preferences: { getScheduling: () => ({ enabled: true, mode: 'interval', intervalHours: 0, cronExpression: '', weeklyDays: [], weeklyTime: '08:00', updatedAt: null }) },
+      spiderRegistry: [], controlCenter: { getActiveTaskNovelKeys: () => [{ sourceId: 'syosetu', novelId: 'n123' }] },
+      logger: new SpiderLogDispatcher([new InMemoryLogAdapter()]),
+      translation: { getAutoTranslationReadiness: () => ({ ready: false }), startTranslation: () => { throw new Error('unexpected translation'); } },
+      summary: { getAutoSummaryReadiness: () => ({ ready: false }), summarizeNewChapters: async () => { throw new Error('unexpected summary'); } },
+    });
+    try {
+      service.start(); tick(); await flushAsyncWork();
+      const run = repo.listScheduledCheckRuns(1, 0)[0]!;
+      assert.equal(run.skipped, 1); assert.equal(run.errored, 1);
+      assert.equal(run.results?.find((result) => result.novelId === 'n123')?.result, 'skipped');
+      const failed = run.results?.find((result) => result.novelId === 'broken');
+      assert.equal(failed?.title, '失败的作品');
+      assert.equal(failed?.result, 'error');
+      assert.match(failed?.message ?? '', /未找到数据源/);
+    } finally { service.stop(); repo.close(); }
   });
 
   it('logs a warning and skips auto translation when readiness check fails', async () => {
@@ -768,6 +802,31 @@ describe('SqliteNovelRepository - scheduled check runs', () => {
     const latest = repo.getLatestCompletedCheckRun();
     assert.ok(latest);
     assert.equal(latest.status, 'completed');
+  });
+
+  it('keeps persisted per-book counts consistent when a round is interrupted', () => {
+    const repo = createTestRepo();
+    try {
+      repo.createScheduledCheckRun('interrupted', '2026-10-24T00:00:00Z');
+      for (const result of ['new_chapters', 'up_to_date', 'skipped', 'error'] as const) {
+        repo.appendScheduledCheckResult('interrupted', {
+          sourceId: 'syosetu', novelId: result, title: result, result, message: result,
+          checkedAt: '2026-10-24T00:01:00Z', chapters: [],
+        });
+      }
+      const running = repo.listScheduledCheckRuns(1, 0)[0]!;
+      assert.equal(running.totalChecked, 2);
+      assert.equal(running.newChaptersFound, 1);
+      assert.equal(running.skipped, 1);
+      assert.equal(running.errored, 1);
+      repo.recoverIncompleteCheckRuns();
+      const recovered = repo.getLatestCompletedCheckRun()!;
+      assert.deepEqual(recovered.results, running.results);
+      assert.equal(recovered.totalChecked, 2);
+      assert.equal(recovered.newChaptersFound, 1);
+      assert.equal(recovered.skipped, 1);
+      assert.equal(recovered.errored, 1);
+    } finally { repo.close(); }
   });
 
   it('listScheduledCheckRuns returns completed runs by newest completion first with pagination', () => {

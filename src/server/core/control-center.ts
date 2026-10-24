@@ -1025,7 +1025,7 @@ export class ControlCenterService {
       if (job.stage === 'translation' && job.translationStartedAt && build?.startedAt === job.translationStartedAt) progress = { percent: build.progressPercent, message: `${build.message}；当前单元段落 ${build.currentChapterTranslatedParagraphs}/${build.currentChapterParagraphs}` };
       return { ...job, chapterTitles: Object.keys(job.chapterHashes).map((id) => chapters.find((chapter) => chapter.id === id)?.title ?? id), ...(progress ? { progress } : {}) };
     });
-    return { settings: this.#processing.settings(sourceId, novelId), jobs };
+    return { ...this.#processing.settingsForEditing(sourceId, novelId), jobs };
   }
   updateLibraryProcessing(sourceId: string, novelId: string, input: unknown) { return this.#processing.configure(sourceId, novelId, input); }
   controlLibraryProcessing(sourceId: string, novelId: string, id: string, action: 'pause' | 'resume' | 'cancel') { return this.#processing.control(sourceId, novelId, id, action); }

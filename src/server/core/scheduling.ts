@@ -17,6 +17,7 @@ import type { AutoTranslationReadiness, TranslationBuild } from './translation-s
 import type { AutoSummaryReadiness, SchedulingSummaryResult } from './scheduling-summary';
 import type { NotificationEvent } from '../contracts/notification';
 import type { NotificationService } from './notification-service';
+import type { SchedulingNovelResult } from '../contracts/scheduling-run';
 
 export interface SchedulingTranslationCoordinator {
   getAutoTranslationReadiness(sourceId: string, novelId: string): AutoTranslationReadiness;
@@ -164,10 +165,17 @@ export class SchedulingService {
 
     for (const novel of enabledNovels) {
       const novelKey = `${novel.sourceId}:${novel.novelId}`;
+      const detail: SchedulingNovelResult = {
+        sourceId: novel.sourceId, novelId: novel.novelId,
+        title: novel.title,
+        result: 'skipped', message: '有活跃采集任务，本轮跳过',
+        checkedAt: new Date().toISOString(), chapters: [],
+      };
 
       // 跳过活跃任务
       if (activeKeySet.has(novelKey)) {
         skipped++;
+        this.#repository.appendScheduledCheckResult(runId, detail);
         await this.#logger.dispatch({
           type: 'scheduling_novel_skipped',
           level: 'info',
@@ -180,7 +188,7 @@ export class SchedulingService {
       }
 
       try {
-        await this.#checkSingleNovel(novel, runId);
+        await this.#checkSingleNovel(novel, runId, detail);
         totalChecked++;
         const updated = this.#repository.getScheduledNovel(novel.sourceId, novel.novelId);
         if (updated?.lastCheckResult === 'new_chapters') {
@@ -189,10 +197,12 @@ export class SchedulingService {
       } catch (error) {
         errored++;
         const message = error instanceof Error ? error.message : String(error);
+        detail.result = 'error';
+        detail.message = message;
         if (!(error instanceof ScheduledDownloadError)) this.#notify({
           id: `schedule-check:${runId}:${novel.sourceId}:${novel.novelId}`, kind: '更新检查失败',
           sourceId: novel.sourceId, novelId: novel.novelId, runId,
-          title: this.#repository.getSnapshot(novel.sourceId, novel.novelId)?.metadata.title ?? novel.novelId,
+          title: detail.title,
           summary: message, occurredAt: new Date().toISOString(), error: true,
         });
         this.#repository.updateScheduledNovelCheckResult(
@@ -206,6 +216,9 @@ export class SchedulingService {
           payload: { error: message },
           timestamp: new Date().toISOString(),
         });
+      } finally {
+        detail.checkedAt = new Date().toISOString();
+        this.#repository.appendScheduledCheckResult(runId, detail);
       }
     }
 
@@ -228,6 +241,7 @@ export class SchedulingService {
   async #checkSingleNovel(
     novel: StoredScheduledNovelRow,
     runId: string,
+    detail: SchedulingNovelResult,
   ): Promise<void> {
     await this.#logger.dispatch({
       type: 'scheduling_novel_checking',
@@ -247,6 +261,7 @@ export class SchedulingService {
 
     // 拉远端目录
     const metadata = await spider.fetchMetadata({ novelId: novel.novelId });
+    detail.title = metadata.title;
     const remoteIndex = await spider.fetchChapterIndex({ novelId: novel.novelId }, metadata);
 
     // 取本地快照
@@ -257,6 +272,8 @@ export class SchedulingService {
     const newChapters = remoteIndex.filter((c: ChapterIndexEntry) => !localIdSet.has(c.id));
 
     if (newChapters.length === 0) {
+      detail.result = 'up_to_date';
+      detail.message = '已是最新';
       this.#repository.updateScheduledNovelCheckResult(
         novel.sourceId, novel.novelId, 'up_to_date', '已是最新',
       );
@@ -273,6 +290,8 @@ export class SchedulingService {
 
     // 有新增：触发增量下载
     const newChapterIds = newChapters.map((c: ChapterIndexEntry) => c.id);
+    detail.result = 'new_chapters';
+    detail.chapters = newChapters.map((chapter) => ({ id: chapter.id, title: chapter.title, downloaded: false }));
     this.#repository.updateScheduledNovelCheckResult(
       novel.sourceId, novel.novelId, 'new_chapters',
       `发现 ${newChapters.length} 个新章节`,
@@ -313,6 +332,9 @@ export class SchedulingService {
       .filter((chapter): chapter is StoredChapterRecord => Boolean(chapter && chapter.status === 'downloaded' && chapter.content));
 
     const failed = newChapters.length - downloadedNewChapters.length;
+    const downloadedIds = new Set(downloadedNewChapters.map((chapter) => chapter.id));
+    detail.chapters.forEach((chapter) => { chapter.downloaded = downloadedIds.has(chapter.id); });
+    detail.message = `发现 ${newChapters.length} 章，下载成功 ${downloadedNewChapters.length} 章${failed ? `，失败 ${failed} 章` : ''}`;
     const current = this.#repository.getScheduledNovel(novel.sourceId, novel.novelId);
     this.#notify({
       id: `schedule-download:${runId}:${novel.sourceId}:${novel.novelId}`, kind: '定时更新下载结果',

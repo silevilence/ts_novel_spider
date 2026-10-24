@@ -16,6 +16,13 @@ export class LibraryProcessingService {
   start(): void { this.#timer ??= setInterval(() => this.tick(), 1000); this.#timer.unref(); }
   stop(): void { if (this.#timer) clearInterval(this.#timer); this.#timer = undefined; }
   settings(sourceId: string, novelId: string): ProcessingSettings { return this.repository.getProcessingSettings(sourceId, novelId) ?? { ...defaultProcessingSettings }; }
+  /** Expose the effective legacy preference without changing execution until the user saves. */
+  settingsForEditing(sourceId: string, novelId: string): { settings: ProcessingSettings; legacyAutoTranslate: boolean } {
+    const settings = this.settings(sourceId, novelId);
+    const legacyAutoTranslate = !settings.extractTerms && !settings.translate
+      && Boolean(this.repository.getScheduledNovel(sourceId, novelId)?.autoTranslate);
+    return { settings: legacyAutoTranslate ? { ...settings, translate: true } : settings, legacyAutoTranslate };
+  }
   configure(sourceId: string, novelId: string, input: unknown): ProcessingSettings {
     const settings = processingSettingsSchema.parse(input); this.repository.saveProcessingSettings(sourceId, novelId, settings); return settings;
   }

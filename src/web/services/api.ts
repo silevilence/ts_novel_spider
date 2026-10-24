@@ -1015,6 +1015,7 @@ export interface SchedulingRun {
   skipped: number;
   errored: number;
   summaries: SchedulingRunSummary[];
+  results?: import('../../server/contracts/scheduling-run').SchedulingNovelResult[] | null;
 }
 
 export interface SchedulingRunsPayload {
@@ -1398,7 +1399,7 @@ export function suggestTermCorrection(sourceId: string, novelId: string, id: str
 export function applyTermCorrection(sourceId: string, novelId: string, id: string, targetIds: string[], undo = false): Promise<{ correction: import('../../server/contracts/term-correction').TermCorrection }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId)}/term-corrections/${encodeURIComponent(id)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetIds, undo }) });
 }
-export async function fetchLibraryProcessing(sourceId: string, novelId: string): Promise<{ settings: import('../../server/contracts/library-processing').ProcessingSettings; jobs: import('../../server/contracts/library-processing').ProcessingJobView[] }> {
+export async function fetchLibraryProcessing(sourceId: string, novelId: string): Promise<{ settings: import('../../server/contracts/library-processing').ProcessingSettings; legacyAutoTranslate?: boolean; jobs: import('../../server/contracts/library-processing').ProcessingJobView[] }> {
   return requestJson(`${libraryTranslationUrl(sourceId, novelId).replace(/\/translate$/, '')}/processing`);
 }
 export async function saveLibraryProcessing(sourceId: string, novelId: string, settings: import('../../server/contracts/library-processing').ProcessingSettings) {

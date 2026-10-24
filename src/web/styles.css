@@ -1,3 +1,53 @@
+.scheduling-books {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.scheduling-books th:nth-child(1) { width: 34%; }
+.scheduling-books th:nth-child(2) { width: 20%; }
+.scheduling-books th:nth-child(3) { width: 28%; }
+.scheduling-books th:nth-child(4) { width: 18%; }
+
+.scheduling-books td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.scheduling-books thead {
+  background: var(--mantine-color-warm-6);
+}
+
+.scheduling-dashboard .mantine-Badge-root {
+  flex-shrink: 0;
+  max-width: none;
+  width: max-content;
+}
+
+.scheduling-dashboard .mantine-Switch-label {
+  white-space: nowrap;
+}
+
+/* Keep controls readable when the viewport cannot accommodate four useful columns. */
+@media (max-width: 1100px) {
+  .scheduling-books, .scheduling-books tbody { display: block; }
+  .scheduling-books thead { display: none; }
+  .scheduling-books tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    border: 1px solid var(--mantine-color-default-border);
+    border-radius: var(--mantine-radius-md);
+    margin-bottom: var(--mantine-spacing-md);
+    padding: var(--mantine-spacing-xs);
+  }
+  .scheduling-books td { display: block; min-width: 0; }
+  .scheduling-books td:first-child { grid-column: 1 / -1; }
+}
+
+@media (max-width: 600px) {
+  .scheduling-books tbody tr { grid-template-columns: minmax(0, 1fr); }
+  .scheduling-dashboard > .mantine-Paper-root { padding: var(--mantine-spacing-sm); }
+}
+
 :root {
   --bg: #06121f;
   --bg-soft: #0c2032;

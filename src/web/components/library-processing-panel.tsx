@@ -19,6 +19,7 @@ function ProcessingPanel({ sourceId, novelId }: { sourceId: string; novelId: str
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [legacyAutoTranslate, setLegacyAutoTranslate] = useState(false);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -29,7 +30,7 @@ function ProcessingPanel({ sourceId, novelId }: { sourceId: string; novelId: str
         const data = await fetchLibraryProcessing(sourceId, novelId);
         if (!active) return;
         setJobs(data.jobs);
-        if (first) { setSettings(data.settings); setLoaded(true); first = false; }
+        if (first) { setSettings(data.settings); setLegacyAutoTranslate(data.legacyAutoTranslate ?? false); setLoaded(true); first = false; }
         const glossary = await fetchLibraryTranslationTerms(sourceId, novelId);
         if (active) setTerms(glossary.terms);
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : '无法读取任务'); }
@@ -39,7 +40,7 @@ function ProcessingPanel({ sourceId, novelId }: { sourceId: string; novelId: str
   }, [opened, sourceId, novelId]);
   async function perform(action: () => Promise<unknown>, message: string) {
     setBusy(true); setError(''); setNotice('');
-    try { await action(); const data = await fetchLibraryProcessing(sourceId, novelId); if (alive.current) { setNotice(message); setJobs(data.jobs); } }
+    try { await action(); const data = await fetchLibraryProcessing(sourceId, novelId); if (alive.current) { setNotice(message); setJobs(data.jobs); setLegacyAutoTranslate(data.legacyAutoTranslate ?? false); } }
     catch (cause) { if (alive.current) setError(cause instanceof Error ? cause.message : '操作失败'); }
     finally { if (alive.current) setBusy(false); }
   }
@@ -48,7 +49,8 @@ function ProcessingPanel({ sourceId, novelId }: { sourceId: string; novelId: str
     <Button variant="subtle" size="compact-sm" onClick={() => setOpened(true)}>更新后处理与进度</Button>
     <Modal opened={opened} onClose={() => setOpened(false)} title="更新后处理" size="lg">
       <Stack>
-        <Text size="sm" c="dimmed">成功下载的新内容可继续处理术语和译文。此设置不启用远端定时抓取；未开启下面选项时，原有定时自动翻译设置继续生效。</Text>
+        <Text size="sm" c="dimmed">统一管理采集、章节重抓和定时更新后的术语提取与正文翻译，仅处理本次成功下载的新内容。定时巡检仍由书单中的定时更新开关控制。</Text>
+        {legacyAutoTranslate ? <Alert color="blue">当前沿用旧版定时自动翻译，开关已反映该设置。保存后将统一用于采集、章节重抓和定时更新；关闭并保存即可停止后续自动翻译。</Alert> : null}
         <Switch label="更新后自动提取术语" checked={settings.extractTerms} disabled={!loaded || busy} onChange={(event) => setSettings({ ...settings, extractTerms: event.currentTarget.checked })} />
         <Switch label="更新后自动翻译正文" checked={settings.translate} disabled={!loaded || busy} onChange={(event) => setSettings({ ...settings, translate: event.currentTarget.checked })} />
         <Select label="新术语确认方式" disabled={!loaded || busy || !settings.extractTerms} value={settings.candidatePolicy} onChange={(value) => setSettings({ ...settings, candidatePolicy: value === 'automatic' ? 'automatic' : 'manual' })} data={[{ value: 'manual', label: '等待我确认（默认）' }, { value: 'automatic', label: '全自动：确认本轮新候选并继续' }]} />

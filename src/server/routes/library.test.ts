@@ -316,6 +316,22 @@ test('library scheduling routes expose auto summary settings and summary flag', 
     assert.equal(target.lastCheckResult, 'new_chapters');
     assert.equal(target.lastCheckMessage, '发现 1 个新章节');
     assert.equal(target.hasSummary, true);
+    const processingUrl = `${baseUrl}/api/library/novels/syosetu/n1000lib/processing`;
+    const processing = await (await fetch(processingUrl)).json() as { settings: { translate: boolean }; legacyAutoTranslate: boolean };
+    assert.equal(processing.settings.translate, true);
+    assert.equal(processing.legacyAutoTranslate, true);
+    const saved = await fetch(processingUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ extractTerms: false, translate: false, candidatePolicy: 'manual' }) });
+    assert.equal(saved.status, 200);
+    const updated = await (await fetch(`${baseUrl}/api/library/scheduling/novels`)).json() as { novels: Array<{ novelId: string; autoTranslate: boolean; enabled: boolean }> };
+    assert.equal(updated.novels.find((novel) => novel.novelId === 'n1000lib')?.autoTranslate, false);
+    assert.equal(updated.novels.find((novel) => novel.novelId === 'n1000lib')?.enabled, true);
+    const toggled = await fetch(`${baseUrl}/api/library/novels/syosetu/n1000lib/scheduling`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }),
+    });
+    const toggledPayload = await toggled.json() as { autoTranslate: boolean; enabled: boolean };
+    assert.equal(toggled.status, 200);
+    assert.equal(toggledPayload.enabled, false);
+    assert.equal(toggledPayload.autoTranslate, false, 'toggling scheduling alone preserves the retired legacy flag');
   } finally {
     await closeServer(server);
     cleanup();

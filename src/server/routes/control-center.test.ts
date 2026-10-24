@@ -919,6 +919,11 @@ test('scheduling preferences and run history API', async () => {
     repository.createScheduledCheckRun('run-1', '2024-01-01T00:00:00Z');
     repository.completeScheduledCheckRun('run-1', '2024-01-01T00:05:00Z', 1, 0, 0, 0);
     repository.createScheduledCheckRun('run-2', '2024-01-02T00:00:00Z');
+    repository.appendScheduledCheckResult('run-2', {
+      sourceId: 'mock-html', novelId: 'demo', title: '本轮书名快照', result: 'new_chapters',
+      message: '下载成功 1 章', checkedAt: '2024-01-02T00:05:00Z',
+      chapters: [{ id: 'chapter-2', title: '第二章', downloaded: true }],
+    });
     repository.completeScheduledCheckRun('run-2', '2024-01-02T00:05:00Z', 2, 1, 0, 0);
     repository.saveMetadata('mock-html', {
       novelId: 'demo',
@@ -947,6 +952,7 @@ test('scheduling preferences and run history API', async () => {
         totalChecked: number;
         newChaptersFound: number;
         summaries: Array<{ novelId: string; chapterIds: string[]; summary: string }>;
+        results: Array<{ title: string; chapters: Array<{ title: string; downloaded: boolean }> }>;
       }>;
     };
     assert.deepEqual(runsPayload.runs.map((run) => run.id), ['run-2']);
@@ -955,6 +961,8 @@ test('scheduling preferences and run history API', async () => {
     assert.equal(runsPayload.runs[0]?.summaries.length, 1);
     assert.equal(runsPayload.runs[0]?.summaries[0]?.novelId, 'demo');
     assert.deepEqual(runsPayload.runs[0]?.summaries[0]?.chapterIds, ['chapter-2']);
+    assert.equal(runsPayload.runs[0]?.results[0]?.title, '本轮书名快照');
+    assert.deepEqual(runsPayload.runs[0]?.results[0]?.chapters, [{ id: 'chapter-2', title: '第二章', downloaded: true }]);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {

@@ -267,7 +267,6 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
                   setSchedulingDetail((current) => current ? { ...current, enabled: next } : current);
                   updateNovelScheduling(detail.sourceId, detail.metadata.novelId, {
                     enabled: next,
-                    autoTranslate: previous?.autoTranslate ?? false,
                   })
                     .then(setSchedulingDetail)
                     .catch(() => {
@@ -278,39 +277,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
               />
             </Group>
 
-            <Group justify="space-between" align="flex-start" wrap="nowrap">
-              <Stack gap={2}>
-                <Text size="xs" fw={600} style={{ color: '#ffd166' }}>
-                  新增章节后自动翻译
-                </Text>
-                <Text size="xs" c="dimmed">
-                  {schedulingDetail?.enabled
-                    ? (schedulingDetail.autoTranslate
-                      ? '发现新章节后，会继续翻译还没完成的内容。'
-                      : '如果你不想再手动点翻译，可以在这里一起开启。')
-                    : '先开启定时更新，才能自动翻译新增章节。'}
-                </Text>
-              </Stack>
-              <Switch
-                size="sm"
-                checked={schedulingDetail?.autoTranslate ?? false}
-                disabled={!(schedulingDetail?.enabled ?? false)}
-                onChange={(event) => {
-                  const next = event.currentTarget.checked;
-                  const previous = schedulingDetail;
-                  setSchedulingDetail((current) => current ? { ...current, autoTranslate: next } : current);
-                  updateNovelScheduling(detail.sourceId, detail.metadata.novelId, {
-                    enabled: previous?.enabled ?? false,
-                    autoTranslate: next,
-                  })
-                    .then(setSchedulingDetail)
-                    .catch(() => {
-                      setSchedulingDetail(previous ?? null);
-                      onNotify({ tone: 'error', title: '保存失败', message: '自动翻译开关没有改成功，请稍后再试。' });
-                    });
-                }}
-              />
-            </Group>
+            <Text size="xs" c="dimmed">自动翻译与术语提取请在下方「更新后处理与进度」中统一设置。</Text>
 
             {schedulingDetail && schedulingDetail.enabled && (
               <Text size="xs" c={schedulingStatusColor(schedulingDetail)}>
