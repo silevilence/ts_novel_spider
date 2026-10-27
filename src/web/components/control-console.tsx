@@ -186,7 +186,7 @@ export function ControlConsole({ model, onOpenSettings }: ControlConsoleProps) {
       {/* 底部悬浮操作栏 — 限高、移动端软键盘适配 */}
       {!keyboardOpen ? (
         isMobile ? (
-          <Affix position={{ bottom: MOBILE_AFFIX_BOTTOM, left: 0, right: 0 }} withinPortal>
+          <Affix position={{ bottom: `calc(${MOBILE_AFFIX_BOTTOM}px + env(safe-area-inset-bottom))`, left: 0, right: 0 }} withinPortal>
             <Paper
               p="xs"
               mx="auto"

@@ -698,7 +698,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
 
         <ActionIcon
           variant="filled" color="gray.7" size="lg" radius="xl"
-          style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 'var(--z-fab)', boxShadow: '0 2px 8px rgba(0,0,0,0.4)' }}
+          style={{ position: 'fixed', bottom: 'calc(var(--shell-footer-offset, 0px) + 24px)', right: 24, zIndex: 'var(--z-fab)', boxShadow: '0 2px 8px rgba(0,0,0,0.4)' }}
           aria-label={isPageNavOpen ? '关闭页面导航' : '打开页面导航'}
           onClick={() => setIsPageNavOpen((o) => !o)}
         >
@@ -783,7 +783,7 @@ function PageNavPopover({
       radius="lg"
       style={{
         position: 'fixed',
-        bottom: 80,
+        bottom: 'calc(var(--shell-footer-offset, 0px) + 80px)',
         right: 24,
         zIndex: 'var(--z-overlay)',
         background: 'rgba(15,10,8,0.95)',

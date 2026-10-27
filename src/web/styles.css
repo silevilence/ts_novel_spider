@@ -1995,3 +1995,54 @@ button.graph-node:focus-visible {
     gap: 0.4rem;
   }
 }
+
+
+/* Navigation has its own reserved space; domain actions remain in document flow. */
+.mobile-navigation { background: #0f0a08; padding-bottom: env(safe-area-inset-bottom); border-top: 1px solid rgba(168,133,96,.3); }
+.mobile-navigation-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); height: 55px; }
+.mobile-navigation-item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; width: 100%; padding: 4px 2px; color: #d4bba0; font-size: 12px; line-height: 1.3; }
+.mobile-navigation-item span { white-space: nowrap; }
+.mobile-navigation-item[aria-current="page"], .mobile-navigation-item[data-active] { color: #ffb37d; background: #2c1e12; box-shadow: inset 0 3px #ff8c42; font-weight: 700; }
+.mobile-navigation-item:focus-visible { outline: 2px solid #ffb37d; outline-offset: -3px; }
+.refined-workspace { min-width: 0; }
+.refined-workspace .mantine-Stack-root, .refined-workspace .mantine-SimpleGrid-root > * { min-width: 0; }
+.refined-workspace .mantine-Title-root { overflow-wrap: anywhere; }
+.refined-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.refined-tabs .mantine-Tabs-tab { min-height: 44px; padding-inline: 8px; }
+.refined-tabs .mantine-Tabs-tabLabel { white-space: normal; text-align: center; }
+@media (max-width: 47.999em) {
+  .app-page-heading { margin: 8px; }
+  .app-page-heading h1 { font-size: 1.65rem; line-height: 1.25; }
+  .app-route-content { padding: 0 8px 24px !important; }
+  .refined-workspace .refined-task-surface { padding: 0; border: 0 !important; background: transparent !important; }
+  .refined-workspace .mantine-Button-label { white-space: normal; text-align: center; }
+  .refined-workspace .mantine-Button-root { height: auto; min-height: 40px; padding-block: 8px; }
+  .refined-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+:root { --shell-footer-offset: 0px; }
+@media (max-width: 48em) { :root { --shell-footer-offset: calc(56px + env(safe-area-inset-bottom)); } }
+
+:root[data-mantine-color-scheme="dark"] { --mantine-color-dimmed: #b6a38f; }
+
+@media (max-width: 47.999em) {
+  .refined-agent-config .mantine-Accordion-panel { padding: 0; }
+  .refined-agent-config .mantine-Accordion-content { padding: 12px; }
+  .mantine-Modal-content .mantine-Button-root { min-height: 40px; height: auto; padding-block: 8px; }
+  .mantine-Modal-content .mantine-Button-label { white-space: normal; }
+}
+
+.mobile-navigation-item { border-radius: 0; border: 0; }
+@media (max-width: 47.999em) {
+  .refined-terms-table { display: block; min-width: 0 !important; width: 100%; }
+  .refined-terms-table thead, .refined-terms-table thead tr { display: block; }
+  .refined-terms-table thead th { display: none; }
+  .refined-terms-table thead th:first-child { display: flex; gap: 8px; align-items: center; width: auto !important; min-height: 44px; position: static; white-space: nowrap; }
+  .refined-terms-table thead th:first-child::after { content: '选择当前筛选结果'; }
+  .refined-terms-table tbody { display: grid; gap: 12px; }
+  .refined-terms-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr); padding: 12px; border: 1px solid var(--mantine-color-default-border); border-radius: 12px; background: #241a14 !important; }
+  .refined-terms-table td { display: block; width: 100%; border: 0; padding: 6px 0; overflow-wrap: anywhere; }
+  .refined-terms-table td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; margin-bottom: 4px; color: var(--mantine-color-dimmed); }
+  .refined-terms-table input[type="checkbox"] { width: 24px; height: 24px; flex-shrink: 0; }
+  .refined-workspace .mantine-ActionIcon-root { min-width: 40px; min-height: 40px; }
+}

@@ -7,6 +7,7 @@ import type { SystemPreferencesService } from './system-preferences';
 import { refinedModelFormat, resolveRefinedChatRoute } from './refined-translation-models';
 import { modelContextLimit, textRequestFits } from './llm-context-budget';
 import { buildIndexTranslatePrompt, detectIndexTranslatePromptEcho } from './translation/nodes/index-translate-messages';
+import { buildHyMt2Prompt, detectHyMt2PromptEcho, normalizeHyMt2Response } from './translation/nodes/hy-mt2-messages';
 import { hasTranslationGlossaryEcho } from './translation/nodes/translation-prompt-materials';
 
 export type RevisionGenerator = (preferences: SystemPreferencesService, route: RefinedModelRoute, system: string, prompt: string, signal?: AbortSignal) => Promise<string>;
@@ -42,7 +43,7 @@ export async function reviseRefinedChapter(options: {
   segmentRoute: (paragraphIndex: number) => RefinedModelRoute | null;
 }): Promise<{ processed: number; unresolved: number }> {
   const { repository, preferences, task, chapterId, signal, generate, segmentRoute } = options;
-  let reviews = repository.listRefinedTranslationReviews(task.id, chapterId).filter((review) => review.resolution === 'open');
+  let reviews = repository.listRefinedTranslationReviews(task.id, chapterId).filter((review) => review.resolution === 'open' || (!review.resolved && ['accepted', 'partially_accepted'].includes(review.resolution)));
   if (!reviews.length) return { processed: 0, unresolved: 0 };
   let rows = repository.listRefinedTranslationSegments(task.id, chapterId);
   const glossary = repository.listRefinedTranslationTerms(task.id).filter((term) => term.status === 'confirmed' && term.targetTerm?.trim());
@@ -140,9 +141,10 @@ export async function reviseRefinedChapter(options: {
     if (previous) { records.push(previous); continue; }
     const context = rows.filter((row) => row.paragraphIndex < segment.paragraphIndex).slice(-2).map((row) => ({ sourceText: row.sourceText, ...(row.translatedText ? { translatedText: row.translatedText } : {}) }));
     const isIndex = refinedModelFormat(preferences, route) === 'bilibili-index-translate';
+    const isHyMt2 = refinedModelFormat(preferences, route) === 'hy-mt2';
     const references = [{ kind: 'soft' as const, text: `旧译文仅作修订参考，不是待译正文：${segment.translatedText ?? '（空）'}。以最小必要修改为目标。` }, ...applicable];
-    const prompt = buildIndexTranslatePrompt([{ sourceText: segment.sourceText }], { sourceLang: task.sourceLang, targetLang: task.targetLang, glossary, previousParagraphs: context, constraints: references });
-    const revisionSystem = isIndex ? '' : '根据已判定的审核约束修订当前段，只输出完整段落译文。禁止修改章节标题、其他段落或术语表。';
+    const prompt = isHyMt2 ? `修订要求：\n${references.map((item) => `${item.kind === 'hard' ? '必须' : '参考'}：${item.text}`).join('\n')}\n\n${buildHyMt2Prompt([{ sourceText: segment.sourceText }], task.targetLang, glossary, context)}` : buildIndexTranslatePrompt([{ sourceText: segment.sourceText }], { sourceLang: task.sourceLang, targetLang: task.targetLang, glossary, previousParagraphs: context, constraints: references });
+    const revisionSystem = isIndex || isHyMt2 ? '' : '根据已判定的审核约束修订当前段，只输出完整段落译文。禁止修改章节标题、其他段落或术语表。';
     const record: RefinedRevisionRecord = { id: crypto.randomUUID(), taskId: task.id, chapterId, paragraphIndex: segment.paragraphIndex, round, fingerprint: signature, reviewIds: ids, constraints: applicable, model: { providerId: route.providerId, modelId: route.modelId }, before: segment.translatedText ?? '', after: null, prompt, status: 'prepared', verification: [], error: null };
     repository.saveRefinedRevision(record);
     try {
@@ -151,7 +153,9 @@ export async function reviseRefinedChapter(options: {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           signal.throwIfAborted();
-          const output = validateRevisionText(await generate(preferences, isIndex ? { ...route, thinkingEnabled: false } : route, revisionSystem, prompt, signal), segment.sourceText);
+          const response = await generate(preferences, isIndex || isHyMt2 ? { ...route, thinkingEnabled: false } : route, revisionSystem, prompt, signal);
+          const output = validateRevisionText(isHyMt2 ? normalizeHyMt2Response(response, segment.sourceText) : response, segment.sourceText);
+          if (isHyMt2 && Object.values(detectHyMt2PromptEcho(output, segment.sourceText)).some(Boolean)) throw new Error('修订模型回显提示材料。');
           signal.throwIfAborted();
           if (hasTranslationGlossaryEcho(output, segment.sourceText, glossary)) throw new Error('修订模型回显术语表。');
           assertCurrentMaterials(segment.id, segment.sourceText, segment.translatedText);

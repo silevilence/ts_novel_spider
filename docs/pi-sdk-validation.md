@@ -112,3 +112,9 @@ ROADMAP 中安装部署、模型与领域工具接入两项完成；技能与恢
 4. 完成上述评估后确定正式运行时，再按后续 ROADMAP 实现 Agent 模式。技能可以约束行为，权限与审核完成条件仍需后端强制检查。
 
 依据：安装的 1.4.0 package.json、lockfile、类型声明及运行源码优先；在线参考为 [SDK 文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)、[Agent Core](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md)、[扩展文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)。在线 main 会继续变化，不能代替锁定包的实测结果。
+
+## 2026-10-27 正式接入补充
+
+SQLite 崩溃窗口现已覆盖：crash-fixture.ts 在生产仓库事务写入前，以及业务数据与收据提交后、Pi 工具结果保存前执行真实进程退出。lifecycle.test.ts 断言前者无业务写入，后者译文与 completed 收据同时存在、调用数不重复。Pi 实验共 23 项测试通过。
+
+正式选型采用项目已有 AI SDK 6.0.177 与持久化领域运行时，Pi 1.4.0 保留实验。此决定取代上文暂定结论，保留主项目 Node >=20 声明和 Node 22 容器；完整依据、实现边界及本轮验收见 [精翻 Agent 验收记录](refined-agent-validation.md)。

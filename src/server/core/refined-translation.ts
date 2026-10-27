@@ -2,9 +2,11 @@ import { paragraphRevisionLimit, revisionLimitsError } from '../contracts/refine
 import { reviseRefinedChapter } from './refined-revision';
 import { refinedModelFormat, resolveRefinedChatRoute, validateRefinedModelRoles } from './refined-translation-models';
 import { buildIndexTranslatePrompt, detectIndexTranslatePromptEcho } from './translation/nodes/index-translate-messages';
+import { buildHyMt2Prompt, detectHyMt2PromptEcho, normalizeHyMt2Response } from './translation/nodes/hy-mt2-messages';
 import { hasTranslationGlossaryEcho, hasTranslationBackgroundEcho } from './translation/nodes/translation-prompt-materials';
 import { buildGlossaryExtractionPrompt, buildGlossarySourceWindows, parseGlossaryCandidates, GLOSSARY_EXTRACTION_SOURCE_LIMIT } from './glossary-extraction';
 import crypto from 'node:crypto';
+import { RefinedAgentRuntime } from './refined-agent';
 import { modelContextLimit, textRequestFits, splitTextForContext, batchForContext, contextOutputReserve } from './llm-context-budget';
 
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
@@ -54,6 +56,7 @@ const RefinedWorkflowState = Annotation.Root({
 });
 
 export interface RefinedTranslationTaskDetail {
+  agent: import('../contracts/refined-agent').AgentState | null;
   task: StoredRefinedTranslationTaskRow;
   chapters: ReturnType<SqliteNovelRepository['listRefinedTranslationChapters']>;
   progress: { total: number; translated: number; pending: number; failed: number; skipped: number; reviewedChapters: number; currentRound: number };
@@ -80,6 +83,45 @@ export interface RefinedGlossaryExtractionResult {
 }
 
 export class RefinedTranslationService {
+  readonly agent: RefinedAgentRuntime;
+  #agentChapterScope: readonly string[] | undefined;
+  /** Validate all effective executor roles before charging the controller. */
+  validateAgentExecution(taskId: string) {
+    const task = this.#repository.getRefinedTranslationTask(taskId);
+    if (!task) throw new Error('任务不存在。');
+    this.#validateStart(task);
+    if (!this.#resolveRoute(task, 'translationModels')) throw new Error('请配置可用的正文翻译模型。');
+    for (const key of ['termExtractionModel', 'termTranslationModel', 'omissionModel', 'reviewModel'] as const) this.#chatRoute(task.modelConfig[key]);
+  }
+  /** Execute a domain operation on a caller-owned isolated draft, never the state graph. */
+  async executeAgentDomain(taskId: string, operation: import('../contracts/refined-agent').AgentOperation, chapterId: string | null, signal: AbortSignal, chapterScope?: readonly string[]) {
+    this.#agentChapterScope = chapterScope;
+    signal.throwIfAborted();
+    const task = this.#repository.getRefinedTranslationTask(taskId);
+    if (!task || task.deletedAt) throw new Error('任务不存在。');
+    if (chapterId && !this.#repository.getRefinedTranslationChapter(taskId, chapterId)) throw new Error('章节不属于当前任务。');
+    switch (operation) {
+      case 'extract_terms': return this.extractGlossaryCandidates(taskId, signal, chapterId ? [chapterId] : undefined);
+      case 'translate_terms': return this.#translateGlossary(taskId, signal);
+      case 'confirm_terms': return this.bulkUpdateTerms(taskId, this.listTerms(taskId).filter((term) => term.status === 'pending' && term.targetTerm?.trim()).map((term) => term.id), 'confirmed');
+      case 'translate_metadata': return this.#translateMetadata(taskId, signal);
+      case 'translate_chapter': if (chapterId) return this.#translateChapter(taskId, chapterId, signal); break;
+      case 'check_chapter': if (chapterId) return this.#checkChapter(taskId, chapterId, signal); break;
+      case 'review_chapter': if (chapterId) return this.#reviewChapter(taskId, chapterId, signal); break;
+      case 'revise_chapter': if (chapterId) return this.#reviseChapter(taskId, chapterId, signal); break;
+    }
+    throw new Error('请选择章节或使用专用导出入口。');
+  }
+
+  /** Reuse specialized translation templates for a volume heading. */
+  async translateAgentVolume(taskId: string, title: string, signal: AbortSignal): Promise<string> {
+    const task = this.#repository.getRefinedTranslationTask(taskId);
+    if (!task) throw new Error('任务不存在。');
+    const route = this.#resolveRoute(task, 'translationModels');
+    if (!route) throw new Error('缺少翻译模型。');
+    const glossary = this.listTerms(taskId).filter((term) => term.status === 'confirmed' && term.targetTerm).map((term) => `${term.sourceTerm} = ${term.targetTerm}`).join('\n');
+    return this.#translateText(route, `将卷标题从${task.sourceLang}翻译为${task.targetLang}，只输出译文。`, title, glossary, '', signal, task);
+  }
   readonly #listeners = new Map<string, Set<(event: RefinedTranslationStreamEvent) => void>>();
   readonly #repository: SqliteNovelRepository;
   readonly #preferences: SystemPreferencesService;
@@ -93,6 +135,7 @@ export class RefinedTranslationService {
     this.#preferences = preferences;
     this.#exportEngine = exportEngine;
     this.#generateText = generateText;
+    this.agent = new RefinedAgentRuntime(repository, preferences, exportEngine, this, (taskId) => this.#emit(taskId, { type: 'task_updated', taskId }), undefined, generateText);
     this.#runToolAgent = toolAgentRunner ?? (generateText === generateRefinedTranslationText ? async (runnerPreferences, route, system, prompt, tools, firstToolName, signal) => {
       const result = await runRefinedTranslationToolAgent(runnerPreferences, route, system, prompt, tools, firstToolName, signal);
       return { ...result, toolCalls: result.toolCalls };
@@ -100,8 +143,10 @@ export class RefinedTranslationService {
   }
 
   recoverInterruptedTasks(): void {
+    this.agent.recover();
     const resumedTaskIds = new Set<string>();
     for (const task of this.#repository.listResumableRefinedTranslationTasks()) {
+      if (task.executionMode === 'agent') continue;
       resumedTaskIds.add(task.id);
       this.#log(task.id, 'info', '服务重启后从最近 checkpoint 恢复任务。');
       void this.#run(task.id);
@@ -110,12 +155,15 @@ export class RefinedTranslationService {
     // had later chapters to process. Repair that persisted mismatch on startup so the
     // user is not asked to intervene before the automatic pass reaches the final chapter.
     for (const task of this.#repository.listRefinedTranslationTasks()) {
+      if (task.executionMode === 'agent') continue;
       if (resumedTaskIds.has(task.id) || task.status !== 'needs_attention' || task.stage === 'completed') continue;
       this.#resumeRemainingAutomaticWork(task.id, '服务重启时检测到旧状态错配');
     }
   }
 
-  createTask(sourceId: string, novelId: string, input: { name?: string | undefined; sourceLang?: string | undefined; targetLang?: string | undefined; reuseTaskId?: string; modelConfig?: Partial<RefinedTranslationModelConfig> | undefined }): StoredRefinedTranslationTaskRow {
+  createTask(sourceId: string, novelId: string, input: { executionMode?: 'workflow' | 'agent'; agentConfig?: unknown; name?: string | undefined; sourceLang?: string | undefined; targetLang?: string | undefined; reuseTaskId?: string; modelConfig?: Partial<RefinedTranslationModelConfig> | undefined }): StoredRefinedTranslationTaskRow {
+    const agentConfig = input.executionMode === 'agent' ? this.agent.validate(input.agentConfig) : null;
+    if (input.executionMode && !['workflow', 'agent'].includes(input.executionMode)) throw new Error('执行模式无效。');
     const snapshot = this.#repository.getSnapshot(sourceId, novelId);
     if (!snapshot) throw new Error(`Library novel ${sourceId}/${novelId} was not found.`);
     const chapters = snapshot.chapters.filter((chapter) => chapter.status === 'downloaded' && chapter.content?.trim()).map((chapter) => ({ id: chapter.id, index: chapter.index, title: chapter.title, volumeTitle: chapter.volumeTitle ?? null, content: chapter.content!, paragraphs: splitChapterParagraphs(chapter.content!) }));
@@ -131,7 +179,12 @@ export class RefinedTranslationService {
     for (const term of this.#repository.listTranslationTerms(sourceId, novelId, 'confirmed')) termMap.set(term.sourceTerm, { sourceTerm: term.sourceTerm, targetTerm: term.targetTerm, entityType: term.entityType, priority: term.priority, suggestion: null });
     for (const entity of this.#repository.listKnowledgeGraphEntities(sourceId, novelId)) if (!termMap.has(entity.name)) termMap.set(entity.name, { sourceTerm: entity.name, targetTerm: null, entityType: entity.entityType, priority: Math.round(entity.prominence * GRAPH_ENTITY_PRIORITY_SCALE), suggestion: '来自知识图谱实体，建议人工确认。' });
     const today = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short' }).format(new Date());
-    const task = this.#repository.createRefinedTranslationTask({ id: crypto.randomUUID(), sourceId, novelId, name: input.name?.trim() || `${snapshot.metadata.title} 精翻任务 ${today}`, novelTitle: snapshot.metadata.title, author: snapshot.metadata.author, sourceMetadata: { title: snapshot.metadata.title, author: snapshot.metadata.author, description: snapshot.metadata.description, tags: [...snapshot.metadata.tags], infoPageUrl: snapshot.metadata.infoPageUrl }, sourceLang: input.sourceLang ?? preferences.sourceLang, targetLang: input.targetLang ?? preferences.targetLang, modelConfig, chapters, terms: [...termMap.values()], ...(input.reuseTaskId ? { reuseTaskId: input.reuseTaskId } : {}) });
+    if (agentConfig?.chapterIds.some((id) => !chapters.some((chapter) => chapter.id === id))) throw new Error('章节范围不属于当前小说。');
+    const task = this.#repository.refinedAgentTransaction(() => {
+    const created = this.#repository.createRefinedTranslationTask({ id: crypto.randomUUID(), sourceId, novelId, name: input.name?.trim() || `${snapshot.metadata.title} 精翻任务 ${today}`, novelTitle: snapshot.metadata.title, author: snapshot.metadata.author, sourceMetadata: { title: snapshot.metadata.title, author: snapshot.metadata.author, description: snapshot.metadata.description, tags: [...snapshot.metadata.tags], infoPageUrl: snapshot.metadata.infoPageUrl }, sourceLang: input.sourceLang ?? preferences.sourceLang, targetLang: input.targetLang ?? preferences.targetLang, modelConfig, chapters, terms: [...termMap.values()], ...(input.reuseTaskId ? { reuseTaskId: input.reuseTaskId } : {}) });
+    if (agentConfig) { this.agent.create(created.id, agentConfig); created.executionMode = 'agent'; }
+    return created;
+    });
     this.#checkpoint(task.id, 'glossary_setup', { event: 'created', chapters: chapters.length, terms: termMap.size });
     this.#repository.appendRefinedTranslationTransition({ taskId: task.id, fromStage: null, toStage: 'glossary_setup', condition: '创建精翻任务并保存原文快照', chapterId: null, reviewRound: null });
     this.#emit(task.id, { type: 'task_updated', taskId: task.id });
@@ -142,7 +195,7 @@ export class RefinedTranslationService {
   syncSource(taskId: string, input: { reuseTaskId?: string } = {}) {
     const task = this.#repository.getRefinedTranslationTask(taskId);
     if (!task || task.deletedAt) throw new Error('精翻任务不存在或已在回收站。');
-    if (task.status === 'running' || this.#abortControllers.has(taskId)) throw new Error('请先暂停任务，并等待当前模型调用结束后再同步原文。');
+    if (task.status === 'running' || this.#abortControllers.has(taskId) || this.agent.isActive(taskId)) throw new Error('请先暂停任务，并等待当前模型调用结束后再同步原文。');
     if (!task.sourceId || !task.novelId || this.#repository.getNovelPurgeStatus(task.sourceId, task.novelId)?.deletedAt) throw new Error('源小说不存在或已在回收站。');
     const snapshot = this.#repository.getSnapshot(task.sourceId, task.novelId);
     if (!snapshot) throw new Error('源小说不存在，无法同步原文。');
@@ -169,6 +222,7 @@ export class RefinedTranslationService {
 
   updateTaskConfiguration(taskId: string, input: { name?: string | undefined; sourceLang?: string | undefined; targetLang?: string | undefined; modelConfig?: RefinedTranslationModelConfig | undefined }): StoredRefinedTranslationTaskRow | null {
     if (!this.#editable(taskId)) return null;
+    if (this.agent.isActive(taskId)) throw new Error('请先暂停 Agent 并等待在途调用结束。');
     if (input.modelConfig) input = { ...input, modelConfig: validateRefinedModelRoles(this.#preferences, input.modelConfig) };
     const updated = this.#repository.updateRefinedTranslationTask(taskId, input);
     if (updated) this.#touch(taskId, '任务配置已更新；尚未发起的模型调用将使用新配置，进行中的单次调用保持原配置。');
@@ -177,6 +231,7 @@ export class RefinedTranslationService {
 
   getTaskDetail(taskId: string): RefinedTranslationTaskDetail | null {
     this.#resumeRemainingAutomaticWork(taskId, '读取任务状态时发现仍有未完成章节');
+    const agent = this.agent.snapshot(taskId);
     const task = this.#repository.getRefinedTranslationTask(taskId); if (!task) return null;
     const chapters = this.#repository.listRefinedTranslationChapters(taskId);
     const all = chapters.flatMap((chapter) => this.#repository.listRefinedTranslationSegments(taskId, chapter.chapterId));
@@ -185,6 +240,7 @@ export class RefinedTranslationService {
     const activeChapterId = typeof activeCheckpoint?.chapterId === 'string' ? activeCheckpoint.chapterId : null;
     const activeChapter = activeChapterId ? chapters.find((chapter) => chapter.chapterId === activeChapterId) ?? null : null;
     return {
+      agent,
       task,
       chapters,
       progress: { total: all.length, translated: all.filter((item) => item.status === 'translated').length, pending: all.filter((item) => item.status === 'pending').length, failed: all.filter((item) => item.status === 'failed').length, skipped: all.filter((item) => item.status === 'skipped').length, reviewedChapters: chapters.filter((chapter) => chapter.status === 'reviewed').length, currentRound: activeChapter?.reviewRound ?? 0 },
@@ -204,7 +260,7 @@ export class RefinedTranslationService {
   readCurrentTranslations(taskId: string, chapterIds?: string[]) { const wanted = chapterIds?.length ? new Set(chapterIds) : null; return this.#repository.listRefinedTranslationChapters(taskId).filter((chapter) => !wanted || wanted.has(chapter.chapterId)).flatMap((chapter) => { const result = this.getChapter(taskId, chapter.chapterId); return result ? [result] : []; }); }
   readChapterTranslation(taskId: string, chapterId: string) { return this.getChapter(taskId, chapterId); }
   readUntranslatedSegments(taskId: string, chapterId?: string) { const chapters = chapterId ? [this.#repository.getRefinedTranslationChapter(taskId, chapterId)].filter((item): item is NonNullable<typeof item> => item !== null) : this.#repository.listRefinedTranslationChapters(taskId); return chapters.flatMap((chapter) => this.#repository.listRefinedTranslationSegments(taskId, chapter.chapterId).filter((segment) => segment.status === 'pending' || segment.status === 'failed')); }
-  readContextChapters(taskId: string, chapterId: string) { const chapters = this.#repository.listRefinedTranslationChapters(taskId); const index = chapters.findIndex((chapter) => chapter.chapterId === chapterId); return [chapters[index - 1], chapters[index + 1]].filter((chapter): chapter is NonNullable<typeof chapter> => Boolean(chapter)).map((chapter) => this.getChapter(taskId, chapter.chapterId)!); }
+  readContextChapters(taskId: string, chapterId: string) { const chapters = this.#repository.listRefinedTranslationChapters(taskId); const index = chapters.findIndex((chapter) => chapter.chapterId === chapterId); return [chapters[index - 1], chapters[index + 1]].filter((chapter): chapter is NonNullable<typeof chapter> => Boolean(chapter) && (!this.#agentChapterScope || this.#agentChapterScope.includes(chapter!.chapterId))).map((chapter) => this.getChapter(taskId, chapter.chapterId)!); }
   listTerms(taskId: string) { return this.#repository.listRefinedTranslationTerms(taskId); }
   createTerm(taskId: string, input: { sourceTerm: string; targetTerm?: string | null; entityType?: string | null; priority?: number; suggestion?: string | null; status?: RefinedTranslationTermStatus }) { if (!this.#editable(taskId)) return null; if (!input.sourceTerm.trim()) throw new Error('源术语不能为空。'); const term = this.#repository.createRefinedTranslationTerm(taskId, input); this.#touch(taskId, `已新增术语“${term.sourceTerm}”。`); return term; }
   updateTerm(taskId: string, termId: string, input: { targetTerm?: string | null; entityType?: string | null; priority?: number; suggestion?: string | null; status?: RefinedTranslationTermStatus }) { if (!this.#editable(taskId)) return null; const term = this.#repository.updateRefinedTranslationTerm(taskId, termId, input); if (term) this.#touch(taskId, '已更新术语表。'); return term; }
@@ -228,7 +284,7 @@ export class RefinedTranslationService {
   reopenParagraph(taskId: string, chapterId: string, paragraphIndex: number, fromScratch = false) {
     const task = this.#repository.getRefinedTranslationTask(taskId);
     if (!task || task.deletedAt) return null;
-    if (task.status === 'running' || this.#abortControllers.has(taskId)) throw new Error('请先暂停任务并等待当前调用结束后重新开启段落。');
+    if (task.status === 'running' || this.#abortControllers.has(taskId) || this.agent.isActive(taskId)) throw new Error('请先暂停任务并等待当前调用结束后重新开启段落。');
     const segment = this.#repository.listRefinedTranslationSegments(taskId, chapterId).find((row) => row.paragraphIndex === paragraphIndex);
     if (!segment) return null;
     this.#repository.resetParagraphRevisionState(taskId, segment.id);
@@ -255,24 +311,24 @@ export class RefinedTranslationService {
     return chapter;
   }
   readGlossary(taskId: string) { return this.listTerms(taskId); }
-  async extractGlossaryCandidates(taskId: string, signal?: AbortSignal): Promise<RefinedGlossaryExtractionResult> {
+  async extractGlossaryCandidates(taskId: string, signal?: AbortSignal, chapterIds?: string[]): Promise<RefinedGlossaryExtractionResult> {
     if (!this.#editable(taskId)) throw new Error('回收站任务仅可查看与导出。');
     const task = this.#repository.getRefinedTranslationTask(taskId);
     if (!task) throw new Error('精翻任务不存在。');
     const route = this.#chatRoute(task.modelConfig.termExtractionModel);
     if (!route) throw new Error('未配置术语提取模型；请先在任务配置中选择模型。');
-    const source = buildGlossarySourceWindows(this.#repository.listRefinedTranslationChapters(taskId)
-      .map((chapter) => ({ id: chapter.chapterId, index: chapter.chapterIndex, title: chapter.title, content: chapter.sourceContent })), GLOSSARY_EXTRACTION_SOURCE_LIMIT, 1)[0]?.source ?? '';
-    if (!source.trim()) throw new Error('任务中没有可用于提取术语的原文快照。');
+    const windows = buildGlossarySourceWindows(this.#repository.listRefinedTranslationChapters(taskId).filter((chapter) => !chapterIds || chapterIds.includes(chapter.chapterId))
+      .map((chapter) => ({ id: chapter.chapterId, index: chapter.chapterIndex, title: chapter.title, content: chapter.sourceContent })), GLOSSARY_EXTRACTION_SOURCE_LIMIT, chapterIds ? Infinity : 1);
+    if (!windows.length) throw new Error('任务中没有可用于提取术语的原文快照。');
     // Extraction is one bounded prompt over a local snapshot. A tool agent may repeatedly
     // read all chapters and spend up to eight tool steps, which turns a short glossary pass
     // into minutes of work before any candidate is added.
     const system = buildGlossaryExtractionPrompt(task.sourceLang);
     const candidates: ReturnType<typeof parseGlossaryCandidates> = [];
-    for (const part of splitTextForContext(source, (text) => textRequestFits(modelContextLimit(this.#preferences, route), system, text))) {
+    for (const part of windows.flatMap(({ source }) => splitTextForContext(source, (text) => textRequestFits(modelContextLimit(this.#preferences, route), system, text)))) {
       const response = await this.#generateText(this.#preferences, route, system, part, signal);
       signal?.throwIfAborted();
-      candidates.push(...parseGlossaryCandidates(response));
+      candidates.push(...parseGlossaryCandidates(response, Boolean(chapterIds)));
     }
     const existing = new Map(this.listTerms(taskId).map((term) => [term.sourceTerm, term]));
     let added = 0;
@@ -384,13 +440,15 @@ export class RefinedTranslationService {
   markSegmentIssue(taskId: string, input: Omit<StoredRefinedTranslationReviewRow, 'id' | 'taskId' | 'createdAt' | 'paragraphIndices'> & { paragraphIndex: number }) { return this.writeReview(taskId, { ...input, paragraphIndices: [input.paragraphIndex] }); }
   resolveReview(taskId: string, reviewId: string, resolution: RefinedTranslationReviewResolution, resolutionNote: string | null = null) {
     if (!this.#editable(taskId)) return false;
-    const ok = this.#repository.updateRefinedTranslationReview(taskId, reviewId, resolution, resolutionNote);
+    if (this.#repository.getRefinedTranslationTask(taskId)?.executionMode === 'agent' && ['rejected', 'ignored', 'resolved'].includes(resolution) && !resolutionNote?.trim()) throw new Error('人工处理审核意见必须填写原因。');
+    const ok = this.#repository.updateRefinedTranslationReview(taskId, reviewId, resolution, resolutionNote, this.#repository.getRefinedTranslationTask(taskId)?.executionMode === 'agent' && ['accepted', 'partially_accepted'].includes(resolution) ? false : resolution !== 'open');
     if (!ok) return false;
     this.#touch(taskId, resolution === 'rejected' || resolution === 'ignored' ? '已拒绝审核意见。' : resolution === 'accepted' || resolution === 'resolved' ? '已接受审核意见。' : resolution === 'partially_accepted' ? '已部分接受审核意见。' : '已重新打开审核意见。');
     return true;
   }
 
   retryFailedSegments(taskId: string, chapterId?: string, paragraphIndex?: number): StoredRefinedTranslationTaskRow | null {
+    this.#requireWorkflow(taskId);
     if (!this.#editable(taskId)) return null;
     const taskBeforeRetry = this.#repository.getRefinedTranslationTask(taskId);
     const chapters = chapterId ? [this.#repository.getRefinedTranslationChapter(taskId, chapterId)].filter((item): item is NonNullable<typeof item> => item !== null) : this.#repository.listRefinedTranslationChapters(taskId);
@@ -422,6 +480,7 @@ export class RefinedTranslationService {
   }
 
   advance(taskId: string): StoredRefinedTranslationTaskRow | null {
+    this.#requireWorkflow(taskId);
     const task = this.#repository.getRefinedTranslationTask(taskId); if (!task || task.deletedAt) return null;
     if (task.stage === 'glossary_translation') {
       const pendingTerms = this.listTerms(taskId).filter((term) => term.status === 'pending');
@@ -439,16 +498,16 @@ export class RefinedTranslationService {
     return updated;
   }
 
-  pause(taskId: string) { this.#abortControllers.get(taskId)?.abort(); const current = this.#repository.getRefinedTranslationTask(taskId); if (!current || current.deletedAt) return current; const task = this.#repository.updateRefinedTranslationTask(taskId, { status: 'paused' }); if (task) this.#touch(taskId, '任务已暂停。'); return task; }
-  resume(taskId: string) { const task = this.#repository.getRefinedTranslationTask(taskId); if (!task || task.deletedAt) return null; this.#validateStart(task); const updated = this.#repository.updateRefinedTranslationTask(taskId, { status: 'running' }); if (updated) { this.#touch(taskId, '任务已恢复。'); void this.#run(taskId); } return updated; }
-  markDeleted(taskId: string) { this.#abortControllers.get(taskId)?.abort(); const task = this.#repository.markRefinedTranslationTaskDeleted(taskId); if (task) this.#emit(taskId, { type: 'task_updated', taskId }); return task; }
+  pause(taskId: string) { this.#requireWorkflow(taskId); this.#abortControllers.get(taskId)?.abort(); const current = this.#repository.getRefinedTranslationTask(taskId); if (!current || current.deletedAt) return current; const task = this.#repository.updateRefinedTranslationTask(taskId, { status: 'paused' }); if (task) this.#touch(taskId, '任务已暂停。'); return task; }
+  resume(taskId: string) { this.#requireWorkflow(taskId); const task = this.#repository.getRefinedTranslationTask(taskId); if (!task || task.deletedAt) return null; this.#validateStart(task); const updated = this.#repository.updateRefinedTranslationTask(taskId, { status: 'running' }); if (updated) { this.#touch(taskId, '任务已恢复。'); void this.#run(taskId); } return updated; }
+  markDeleted(taskId: string) { if (this.agent.isActive(taskId)) throw new Error('请先暂停 Agent 并等待在途调用结束。'); this.#abortControllers.get(taskId)?.abort(); const task = this.#repository.markRefinedTranslationTaskDeleted(taskId); if (task) this.#emit(taskId, { type: 'task_updated', taskId }); return task; }
   restore(taskId: string) { const task = this.#repository.restoreRefinedTranslationTask(taskId); if (task) this.#emit(taskId, { type: 'task_updated', taskId }); return task; }
   getPurgeStatus(taskId: string) { return this.#repository.getRefinedTranslationPurgeStatus(taskId); }
   purge(taskId: string) { const status = this.getPurgeStatus(taskId); if (!status) return false; if (!status.canPurge) throw new Error(`任务仍在回收站保留期内，${status.remainingDays} 天后才能永久删除。`); return this.#repository.purgeRefinedTranslationTask(taskId); }
 
-  async exportTask(taskId: string, format: LibraryExportFormat, mode: LibraryExportTranslationMode, includeIncomplete: boolean): Promise<GeneratedLibraryExport | null> {
+  async exportTask(taskId: string, format: LibraryExportFormat, mode: LibraryExportTranslationMode, includeIncomplete: boolean, chapterIds?: readonly string[]): Promise<GeneratedLibraryExport | null> {
     const task = this.#repository.getRefinedTranslationTask(taskId); if (!task) return null;
-    const allChapters = this.#repository.listRefinedTranslationChapters(taskId);
+    const allChapters = this.#repository.listRefinedTranslationChapters(taskId).filter((chapter) => !chapterIds || chapterIds.includes(chapter.chapterId));
     const chapters = includeIncomplete ? allChapters : allChapters.filter((chapter) => chapter.status === 'reviewed' || chapter.status === 'translated');
     if (!chapters.length) throw new Error('没有可导出的已完成章节。');
     const records: StoredChapterRecord[] = chapters.map((chapter) => ({ id: chapter.chapterId, index: chapter.chapterIndex, title: chapter.title, ...(chapter.volumeTitle ? { volumeTitle: chapter.volumeTitle } : {}), url: `refined://${taskId}/${chapter.chapterId}`, content: chapter.sourceContent, status: 'downloaded', errorMessage: null, downloadedAt: task.createdAt, updatedAt: chapter.updatedAt }));
@@ -460,12 +519,13 @@ export class RefinedTranslationService {
     }
     const descriptionSource = task.sourceMetadata.description;
     const translatedDescriptionParagraphs = task.translatedMetadata.description && descriptionSource ? [{ paragraphIndex: 0, sourceText: descriptionSource, translatedText: task.translatedMetadata.description, confidence: null }] : [];
-    return this.#exportEngine.generate(snapshot, format, { mode, translatedParagraphsByChapterId, translatedNovelTitle: task.translatedMetadata.title, translatedAuthor: task.translatedMetadata.author, translatedTags: task.translatedMetadata.tags, translatedDescriptionParagraphs, translatedChapterTitles: new Map(chapters.flatMap((chapter) => chapter.translatedTitle?.trim() ? [[chapter.chapterId, chapter.translatedTitle] as const] : [])) });
+    return this.#exportEngine.generate(snapshot, format, { mode, translatedParagraphsByChapterId, translatedNovelTitle: task.translatedMetadata.title, translatedAuthor: task.translatedMetadata.author, translatedTags: task.translatedMetadata.tags, translatedDescriptionParagraphs, translatedVolumeTitles: new Map(Object.entries(this.#repository.getRefinedAgentState(taskId)?.volumes ?? {})), translatedChapterTitles: new Map(chapters.flatMap((chapter) => chapter.translatedTitle?.trim() ? [[chapter.chapterId, chapter.translatedTitle] as const] : [])) });
   }
 
   subscribe(taskId: string, listener: (event: RefinedTranslationStreamEvent) => void): () => void { const listeners = this.#listeners.get(taskId) ?? new Set(); listeners.add(listener); this.#listeners.set(taskId, listeners); return () => { listeners.delete(listener); if (!listeners.size) this.#listeners.delete(taskId); }; }
 
   async #run(taskId: string): Promise<void> {
+    if (this.#repository.getRefinedTranslationTask(taskId)?.executionMode === 'agent') return;
     if (this.#abortControllers.has(taskId)) return;
     const task = this.#repository.getRefinedTranslationTask(taskId);
     if (!task || task.deletedAt || task.status !== 'running') return;
@@ -674,7 +734,7 @@ export class RefinedTranslationService {
   }
   /** Split plain translation losslessly; only relevant glossary entries and fitting recent context travel with each part. */
   async #translateText(route: { providerId: string; modelId: string }, instruction: string, source: string, glossary: string, context = '', signal?: AbortSignal, languages?: { sourceLang: string; targetLang: string }): Promise<string> {
-    if (refinedModelFormat(this.#preferences, route) === 'bilibili-index-translate') return this.#translateIndex(route, source, glossary, context, languages ?? { sourceLang: 'auto', targetLang: 'zh-CN' }, signal);
+    if (refinedModelFormat(this.#preferences, route) !== 'general') return this.#translateIndex(route, source, glossary, context, languages ?? { sourceLang: 'auto', targetLang: 'zh-CN' }, signal);
     const limit = modelContextLimit(this.#preferences, route);
     const history = context.split('\n\n').filter(Boolean);
     const systemFor = (text: string) => `${instruction}\n术语表：\n${(limit > 0 ? relevantGlossary(glossary, text) : glossary) || '（无）'}\n前文上下文：\n${history.join('\n\n') || '（无）'}`;
@@ -695,7 +755,8 @@ export class RefinedTranslationService {
     const terms = glossary.split('\n').flatMap((line, index) => { const split = line.indexOf(' = '); return split < 0 ? [] : [{ id: String(index), sourceTerm: line.slice(0, split), targetTerm: line.slice(split + 3), entityType: null, priority: 0 }]; });
     const previous = context.split('\n\n').filter(Boolean).slice(-2).map((sourceText) => ({ sourceText }));
     const limit = modelContextLimit(this.#preferences, route);
-    const promptFor = (sourceText: string) => buildIndexTranslatePrompt([{ sourceText }], { ...languages, glossary: terms, previousParagraphs: previous });
+    const hyMt2 = refinedModelFormat(this.#preferences, route) === 'hy-mt2';
+    const promptFor = (sourceText: string) => hyMt2 ? buildHyMt2Prompt([{ sourceText }], languages.targetLang, terms, previous) : buildIndexTranslatePrompt([{ sourceText }], { ...languages, glossary: terms, previousParagraphs: previous });
     const fits = (text: string) => textRequestFits(limit, '', promptFor(text)) && (!limit || text.length * 3 <= contextOutputReserve(limit));
     while (previous.length && !fits(source)) previous.shift();
     const parts = splitTextForContext(source, fits);
@@ -706,10 +767,11 @@ export class RefinedTranslationService {
       for (let attempt = 0; attempt < 3; attempt++) {
         signal?.throwIfAborted();
         try {
-          const output = (await this.#generateText(this.#preferences, { ...route, thinkingEnabled: false }, '', promptFor(part), signal)).trim();
+          const raw = (await this.#generateText(this.#preferences, { ...route, thinkingEnabled: false }, '', promptFor(part), signal)).trim();
+          const output = hyMt2 ? normalizeHyMt2Response(raw, part) : raw;
           signal?.throwIfAborted();
           if (!output) throw new Error('模型返回空文本。');
-          if (Object.values(detectIndexTranslatePromptEcho(output, part)).some(Boolean) || hasTranslationGlossaryEcho(output, part, terms) || hasTranslationBackgroundEcho(output, [{ sourceText: part }], previous)) throw new Error('模型回显提示材料，未保存译文。');
+          if (Object.values((hyMt2 ? detectHyMt2PromptEcho : detectIndexTranslatePromptEcho)(output, part)).some(Boolean) || hasTranslationGlossaryEcho(output, part, terms) || hasTranslationBackgroundEcho(output, [{ sourceText: part }], previous)) throw new Error('模型回显提示材料，未保存译文。');
           results.push(output); lastError = null; break;
         } catch (error) { lastError = error; if (signal?.aborted) throw error; }
       }
@@ -732,7 +794,7 @@ export class RefinedTranslationService {
   #findNextChapter(taskId: string) { return this.#repository.listRefinedTranslationChapters(taskId).find((chapter) => chapter.status !== 'reviewed' && chapter.status !== 'failed' && chapter.status !== 'needs_attention') ?? null; }
   #resumeRemainingAutomaticWork(taskId: string, reason: string): boolean {
     const task = this.#repository.getRefinedTranslationTask(taskId);
-    if (!task || task.deletedAt || task.status !== 'needs_attention' || task.stage === 'completed') return false;
+    if (!task || task.executionMode === 'agent' || task.deletedAt || task.status !== 'needs_attention' || task.stage === 'completed') return false;
     const nextChapter = this.#findNextChapter(taskId);
     if (!nextChapter) return false;
     this.#repository.updateRefinedTranslationTask(taskId, { stage: 'translating', status: 'running' });
@@ -937,6 +999,7 @@ export class RefinedTranslationService {
 
   #setStage(taskId: string, stage: RefinedTranslationStage, checkpoint: Record<string, unknown>): boolean { const before = this.#repository.getRefinedTranslationTask(taskId); if (!before || before.deletedAt || before.status !== 'running') return false; this.#repository.updateRefinedTranslationTask(taskId, { stage }); this.#repository.appendRefinedTranslationTransition({ taskId, fromStage: before.stage, toStage: stage, condition: typeof checkpoint.transitionCondition === 'string' ? checkpoint.transitionCondition : typeof checkpoint.input === 'string' ? checkpoint.input : '自动调度到下一流程节点', chapterId: typeof checkpoint.chapterId === 'string' ? checkpoint.chapterId : null, reviewRound: typeof checkpoint.reviewRound === 'number' ? checkpoint.reviewRound : null }); this.#checkpoint(taskId, stage, checkpoint); this.#emit(taskId, { type: 'task_updated', taskId }); return true; }
   #checkpoint(taskId: string, stage: RefinedTranslationStage, state: Record<string, unknown>) { this.#repository.saveRefinedTranslationCheckpoint(taskId, stage, { ...state, at: new Date().toISOString() }); }
+  #requireWorkflow(taskId: string) { if (this.#repository.getRefinedTranslationTask(taskId)?.executionMode === 'agent') throw new Error('Agent 任务请使用自主执行控制入口。'); }
   #editable(taskId: string) { const task = this.#repository.getRefinedTranslationTask(taskId); return Boolean(task && !task.deletedAt); }
   #automaticRunActive(taskId: string, signal?: AbortSignal) { if (signal?.aborted) return false; const task = this.#repository.getRefinedTranslationTask(taskId); return Boolean(task && !task.deletedAt && task.status === 'running'); }
   #log(taskId: string, level: 'info' | 'warn' | 'error', message: string) { this.#repository.appendRefinedTranslationLog(taskId, level, message); this.#emit(taskId, { type: 'log', taskId }); }

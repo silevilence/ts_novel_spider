@@ -692,6 +692,7 @@ export interface RefinedTranslationModelConfig {
 }
 
 export interface StoredRefinedTranslationTaskRow {
+  executionMode: 'workflow' | 'agent';
   id: string; sourceId: string | null; novelId: string | null; name: string; novelTitle: string; author: string;
   /** Independent source snapshot, refreshed only by explicit source synchronization. */
   sourceMetadata: { title: string; author: string; description: string; tags: string[]; infoPageUrl: string };
@@ -4409,6 +4410,68 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   // ── 精翻工作区 ──
 
+  getRefinedAgentSkills(): import('../contracts/refined-agent').AgentSkill[] | null {
+    const row = this.#database.prepare('SELECT value_json FROM refined_agent_defaults WHERE setting_key=?').get('skills') as { value_json: string } | undefined;
+    return row ? JSON.parse(row.value_json) as import('../contracts/refined-agent').AgentSkill[] : null;
+  }
+  saveRefinedAgentSkills(skills: import('../contracts/refined-agent').AgentSkill[]) {
+    this.#database.prepare(`INSERT INTO refined_agent_defaults(setting_key,value_json) VALUES ('skills',?) ON CONFLICT(setting_key) DO UPDATE SET value_json=excluded.value_json`).run(JSON.stringify(skills));
+  }
+
+  /** Independent session state; the task FK removes it on permanent deletion. */
+  getRefinedAgentState(taskId: string): import('../contracts/refined-agent').AgentState | null {
+    const row = this.#database.prepare('SELECT state_json FROM refined_agent_sessions WHERE task_id = ?').get(taskId) as { state_json: string } | undefined;
+    return row ? JSON.parse(row.state_json) as import('../contracts/refined-agent').AgentState : null;
+  }
+
+  saveRefinedAgentState(taskId: string, state: import('../contracts/refined-agent').AgentState): void {
+    this.#database.prepare(`INSERT INTO refined_agent_sessions(task_id, state_json) VALUES (?, ?)
+      ON CONFLICT(task_id) DO UPDATE SET state_json=excluded.state_json`).run(taskId, JSON.stringify(state));
+    this.#database.prepare("UPDATE refined_translation_tasks SET execution_mode='agent' WHERE task_id=?").run(taskId);
+  }
+
+  /** Synchronous transaction shared by business writes and the durable tool receipt. */
+  refinedAgentTransaction<T>(write: () => T): T { return this.#database.transaction(write)(); }
+
+  #refinedDraftRows(taskId: string) {
+    const tables = ['refined_translation_tasks', 'refined_translation_chapters', 'refined_translation_segments', 'refined_translation_terms', 'refined_translation_reviews', 'refined_translation_paragraph_states', 'refined_translation_revisions', 'refined_translation_logs', 'refined_translation_checkpoints', 'refined_translation_transitions'] as const;
+    return tables.map((table) => ({ table, rows: this.#database.prepare(`SELECT * FROM ${table} WHERE task_id=? ORDER BY rowid`).all(taskId) as Record<string, string | number | null>[] }));
+  }
+
+  /** Hash authoritative materials, excluding presentation timestamps and runtime state. */
+  refinedAgentFingerprint(taskId: string): string {
+    const rows = this.#refinedDraftRows(taskId).filter(({ table }) => !/(logs|checkpoints|transitions)$/.test(table));
+    const materials = rows.map(({ table, rows: entries }) => ({ table, rows: entries.map((row) => Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'updated_at' && !(table === 'refined_translation_tasks' && ['stage', 'status', 'task_name'].includes(key))))) }));
+    return crypto.createHash('sha256').update(JSON.stringify(materials)).digest('hex');
+  }
+
+  /** Copy only this task into an isolated database; models never mutate live data. */
+  createRefinedAgentDraft(taskId: string): SqliteNovelRepository {
+    const draft = new SqliteNovelRepository(':memory:');
+    try {
+      for (const { table, rows } of this.#refinedDraftRows(taskId)) for (const row of rows) {
+        const columns = Object.keys(row);
+        draft.#database.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(...Object.values(row));
+      }
+      draft.#database.prepare("UPDATE refined_translation_tasks SET execution_mode='workflow', status='running' WHERE task_id=?").run(taskId);
+      return draft;
+    } catch (error) { draft.close(); throw error; }
+  }
+
+  /** Optimistic commit; the caller includes the receipt in the same transaction. */
+  applyRefinedAgentDraft(taskId: string, fingerprint: string, draft: SqliteNovelRepository): void {
+    if (this.refinedAgentFingerprint(taskId) !== fingerprint) throw new Error('任务材料已变化，未应用过期结果；请重新读取材料。');
+    const task = this.getRefinedTranslationTask(taskId);
+    if (!task || task.deletedAt) throw new Error('任务已删除，不能写入。');
+    const data = draft.#refinedDraftRows(taskId).filter(({ table }) => table !== 'refined_translation_tasks');
+    for (const { table } of [...data].reverse()) this.#database.prepare(`DELETE FROM ${table} WHERE task_id=?`).run(taskId);
+    for (const { table, rows } of data) for (const row of rows) {
+      const columns = Object.keys(row);
+      this.#database.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(...Object.values(row));
+    }
+    this.updateRefinedTranslationMetadata(taskId, draft.getRefinedTranslationTask(taskId)!.translatedMetadata);
+  }
+
   createRefinedTranslationTask(input: {
     id: string; sourceId: string; novelId: string; name: string; novelTitle: string; author: string;
     sourceMetadata?: StoredRefinedTranslationTaskRow['sourceMetadata'];
@@ -5414,6 +5477,9 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       CREATE INDEX IF NOT EXISTS idx_refined_translation_terms_lookup ON refined_translation_terms(task_id, status, priority DESC);
       CREATE INDEX IF NOT EXISTS idx_refined_translation_reviews_lookup ON refined_translation_reviews(task_id, chapter_id, created_at DESC);
     `);
+    this.#database.exec(`CREATE TABLE IF NOT EXISTS refined_agent_sessions (task_id TEXT PRIMARY KEY, state_json TEXT NOT NULL, FOREIGN KEY(task_id) REFERENCES refined_translation_tasks(task_id) ON DELETE CASCADE)`);
+    this.#database.exec(`CREATE TABLE IF NOT EXISTS refined_agent_defaults (setting_key TEXT PRIMARY KEY, value_json TEXT NOT NULL)`);
+    this.ensureColumnExists('refined_translation_tasks', 'execution_mode', "TEXT NOT NULL DEFAULT 'workflow'");
     this.ensureColumnExists('refined_translation_tasks', 'source_metadata_json', "TEXT NOT NULL DEFAULT '{}'");
     this.ensureColumnExists('refined_translation_chapters', 'has_reused_translation', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumnExists('refined_translation_tasks', 'translated_metadata_json', "TEXT NOT NULL DEFAULT '{}'");
@@ -5867,7 +5933,7 @@ function areTagsEquivalent(left: string[], right: string[]): boolean {
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
-interface RefinedTaskRow { task_id: string; source_id: string | null; novel_id: string | null; task_name: string; novel_title: string; author: string; source_metadata_json: string | null; translated_metadata_json: string | null; source_lang: string; target_lang: string; status: RefinedTranslationTaskStatus; stage: RefinedTranslationStage; model_config_json: string; deleted_at: string | null; created_at: string; updated_at: string; }
+interface RefinedTaskRow { execution_mode: 'workflow' | 'agent'; task_id: string; source_id: string | null; novel_id: string | null; task_name: string; novel_title: string; author: string; source_metadata_json: string | null; translated_metadata_json: string | null; source_lang: string; target_lang: string; status: RefinedTranslationTaskStatus; stage: RefinedTranslationStage; model_config_json: string; deleted_at: string | null; created_at: string; updated_at: string; }
 interface RefinedChapterRow { task_id: string; chapter_id: string; chapter_index: number; title: string; volume_title: string | null; source_content: string; translated_title: string | null; status: RefinedTranslationChapterStatus; review_round: number; review_score: number | null; updated_at: string; }
 interface RefinedSegmentRow { segment_id: string; task_id: string; chapter_id: string; paragraph_index: number; source_text: string; translated_text: string | null; status: RefinedTranslationSegmentStatus; updated_at: string; }
 interface RefinedTermRow { term_id: string; task_id: string; source_term: string; target_term: string | null; entity_type: string | null; priority: number; suggestion: string | null; status: RefinedTranslationTermStatus; updated_at: string; }
@@ -6027,7 +6093,7 @@ function mapChapterTranslationQaRow(row: ChapterTranslationQaRow): StoredChapter
 }
 
 function mapRefinedTaskRow(row: RefinedTaskRow): StoredRefinedTranslationTaskRow {
-  return { id: row.task_id, sourceId: row.source_id, novelId: row.novel_id, name: row.task_name, novelTitle: row.novel_title, author: row.author, sourceMetadata: parseRefinedSourceMetadata(row.source_metadata_json, row.novel_title, row.author), translatedMetadata: parseRefinedTranslatedMetadata(row.translated_metadata_json), sourceLang: row.source_lang, targetLang: row.target_lang, status: row.status, stage: row.stage, modelConfig: parseRefinedModelConfig(row.model_config_json), deletedAt: row.deleted_at, createdAt: row.created_at, updatedAt: row.updated_at };
+  return { executionMode: row.execution_mode ?? 'workflow', id: row.task_id, sourceId: row.source_id, novelId: row.novel_id, name: row.task_name, novelTitle: row.novel_title, author: row.author, sourceMetadata: parseRefinedSourceMetadata(row.source_metadata_json, row.novel_title, row.author), translatedMetadata: parseRefinedTranslatedMetadata(row.translated_metadata_json), sourceLang: row.source_lang, targetLang: row.target_lang, status: row.status, stage: row.stage, modelConfig: parseRefinedModelConfig(row.model_config_json), deletedAt: row.deleted_at, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 function mapRefinedChapterRow(row: RefinedChapterRow): StoredRefinedTranslationChapterRow {
   return { taskId: row.task_id, chapterId: row.chapter_id, chapterIndex: row.chapter_index, title: row.title, volumeTitle: row.volume_title, sourceContent: row.source_content, translatedTitle: row.translated_title, status: row.status, reviewRound: row.review_round, reviewScore: row.review_score, updatedAt: row.updated_at };

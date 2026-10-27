@@ -130,7 +130,10 @@ export const theme = createTheme({
       },
     },
     Modal: {
+      defaultProps: { closeButtonProps: { 'aria-label': '关闭对话框' } },
       styles: {
+        content: { backgroundColor: '#1f1510' },
+        close: { minWidth: 44, minHeight: 44 },
         header: {
           backgroundColor: 'rgba(31, 21, 16, 0.96)',
           borderBottom: '1px solid rgba(168, 133, 96, 0.14)',
@@ -138,6 +141,14 @@ export const theme = createTheme({
         body: {
           backgroundColor: 'rgba(26, 20, 16, 0.94)',
         },
+      },
+    },
+    Drawer: {
+      defaultProps: { closeButtonProps: { 'aria-label': '关闭侧栏' } },
+      styles: {
+        content: { backgroundColor: '#1f1510' },
+        header: { backgroundColor: '#1f1510' },
+        close: { minWidth: 44, minHeight: 44 },
       },
     },
     Accordion: {

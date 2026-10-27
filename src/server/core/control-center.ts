@@ -362,7 +362,9 @@ export class ControlCenterService {
     this.#opdsCompilation.stop();
 
     if (this.#ownsRepository) {
-      this.#repository.close();
+      const agentStopped = this.#refinedTranslation.agent.shutdown();
+      if (agentStopped) void agentStopped.then(() => this.#repository.close());
+      else this.#repository.close();
     }
 
     if (this.#ownsNetworkProxy) {
@@ -1246,6 +1248,7 @@ export class ControlCenterService {
   }
 
   // ── 精翻工作区（独立任务与快照） ──
+  get refinedAgent() { return this.#refinedTranslation.agent; }
   createRefinedTranslationTask(sourceId: string, novelId: string, input: Parameters<RefinedTranslationService['createTask']>[2]) {
     return this.#refinedTranslation.createTask(sourceId, novelId, input);
   }

@@ -5,12 +5,41 @@ import { isLibraryExportFormat, isLibraryExportTranslationMode } from '../core/e
 
 export function createRefinedTranslationRouter({ service }: { service: ControlCenterService }): Router {
   const router = Router();
+  router.get('/agent-skills', (_request, response) => response.json({ skills: service.refinedAgent.skills() }));
+  router.put('/agent-skills', (request, response) => {
+    try { return response.json({ skills: service.refinedAgent.saveSkills(objectBody(request.body).skills) }); }
+    catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '技能配置无效。' }); }
+  });
+
+  router.get('/tasks/:taskId/agent/materials', (request, response) => {
+    try { return response.json(service.refinedAgent.readMaterials(request.params.taskId, { chapterId: typeof request.query.chapterId === 'string' ? request.query.chapterId : null, offset: Number(request.query.offset ?? 0), limit: Number(request.query.limit ?? 10) })); }
+    catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '无法读取物料。' }); }
+  });
+  router.get('/tasks/:taskId/agent/completion', (request, response) => {
+    try { return response.json({ issues: service.refinedAgent.completionIssues(request.params.taskId) }); }
+    catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '无法检查完成条件。' }); }
+  });
+  router.post('/tasks/:taskId/agent/:action', async (request, response) => {
+    try {
+      const id = request.params.taskId; const body = objectBody(request.body);
+      switch (request.params.action) {
+        case 'start': case 'resume': return response.json({ agent: service.refinedAgent.start(id) });
+        case 'pause': return response.json({ agent: await service.refinedAgent.stop(id) });
+        case 'cancel': return response.json({ agent: await service.refinedAgent.stop(id, true) });
+        case 'instruction': return response.json({ agent: service.refinedAgent.appendInstruction(id, requiredString(body, 'text')) });
+        case 'config': return response.json({ agent: service.refinedAgent.updateConfig(id, body) });
+        case 'waive-review': return response.json({ agent: service.refinedAgent.waiveReview(id, requiredString(body, 'chapterId'), requiredString(body, 'reason')) });
+        default: return response.status(404).json({ message: '未知 Agent 操作。' });
+      }
+    } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : 'Agent 操作失败。' }); }
+  });
 
   router.get('/tasks', (request, response) => response.json({ tasks: service.listRefinedTranslationTasks(request.query.recycleBin === 'true') }));
   router.post('/tasks', (request, response) => {
     try {
       const body = objectBody(request.body); const sourceId = requiredString(body, 'sourceId'); const novelId = requiredString(body, 'novelId');
-      const task = service.createRefinedTranslationTask(sourceId, novelId, { ...(optionalString(body.reuseTaskId) ? { reuseTaskId: optionalString(body.reuseTaskId)! } : {}), ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig } : {}) });
+      if (body.executionMode !== undefined && body.executionMode !== 'workflow' && body.executionMode !== 'agent') throw new Error('执行模式无效。');
+      const task = service.createRefinedTranslationTask(sourceId, novelId, { ...(body.executionMode === 'agent' ? { executionMode: 'agent', agentConfig: body.agentConfig } : {}), ...(optionalString(body.reuseTaskId) ? { reuseTaskId: optionalString(body.reuseTaskId)! } : {}), ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig } : {}) });
       response.status(201).json({ task });
     } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '创建精翻任务失败。' }); }
   });
@@ -23,7 +52,7 @@ export function createRefinedTranslationRouter({ service }: { service: ControlCe
       return response.json(service.syncRefinedTranslationSource(request.params.taskId, reuseTaskId ? { reuseTaskId } : {}));
     } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '同步原文失败。' }); }
   });
-  router.put('/tasks/:taskId', (request, response) => { try { const body = objectBody(request.body); const task = service.updateRefinedTranslationTaskConfiguration(request.params.taskId, { ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig as unknown as NonNullable<Parameters<ControlCenterService['updateRefinedTranslationTaskConfiguration']>[1]['modelConfig']> } : {}) }); return task ? response.json({ task }) : response.status(404).json({ message: '精翻任务不存在或已在回收站。' }); } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '任务配置无效。' }); } });
+  router.put('/tasks/:taskId', (request, response) => { try { const body = objectBody(request.body); if ('executionMode' in body) throw new Error('创建后不能切换执行模式。'); const task = service.updateRefinedTranslationTaskConfiguration(request.params.taskId, { ...(optionalString(body.name) ? { name: optionalString(body.name) } : {}), ...(optionalString(body.sourceLang) ? { sourceLang: optionalString(body.sourceLang) } : {}), ...(optionalString(body.targetLang) ? { targetLang: optionalString(body.targetLang) } : {}), ...(isRecord(body.modelConfig) ? { modelConfig: body.modelConfig as unknown as NonNullable<Parameters<ControlCenterService['updateRefinedTranslationTaskConfiguration']>[1]['modelConfig']> } : {}) }); return task ? response.json({ task }) : response.status(404).json({ message: '精翻任务不存在或已在回收站。' }); } catch (error) { return response.status(422).json({ message: error instanceof Error ? error.message : '任务配置无效。' }); } });
   router.get('/tasks/:taskId/stream', (request, response) => {
     response.status(200); response.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); response.setHeader('Cache-Control', 'no-cache, no-transform'); response.setHeader('Connection', 'keep-alive'); response.flushHeaders();
     const send = () => { const task = service.getRefinedTranslationTask(request.params.taskId); response.write(`event: task_updated\ndata: ${JSON.stringify(task)}\n\n`); };

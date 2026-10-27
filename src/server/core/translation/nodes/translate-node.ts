@@ -69,6 +69,7 @@ export async function generateRefinedTranslationText(
   prompt: string,
   abortSignal?: AbortSignal,
   onResponse?: (response: RefinedTextGenerationResponse) => void,
+  maxRetries?: number,
 ): Promise<string> {
   const provider = getProvider(preferences, route.providerId);
   if (!provider) {
@@ -80,6 +81,7 @@ export async function generateRefinedTranslationText(
   if (index) route = { ...route, thinkingEnabled: false };
   const limit = modelContextLimit(preferences, route);
   const result = await generateText({
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
     model: createLanguageModel(provider, route.modelId, { thinkingEnabled: route.thinkingEnabled, ...(index ? { chatTemplateThinking: false } : {}) }),
     ...(limit > 0 ? { maxOutputTokens: contextOutputReserve(limit) } : {}),
     ...(system ? { system } : {}),
@@ -92,6 +94,20 @@ export async function generateRefinedTranslationText(
   if (result.finishReason === 'length') throw new Error('模型输出达到预留 Token 上限，结果不完整；请缩小批次或增大上下文上限。');
   if (!result.text.trim()) throw new TranslationFailure('empty_response', '模型返回空文本。');
   return result.text.trim();
+}
+
+/** One controller turn. Tool execution is journaled separately by the task runtime. */
+export async function generateRefinedAgentTurn(preferences: SystemPreferencesService, route: { providerId: string; modelId: string; thinkingEnabled?: boolean }, system: string, prompt: string, tools: ToolSet, signal: AbortSignal) {
+  if (refinedModelFormat(preferences, route) !== 'general') throw new Error('主控必须使用普通对话模型。');
+  const provider = getProvider(preferences, route.providerId);
+  if (!provider) throw new Error('主控模型不可用。');
+  const limit = modelContextLimit(preferences, route);
+  const result = await generateText({ model: createLanguageModel(provider, route.modelId, { thinkingEnabled: route.thinkingEnabled }), system, prompt, tools,
+    maxRetries: 0, abortSignal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
+    ...(limit > 0 ? { maxOutputTokens: contextOutputReserve(limit) } : {}),
+    ...(route.thinkingEnabled !== undefined ? { providerOptions: refinedThinkingProviderOptions(provider, route.thinkingEnabled) as never } : {}),
+  });
+  return { text: result.text, calls: result.toolCalls.map((call) => ({ id: call.toolCallId, name: call.toolName, input: call.input })), inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens };
 }
 
 /** Runs a bounded, real tool-calling loop for task-scoped refined agents. */

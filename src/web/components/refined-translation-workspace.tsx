@@ -1,8 +1,12 @@
+import { agentConfigSchema, defaultAgentSkills, agentOperations, type AgentConfig } from '../../server/contracts/refined-agent';
+import { RefinedAgentConfigFields } from './refined-agent-config';
+import { RefinedAgentPanel } from './refined-agent-panel';
 import { revisionLimitsError } from '../../server/contracts/refined-finalization';
-import { reopenRefinedParagraph } from '../services/api';
+import { reopenRefinedParagraph, fetchRefinedAgentSkills, saveRefinedAgentSkills } from '../services/api';
 import { useEffect, useRef, useState } from 'react';
 import {
   Badge,
+  SegmentedControl,
   Button,
   Checkbox,
   Group,
@@ -94,6 +98,9 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
   const [segments, setSegments] = useState<RefinedSegment[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [executionMode, setExecutionMode] = useState<'workflow' | 'agent'>('workflow');
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>({ initialCommand: '完成本任务的文学翻译、术语整理、审核修订与导出。保留叙事风格，遇到歧义或需确认的术语时等待我处理。', controller: { providerId: '', modelId: '' }, chapterIds: [], permissions: agentOperations.filter((operation) => operation !== 'confirm_terms'), skills: structuredClone(defaultAgentSkills), budget: { maxCalls: 300, maxMinutes: 120, maxRevisions: 30, maxNoProgress: 5 } });
   const [syncOpen, setSyncOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [reuseTasks, setReuseTasks] = useState<RefinedTask[]>([]);
@@ -139,8 +146,8 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
     const selectionVersion = chapterSelectionVersionRef.current;
     try {
       const next = await fetchRefinedTask(taskId);
+      if (requestVersion !== detailRequestVersionRef.current) return;
       setDetail(next);
-      setSelectedId(taskId);
       const requestedChapterId = chapterIdRef.current;
       const activeChapterId = requestedChapterId && next.chapters.some((item) => item.chapterId === requestedChapterId) ? requestedChapterId : next.chapters[0]?.chapterId;
       const [termResult, chapter, reviewResult] = await Promise.all([
@@ -163,7 +170,7 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
   useEffect(() => {
     void fetchLlmProvidersPreferences().then((providers) => setModelOptions(providers.providers.flatMap((provider) => provider.enabled ? provider.models.filter((model) => model.enabled && model.isConfigured && model.resolvedCapabilities.includes('chat')).map((model) => ({ value: `${provider.id}\u0000${model.modelId}`, label: `${provider.label} / ${model.modelId}${model.translationMessageFormat !== 'general' ? ' · 专用翻译' : ''}`, translationOnly: model.translationMessageFormat !== 'general' })) : [])));
   }, []);
-  useEffect(() => { if (selectedId) void loadDetail(selectedId); }, [selectedId]);
+  useEffect(() => { if (selectedId) void loadDetail(selectedId); return () => { detailRequestVersionRef.current++; }; }, [selectedId]);
   useEffect(() => {
     if (!selectedId) return undefined;
     const stream = new EventSource(`/api/refined-translations/tasks/${encodeURIComponent(selectedId)}/stream`);
@@ -177,7 +184,8 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
 
   const openCreate = async () => {
     try {
-      const [result, providers, availableTasks] = await Promise.all([fetchLibraryNovels(), fetchLlmProvidersPreferences(), fetchRefinedTasks()]);
+      const [result, providers, availableTasks, defaults] = await Promise.all([fetchLibraryNovels(), fetchLlmProvidersPreferences(), fetchRefinedTasks(), fetchRefinedAgentSkills()]);
+      setAgentConfig((current) => ({ ...current, skills: defaults.skills }));
       setReuseTasks(availableTasks.tasks);
       setReuseTaskId(null);
       setNovelOptions(result.novels.filter((item) => item.downloadedChapters > 0).map((item) => ({ value: `${item.sourceId}\u0000${item.metadata.novelId}`, label: `${item.metadata.title}（已采集 ${item.downloadedChapters} 章）` })));
@@ -228,26 +236,23 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
     if (action !== 'delete' && action !== 'purge') await loadDetail(selectedId);
   };
 
-  return <Stack gap="lg">
-    <Paper p="lg" radius="lg" style={{ background: 'linear-gradient(120deg, rgba(44,29,20,.92), rgba(25,18,15,.88))', border: '1px solid rgba(255,209,102,.25)' }}>
+  return <Stack gap="lg" className="refined-workspace">
+    {!detail && <Paper p="sm" radius="lg" style={{ background: 'linear-gradient(120deg, rgba(44,29,20,.92), rgba(25,18,15,.88))', border: '1px solid rgba(255,209,102,.25)' }}>
       <Group justify="space-between" align="flex-start">
-        <Stack gap={3}>
-          <Text size="xs" fw={700} c="yellow" tt="uppercase" style={{ letterSpacing: '.14em' }}>Refined Translation</Text>
-          <Title order={2} style={{ fontFamily: 'Alegreya, Noto Serif SC, Georgia, serif' }}>精翻工作区</Title>
-          <Text size="sm" c="dimmed">任务级原文快照、术语、译文与审核物料；与书库粗翻彼此独立。</Text>
-        </Stack>
+        <Text size="sm" c="dimmed">{recycleBin ? '已删除任务可恢复；永久删除前会再次确认。' : '选择已有任务，或从已下载的小说创建独立精翻任务。'}</Text>
         <Group>
           <Button variant="subtle" color="gray" leftSection={<IconArchive size={16} />} onClick={() => setRecycleBin((value) => !value)}>{recycleBin ? '返回任务' : '回收站'}</Button>
           <Button leftSection={<IconPlus size={16} />} onClick={() => void openCreate()}>新建精翻任务</Button>
         </Group>
       </Group>
-    </Paper>
-    {detail ? <Stack gap="sm">
-      <Group justify="space-between"><Button variant="subtle" leftSection={<IconArrowRight size={15} style={{ transform: 'rotate(180deg)' }} />} onClick={() => { setDetail(null); setSelectedId(null); }}>返回任务列表</Button><Text size="xs" c="dimmed">工作区使用完整宽度，便于阅读、校对与导出。</Text></Group>
+    </Paper>}
+    {detail ?  <Stack gap="sm">
+      <Group justify="space-between"><Button variant="subtle" leftSection={<IconArrowRight size={15} style={{ transform: 'rotate(180deg)' }} />} onClick={() => { detailRequestVersionRef.current++; setDetail(null); setSelectedId(null); }}>返回任务列表</Button><Text size="sm" fw={600}>{detail.task.name}</Text></Group>
       {!detail.task.deletedAt && <Group justify="flex-end"><Button variant="light" disabled={detail.task.status === 'running' || !detail.task.sourceId || !detail.task.novelId} onClick={() => {
         void fetchRefinedTasks().then((result) => { setReuseTasks(result.tasks); setReuseTaskId(null); setSyncOpen(true); }).catch((error: unknown) => onNotify({ tone: 'error', title: '无法加载同步配置', message: error instanceof Error ? error.message : '请稍后重试。' }));
       }}>同步原文</Button></Group>}
-      <Paper p="lg" radius="lg" style={{ background: 'rgba(31,21,16,.72)', border: '1px solid rgba(168,133,96,.18)' }}>
+      <Paper className="refined-task-surface" p="lg" radius="lg" style={{ background: 'rgba(31,21,16,.72)', border: '1px solid rgba(168,133,96,.18)' }}>
+        <Stack gap="lg">{detail.agent && !recycleBin ? <RefinedAgentPanel key={detail.task.id} detail={detail} models={modelOptions} refresh={() => loadDetail(detail.task.id)} onNotify={onNotify} /> : null}
         <RefinedTranslationTaskPanel
           detail={detail}
           terms={terms}
@@ -266,16 +271,16 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
           }}
           onSaveChapterTitle={async (translatedTitle) => { if (!selectedId || !chapterId) return; await updateRefinedChapterTitle(selectedId, chapterId, translatedTitle); await loadDetail(selectedId); }}
           onRetrySegment={async (paragraphIndex) => { if (!selectedId || !chapterId) return; await retryRefinedFailedSegments(selectedId, chapterId, paragraphIndex); await loadDetail(selectedId); }}
-          onResolveReview={async (reviewId, resolution) => {
+          onResolveReview={async (reviewId, resolution, reason) => {
             if (!selectedId) return;
-            await resolveRefinedReview(selectedId, reviewId, resolution);
+            await resolveRefinedReview(selectedId, reviewId, resolution, reason);
             setReviews((items) => items.map((item) => item.id === reviewId ? { ...item, resolution, resolved: resolution !== 'open' } : item));
           }}
           onApplyReviewReplacement={async (review) => {
             if (!selectedId || !review.replacementText || review.paragraphIndices.length !== 1) return;
             const paragraphIndex = review.paragraphIndices[0]!;
             await updateRefinedSegment(selectedId, review.chapterId, paragraphIndex, review.replacementText);
-            await resolveRefinedReview(selectedId, review.id, 'resolved');
+            await resolveRefinedReview(selectedId, review.id, 'resolved', '人工确认并应用审核建议译文。');
             setReviews((items) => items.map((item) => item.id === review.id ? { ...item, resolution: 'accepted', resolutionNote: '已一键接受结构化替换文本。', resolved: true } : item));
             if (chapterId === review.chapterId) setSegments((items) => items.map((segment) => segment.paragraphIndex === paragraphIndex ? { ...segment, translatedText: review.replacementText!, status: 'translated' } : segment));
             onNotify({ tone: 'success', title: '已应用审核替换', message: `已替换第 ${paragraphIndex + 1} 段，并从待处理审核中移除。` });
@@ -316,31 +321,33 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
             return chatWithRefinedChapterAgent(selectedId, chapterId, input);
           }}
           onAction={runAction}
-        />
+        /></Stack>
       </Paper>
     </Stack> : <Stack gap="md">
       <Paper p="md" radius="lg" style={{ background: 'rgba(31,21,16,.54)', border: '1px solid rgba(168,133,96,.18)' }}>
         <Group justify="space-between" align="flex-end"><Stack gap={2}><Title order={3}>{recycleBin ? '精翻任务回收站' : '全部精翻任务'}</Title><Text size="sm" c="dimmed">按任务快速筛选；选择卡片后进入全宽工作区。</Text></Stack><Text size="sm" c="yellow">共 {filteredTasks.length} 个任务</Text></Group>
-        <SimpleGrid cols={{ base: 1, sm: 2 }} mt="sm"><TextInput value={taskQuery} onChange={(event) => setTaskQuery(event.currentTarget.value)} label="搜索任务" placeholder="任务名、小说名或作者" /><Select label="任务状态" value={taskStatus} onChange={(value) => setTaskStatus((value ?? 'all') as typeof taskStatus)} data={[{ value: 'all', label: '全部状态' }, { value: 'running', label: '正在处理' }, { value: 'paused', label: '已暂停' }, { value: 'needs_attention', label: '待任务结束后复核' }, { value: 'completed', label: '已完成' }]} /></SimpleGrid>
+        <SimpleGrid cols={{ base: 1, sm: 2 }} mt="sm"><TextInput value={taskQuery} onChange={(event) => setTaskQuery(event.currentTarget.value)} label="搜索任务" placeholder="任务名、小说名或作者" /><Select label="任务状态" value={taskStatus} onChange={(value) => setTaskStatus((value ?? 'all') as typeof taskStatus)} data={[{ value: 'all', label: '全部状态' }, { value: 'running', label: '正在处理' }, { value: 'paused', label: '已暂停' }, { value: 'needs_attention', label: '需要处理' }, { value: 'completed', label: '已完成' }]} /></SimpleGrid>
       </Paper>
       <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="lg">
         {filteredTasks.map((task) => <TaskCard key={task.id} task={task} selected={false} recycleBin={recycleBin} {...(purgeStatuses[task.id] ? { purgeStatus: purgeStatuses[task.id] } : {})} onClick={() => setSelectedId(task.id)} />)}
       </SimpleGrid>
       {!filteredTasks.length ? <Paper p="xl" radius="md"><Text c="dimmed" ta="center">{tasks.length ? '没有符合当前筛选条件的任务。' : recycleBin ? '回收站为空。' : '还没有精翻任务。'}</Text></Paper> : null}
     </Stack>}
-    <Modal opened={createOpen} onClose={() => setCreateOpen(false)} title="从已抓取小说创建精翻任务" centered>
+    <Modal opened={createOpen} onClose={() => setCreateOpen(false)} title="从已抓取小说创建精翻任务" centered size="lg">
       <Stack>
+        <Stack gap="xs"><Text size="sm" fw={500}>执行方式</Text><SegmentedControl aria-label="执行方式" value={executionMode} onChange={(value) => setExecutionMode(value as 'workflow' | 'agent')} data={[{ value: 'workflow', label: '固定流程' }, { value: 'agent', label: 'Agent 自主执行' }]} /><Text size="sm" c="dimmed">{executionMode === 'workflow' ? '按术语、初翻、审核与修订的既定阶段推进。' : '主控根据目标自主选择工具。创建后先查看配置，再手动启动。'}</Text></Stack>
         <Select label="翻译源" data={novelOptions} value={newSource} onChange={(value) => { setNewSource(value ?? ''); setReuseTaskId(null); }} searchable />
         <TextInput label="任务名称（可留空）" value={newName} onChange={(event) => setNewName(event.currentTarget.value)} placeholder="默认：小说名 精翻任务 日期" />
-        <SimpleGrid cols={2}><TextInput label="源语言（留空继承偏好）" value={newSourceLang} onChange={(event) => setNewSourceLang(event.currentTarget.value)} placeholder="ja" /><TextInput label="目标语言（留空继承偏好）" value={newTargetLang} onChange={(event) => setNewTargetLang(event.currentTarget.value)} placeholder="zh-CN" /></SimpleGrid>
+        <SimpleGrid cols={{ base: 1, sm: 2 }}><TextInput label="源语言（留空继承偏好）" value={newSourceLang} onChange={(event) => setNewSourceLang(event.currentTarget.value)} placeholder="ja" /><TextInput label="目标语言（留空继承偏好）" value={newTargetLang} onChange={(event) => setNewTargetLang(event.currentTarget.value)} placeholder="zh-CN" /></SimpleGrid>
         <Select label="带入已有精翻译文（可选）" description="仅带入同源、同语言且原文一致的段落；保留术语确认步骤，带入译文重新审核。" clearable searchable value={reuseTaskId} data={reuseTasks.filter((task) => `${task.sourceId}\u0000${task.novelId}` === newSource).map((task) => ({ value: task.id, label: `${task.name}（${task.sourceLang} → ${task.targetLang}）` }))} onChange={(value) => {
           setReuseTaskId(value); const donor = reuseTasks.find((task) => task.id === value); if (donor) { setNewSourceLang(donor.sourceLang); setNewTargetLang(donor.targetLang); }
         }} />
+        {executionMode === 'agent' ? <Stack><RefinedAgentConfigFields value={agentConfig} onChange={setAgentConfig} models={modelOptions} /><Button variant="subtle" onClick={() => void saveRefinedAgentSkills(agentConfig.skills).then(({ skills }) => { setAgentConfig((current) => ({ ...current, skills })); onNotify({ tone: 'success', title: '默认技能已更新', message: '仅用于之后创建的任务，已有任务继续使用自己的快照。' }); }).catch((error: unknown) => onNotify({ tone: 'error', title: '保存失败', message: error instanceof Error ? error.message : '请检查技能配置。' }))}>将这些技能保存为新任务默认值</Button></Stack> : null}
         <Text size="xs" c="dimmed">未选择时自动继承全局翻译模型。可分别覆盖任务内各自动步骤。</Text>
-        <SimpleGrid cols={2}><TextInput label="同一段最多自动修订次数" value={newRevisionLimit} onChange={(event) => setNewRevisionLimit(event.currentTarget.value)} /><TextInput label="章节最大审核轮次" value={newReviewRounds} onChange={(event) => setNewReviewRounds(event.currentTarget.value)} /></SimpleGrid>
+        <SimpleGrid cols={{ base: 1, sm: 2 }}><TextInput label="同一段最多自动修订次数" value={newRevisionLimit} onChange={(event) => setNewRevisionLimit(event.currentTarget.value)} /><TextInput label="章节最大审核轮次" value={newReviewRounds} onChange={(event) => setNewReviewRounds(event.currentTarget.value)} /></SimpleGrid>
         {revisionLimitsError(Number(newRevisionLimit), Number(newReviewRounds)) ? <Text c="red" size="sm">{revisionLimitsError(Number(newRevisionLimit), Number(newReviewRounds))}</Text> : null}
-        <SimpleGrid cols={2}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Stack key={key} gap={4}><Select label={label} data={modelOptions.filter((option) => !option.translationOnly)} clearable value={modelKeys[key] ?? null} onChange={(value) => setModelKeys((current) => ({ ...current, [key]: value ?? '' }))} /><Checkbox size="xs" label="启用模型思考" checked={modelThinking[key] ?? false} disabled={!modelKeys[key]} onChange={(event) => { const enabled = event.currentTarget.checked; setModelThinking((current) => ({ ...current, [key]: enabled })); }} /></Stack>)}</SimpleGrid><Stack gap={4}><MultiSelect label="正文初翻模型池" description="按段落轮转分配，配合任务并发数执行。" data={modelOptions} value={translationModelKeys} onChange={setTranslationModelKeys} clearable /><Checkbox size="xs" label="普通初翻模型启用思考（专用翻译模型始终关闭）" checked={translationThinking} disabled={!translationModelKeys.some((key) => !modelOptions.find((option) => option.value === key)?.translationOnly)} onChange={(event) => setTranslationThinking(event.currentTarget.checked)} /></Stack><Text size="xs" c="dimmed">仅在所选模型支持原生思考时开启；翻译、审核等步骤可分别设置。</Text>
-        <Button disabled={!newSource} onClick={() => {
+        <SimpleGrid cols={{ base: 1, sm: 2 }}>{([['termExtractionModel', '术语提取'], ['termTranslationModel', '术语翻译'], ['omissionModel', '遗漏判定'], ['reviewModel', '审核校对']] as const).map(([key, label]) => <Stack key={key} gap={4}><Select label={label} data={modelOptions.filter((option) => !option.translationOnly)} clearable value={modelKeys[key] ?? null} onChange={(value) => setModelKeys((current) => ({ ...current, [key]: value ?? '' }))} /><Checkbox size="xs" label="启用模型思考" checked={modelThinking[key] ?? false} disabled={!modelKeys[key]} onChange={(event) => { const enabled = event.currentTarget.checked; setModelThinking((current) => ({ ...current, [key]: enabled })); }} /></Stack>)}</SimpleGrid><Stack gap={4}><MultiSelect label="正文初翻模型池" description="按段落轮转分配，配合任务并发数执行。" data={modelOptions} value={translationModelKeys} onChange={setTranslationModelKeys} clearable /><Checkbox size="xs" label="普通初翻模型启用思考（专用翻译模型始终关闭）" checked={translationThinking} disabled={!translationModelKeys.some((key) => !modelOptions.find((option) => option.value === key)?.translationOnly)} onChange={(event) => setTranslationThinking(event.currentTarget.checked)} /></Stack><Text size="xs" c="dimmed">仅在所选模型支持原生思考时开启；翻译、审核等步骤可分别设置。</Text>
+        <Button loading={creating} disabled={!newSource || creating || (executionMode === 'agent' && !agentConfigSchema.safeParse(agentConfig).success)} onClick={() => {
           const [sourceId, novelId] = newSource.split('\u0000');
           if (!sourceId || !novelId) return;
           const route = (key: string) => {
@@ -350,11 +357,12 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
           const translationModels = translationModelKeys.flatMap((key) => { const [providerId, modelId] = key.split('\u0000'); return providerId && modelId ? [{ providerId, modelId, ...(translationThinking && !modelOptions.find((option) => option.value === key)?.translationOnly ? { thinkingEnabled: true } : {}) }] : []; });
           const limitsError = revisionLimitsError(Number(newRevisionLimit), Number(newReviewRounds));
           if (limitsError) { onNotify({ tone: 'error', title: '配置无效', message: limitsError }); return; }
-          void createRefinedTask({ sourceId, novelId, ...(reuseTaskId ? { reuseTaskId } : {}), ...(newName.trim() ? { name: newName.trim() } : {}), ...(newSourceLang.trim() ? { sourceLang: newSourceLang.trim() } : {}), ...(newTargetLang.trim() ? { targetLang: newTargetLang.trim() } : {}), modelConfig: { maxParagraphRevisions: Number(newRevisionLimit), maxReviewRounds: Number(newReviewRounds), termExtractionModel: route('termExtractionModel'), termTranslationModel: route('termTranslationModel'), translationModels, omissionModel: route('omissionModel'), reviewModel: route('reviewModel') } }).then(({ task }) => {
+          setCreating(true);
+          void createRefinedTask({ executionMode, ...(executionMode === 'agent' ? { agentConfig } : {}), sourceId, novelId, ...(reuseTaskId ? { reuseTaskId } : {}), ...(newName.trim() ? { name: newName.trim() } : {}), ...(newSourceLang.trim() ? { sourceLang: newSourceLang.trim() } : {}), ...(newTargetLang.trim() ? { targetLang: newTargetLang.trim() } : {}), modelConfig: { maxParagraphRevisions: Number(newRevisionLimit), maxReviewRounds: Number(newReviewRounds), termExtractionModel: route('termExtractionModel'), termTranslationModel: route('termTranslationModel'), translationModels, omissionModel: route('omissionModel'), reviewModel: route('reviewModel') } }).then(({ task }) => {
             setCreateOpen(false); setNewName(''); setNewSourceLang(''); setNewTargetLang(''); setModelKeys({}); setModelThinking({}); setTranslationModelKeys([]); setTranslationThinking(false); setSelectedId(task.id); void loadTasks();
             onNotify({ tone: 'success', title: '精翻任务已创建', message: '已将正文和术语候选快照到独立任务。' });
-          }).catch((error: unknown) => onNotify({ tone: 'error', title: '创建失败', message: error instanceof Error ? error.message : '请稍后再试。' }));
-        }}>创建并进入术语确认</Button>
+          }).catch((error: unknown) => onNotify({ tone: 'error', title: '创建失败', message: error instanceof Error ? error.message : '请稍后再试。' })).finally(() => setCreating(false));
+        }}>{executionMode === 'agent' ? '创建并查看执行配置' : '创建并进入术语确认'}</Button>
       </Stack>
     </Modal>
     <Modal opened={syncOpen} onClose={() => { if (!syncing) setSyncOpen(false); }} title="同步任务原文" centered>
@@ -377,8 +385,8 @@ export function RefinedTranslationWorkspace({ onNotify }: Props) {
 }
 
 function TaskCard({ task, selected, recycleBin, purgeStatus, onClick }: { task: RefinedTask; selected: boolean; recycleBin: boolean; purgeStatus?: PurgeStatus; onClick: () => void }) {
-  return <Paper p="md" radius="md" onClick={onClick} style={{ cursor: 'pointer', border: selected ? '1px solid #ffd166' : '1px solid rgba(168,133,96,.18)', background: 'rgba(31,21,16,.72)' }}>
-    <Group justify="space-between" wrap="nowrap" align="flex-start"><Text fw={700} lineClamp={1} style={{ minWidth: 0, flex: 1 }}>{task.name}</Text><Badge style={{ flexShrink: 0, whiteSpace: 'nowrap' }} color={task.deletedAt ? 'red' : task.status === 'completed' ? 'green' : task.status === 'needs_attention' ? 'orange' : 'yellow'}>{task.deletedAt ? '回收站' : task.status === 'completed' ? '已完成' : task.status === 'needs_attention' ? '需人工介入' : STAGE_LABEL[task.stage]}</Badge></Group>
+  return <Paper p="md" radius="md" role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick(); } }} onClick={onClick} style={{ cursor: 'pointer', border: selected ? '1px solid #ffd166' : '1px solid rgba(168,133,96,.18)', background: 'rgba(31,21,16,.72)' }}>
+    <Group justify="space-between" wrap="wrap" align="flex-start"><Text fw={700} lineClamp={2} title={task.name} style={{ minWidth: 0, flex: '1 1 180px' }}>{task.name}</Text><Badge style={{ flexShrink: 0, whiteSpace: 'nowrap' }} color={task.deletedAt ? 'red' : task.status === 'completed' ? 'green' : task.status === 'needs_attention' ? 'orange' : 'yellow'}>{task.deletedAt ? '回收站' : task.status === 'completed' ? '已完成' : task.status === 'needs_attention' ? '需人工介入' : task.executionMode === 'agent' ? (task.status === 'running' ? '自主处理中' : 'Agent 未运行') : STAGE_LABEL[task.stage]}</Badge></Group>
     <Text size="xs" c="dimmed" mt={5}>{task.novelTitle}</Text>
     {task.progress ? <><Progress mt="xs" size="xs" value={task.progress.total ? task.progress.completed / task.progress.total * 100 : 0} color={task.progress.failed ? 'orange' : 'brand'} /><Text size="xs" c="dimmed" mt={3}>进度 {task.progress.completed}/{task.progress.total} 段{task.progress.failed ? ` · 失败 ${task.progress.failed}` : ''}</Text></> : null}
     {recycleBin && purgeStatus ? <Text size="xs" c={purgeStatus.canPurge ? 'red.3' : 'yellow.3'} mt={4}>标记于 {purgeStatus.deletedAt ? new Date(purgeStatus.deletedAt).toLocaleDateString() : '—'} · {purgeStatus.canPurge ? '已可永久删除' : `${purgeStatus.remainingDays} 天后可永久删除`}</Text> : null}

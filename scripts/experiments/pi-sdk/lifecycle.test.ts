@@ -8,6 +8,9 @@ import { Type } from 'typebox';
 import { defineTool, SessionManager } from '@earendil-works/pi-coding-agent';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import { createHarness, temporaryWorkspace } from './harness.js';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { SqliteNovelRepository } = require('../../../src/server/core/novel-repository.ts') as typeof import('../../../src/server/core/novel-repository.ts');
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -236,7 +239,7 @@ test('session recovery alone cannot make an external business write atomic', asy
   } finally { workspace.close(); }
 });
 
-for (const mode of ['before-write', 'after-write', 'compaction']) {
+for (const mode of ['before-write', 'after-write', 'compaction', 'before-sqlite', 'after-sqlite']) {
   test(`real process exit at ${mode} preserves recoverable evidence`, { timeout: 30000 }, async () => {
     const workspace = temporaryWorkspace();
     try {
@@ -259,6 +262,17 @@ for (const mode of ['before-write', 'after-write', 'compaction']) {
         assert.match(JSON.stringify(manager.getEntries()), /operation-1/);
         assert.equal(manager.buildSessionContext().messages.some((message) => message.role === 'toolResult'), false);
         assert.equal(existsSync(join(workspace.directory, 'business-write.json')), mode === 'after-write');
+        if (mode.endsWith('sqlite')) {
+          const database = new SqliteNovelRepository(join(workspace.directory, 'business.sqlite'));
+          try {
+            const segment = database.listRefinedTranslationSegments('task', 'chapter')[0]!;
+            const state = database.getRefinedAgentState('task')!;
+            assert.equal(segment.translatedText, mode === 'after-sqlite' ? '译文' : null);
+            assert.equal(state.receipts[0]!.status, mode === 'after-sqlite' ? 'completed' : 'running');
+            assert.equal(state.usage.calls, 1);
+            assert.equal(database.listRefinedTranslationSegments('task', 'chapter').length, 1);
+          } finally { database.close(); }
+        }
       }
     } finally { workspace.close(); }
   });

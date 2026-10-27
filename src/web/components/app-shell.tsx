@@ -2,6 +2,8 @@ import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import {
   AppShell as MantineAppShell,
   Burger,
+  Drawer,
+  UnstyledButton,
   Button,
   Group,
   Text,
@@ -28,6 +30,7 @@ import {
   IconWorld,
   IconClock,
   IconWriting,
+  IconDots,
 } from '@tabler/icons-react';
 import type { HealthPayload } from '../../server/routes/health';
 import type { ApiTaskSnapshot } from '../../server/routes/control-center';
@@ -73,7 +76,7 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const theme = useMantineTheme();
-  const [asideOpen, { toggle: toggleAside, close: closeAside }] = useDisclosure(false);
+  const [asideOpen, { toggle: toggleAside }] = useDisclosure(false);
   const [navOpen, { toggle: toggleNav, close: closeNav }] = useDisclosure(false);
   const isMobile = useMediaQuery(`(max-width: ${theme.breakpoints.sm})`);
 
@@ -91,17 +94,12 @@ export function AppShell({
   return (
     <MantineAppShell
       header={{ height: 56 }}
-      navbar={{
-        width: 220,
-        breakpoint: 'sm',
-        collapsed: { desktop: true, mobile: !navOpen },
-      }}
       aside={{
         width: 280,
         breakpoint: 'sm',
         collapsed: { desktop: !asideOpen, mobile: true },
       }}
-      footer={{ height: isMobile ? 56 : 0 }}
+      footer={{ height: isMobile ? 'calc(56px + env(safe-area-inset-bottom))' : 0 }}
       padding={0}
     >
       {/* ── 顶部导航栏 ── */}
@@ -115,7 +113,7 @@ export function AppShell({
         <Group h="100%" px="md" justify="space-between" wrap="nowrap">
           {/* 左侧：品牌 + 移动端汉堡 */}
           <Group gap="xs" wrap="nowrap">
-            <Burger opened={navOpen} onClick={toggleNav} size="sm" hiddenFrom="sm" aria-label="打开导航菜单" />
+            <Burger opened={navOpen} onClick={toggleNav} size="sm" hiddenFrom="lg" aria-label="打开导航菜单" aria-expanded={navOpen} />
             <Group gap={6} wrap="nowrap">
               <IconSpider size={22} color={theme.other.accentStrong as string} />
               <Text fw={700} size="sm" style={{ letterSpacing: '0.06em', color: theme.other.accentStrong as string }} visibleFrom="sm">
@@ -125,7 +123,7 @@ export function AppShell({
           </Group>
 
           {/* 中间：桌面端导航 pills */}
-          <Group gap={4} wrap="nowrap" visibleFrom="sm">
+          <Group gap={4} wrap="nowrap" visibleFrom="lg" component="nav" aria-label="主导航">
             {routes.map((route) => {
               const isActive = route.id === activeRoute.id;
               return (
@@ -135,6 +133,7 @@ export function AppShell({
                   size="compact-sm"
                   color={isActive ? 'brand' : 'gray'}
                   leftSection={<RouteIcon routeId={route.id} size={16} />}
+                  aria-current={isActive ? 'page' : undefined}
                   onClick={() => handleNavigate(route.path)}
                   style={{
                     fontWeight: isActive ? 700 : 500,
@@ -152,14 +151,12 @@ export function AppShell({
           <Group gap="xs" wrap="nowrap">
             <Tooltip label={`服务: ${isConnected ? '正常' : (errorMessage ?? '连接中')}`}>
               <Indicator color={isConnected ? 'green' : 'red'} size={8} withBorder>
-                <ActionIcon variant="subtle" size="sm" color="gray">
-                  <IconServer size={16} />
-                </ActionIcon>
+                <span role="img" aria-label={`服务：${isConnected ? '正常' : '连接中'}`} style={{ display: 'inline-flex', padding: 8 }}><IconServer size={16} /></span>
               </Indicator>
             </Tooltip>
             <Tooltip label={`任务: ${currentTaskLabel}`}>
               <Indicator color={hasActiveTask ? 'yellow' : 'gray'} size={8} withBorder processing={hasActiveTask}>
-                <ActionIcon variant="subtle" size="sm" color="gray">
+                <ActionIcon variant="subtle" size="lg" color="gray" aria-label={`采集任务：${currentTaskLabel}`} onClick={() => handleNavigate('/monitor')}>
                   <IconPlayerPlay size={16} />
                 </ActionIcon>
               </Indicator>
@@ -168,6 +165,7 @@ export function AppShell({
               variant="subtle"
               size="sm"
               color="gray"
+              aria-label={asideOpen ? '收起系统概览' : '打开系统概览'}
               onClick={toggleAside}
               visibleFrom="sm"
             >
@@ -177,47 +175,24 @@ export function AppShell({
         </Group>
       </MantineAppShell.Header>
 
-      {/* ── 移动端侧栏导航 ── */}
-      <MantineAppShell.Navbar
-        py="md"
-        px="sm"
-        style={{
-          background: 'rgba(15, 10, 8, 0.96)',
-          borderRight: `1px solid ${theme.other.lineColor}`,
-        }}
-      >
-        <Stack gap={4}>
-          {routes.map((route) => {
-            const isActive = route.id === activeRoute.id;
-            return (
-              <Button
-                key={route.id}
-                variant={isActive ? 'light' : 'subtle'}
-                color={isActive ? 'brand' : 'gray'}
-                leftSection={<RouteIcon routeId={route.id} size={18} />}
-                onClick={() => handleNavigate(route.path)}
-                justify="flex-start"
-                fullWidth
-                style={{ fontWeight: isActive ? 700 : 500 }}
-              >
-                {route.label}
-              </Button>
-            );
-          })}
+      <Drawer opened={navOpen} onClose={closeNav} title="全部导航" size="xs" returnFocus>
+        <Stack component="nav" aria-label="全部导航" gap="xs">
+          {routes.map((route) => <Button key={route.id} variant={route.id === activeRoute.id ? 'light' : 'subtle'} color={route.id === activeRoute.id ? 'brand' : 'gray'} leftSection={<RouteIcon routeId={route.id} />} justify="flex-start" mih={44} fullWidth aria-current={route.id === activeRoute.id ? 'page' : undefined} onClick={() => handleNavigate(route.path)}>{route.label}</Button>)}
         </Stack>
-      </MantineAppShell.Navbar>
+      </Drawer>
 
       {/* ── 主内容区 ── */}
       <MantineAppShell.Main
         style={{
           minHeight: '100vh',
           paddingTop: rem(56),
-          paddingBottom: isMobile ? rem(56) : 0,
+          paddingBottom: isMobile ? 'calc(56px + env(safe-area-inset-bottom))' : 0,
         }}
       >
         {/* 页面头部 */}
         <Paper
-          py="lg"
+          className="app-page-heading"
+          py={{ base: 'sm', sm: 'lg' }}
           px="md"
           mx="auto"
           maw={1180}
@@ -247,7 +222,7 @@ export function AppShell({
           />
 
           <Stack gap="xs" style={{ position: 'relative', zIndex: 1 }}>
-            <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.14em', color: theme.other.accentStrong as string }}>
+            <Text visibleFrom="sm" size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.14em', color: theme.other.accentStrong as string }}>
               TS Novel Spider
             </Text>
             <Title order={1} style={{ fontFamily: theme.headings.fontFamily }}>
@@ -258,7 +233,7 @@ export function AppShell({
             </Text>
 
             {/* 摘要统计条 */}
-            <Group gap="sm" mt="xs" wrap="wrap">
+            <Group visibleFrom="sm" gap="sm" mt="xs" wrap="wrap">
               <Badge
                 variant="light"
                 color={isConnected ? 'green' : 'red'}
@@ -286,7 +261,7 @@ export function AppShell({
         </Paper>
 
         {/* 路由内容 */}
-        <div style={{ padding: '0 1rem 2rem', maxWidth: 1180, margin: '0 auto' }}>
+        <div className="app-route-content" style={{ padding: '0 1rem 2rem', maxWidth: 1180, margin: '0 auto' }}>
           {children}
         </div>
       </MantineAppShell.Main>
@@ -327,39 +302,11 @@ export function AppShell({
         </Stack>
       </MantineAppShell.Aside>
 
-      {/* ── 移动端底部导航 ── */}
-      <MantineAppShell.Footer
-        hiddenFrom="sm"
-        style={{
-          background: 'rgba(15, 10, 8, 0.94)',
-          backdropFilter: 'blur(18px)',
-          borderTop: `1px solid ${theme.other.lineColor}`,
-        }}
-      >
-        <Group h="100%" px="xs" justify="space-around" wrap="nowrap" gap={0}>
-          {routes.map((route) => {
-            const isActive = route.id === activeRoute.id;
-            return (
-              <Button
-                key={route.id}
-                variant="subtle"
-                size="compact-sm"
-                color={isActive ? 'brand' : 'gray'}
-                onClick={() => handleNavigate(route.path)}
-                style={{
-                  flexDirection: 'column',
-                  height: '100%',
-                  gap: 2,
-                  fontWeight: isActive ? 700 : 500,
-                  fontSize: rem(11),
-                }}
-              >
-                <RouteIcon routeId={route.id} size={18} />
-                {route.label}
-              </Button>
-            );
-          })}
-        </Group>
+      <MantineAppShell.Footer hiddenFrom="sm" className="mobile-navigation">
+        <nav aria-label="快捷导航" className="mobile-navigation-grid">
+          {routes.filter((route) => ['control', 'library', 'refined-translation'].includes(route.id)).map((route) => <UnstyledButton key={route.id} className="mobile-navigation-item" aria-current={route.id === activeRoute.id ? 'page' : undefined} onClick={() => handleNavigate(route.path)}><RouteIcon routeId={route.id} size={20} /><span>{route.label}</span></UnstyledButton>)}
+          <UnstyledButton className="mobile-navigation-item" data-active={!['control', 'library', 'refined-translation'].includes(activeRoute.id) || undefined} aria-label={`更多导航${!['control', 'library', 'refined-translation'].includes(activeRoute.id) ? `，当前${activeRoute.label}` : ''}`} aria-expanded={navOpen} onClick={toggleNav}><IconDots size={20} /><span>更多</span></UnstyledButton>
+        </nav>
       </MantineAppShell.Footer>
     </MantineAppShell>
   );
