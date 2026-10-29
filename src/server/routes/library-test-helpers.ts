@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createServerApp } from '../app';
-import { ControlCenterService, type SpiderRegistryEntry } from '../core/control-center';
+import { ControlCenterService, type ControlCenterServiceOptions, type SpiderRegistryEntry } from '../core/control-center';
 import type { Neo4jGraphQueryResult, Neo4jGraphStore, Neo4jGraphStoreConfig } from '../core/library-intelligence';
 import type {
   StoredKnowledgeGraphEntityRow,
@@ -130,6 +130,8 @@ export class InMemoryNeo4jGraphStore implements Neo4jGraphStore {
 }
 
 export function createLibraryServer(options: {
+  assetFetchImpl?: ControlCenterServiceOptions['assetFetchImpl'];
+  networkProxy?: ControlCenterServiceOptions['networkProxy'];
   systemPreferences?: SystemPreferencesService;
   neo4jGraphStore?: Neo4jGraphStore;
   spiders?: SpiderRegistryEntry[];
@@ -191,17 +193,18 @@ export function createLibraryServer(options: {
 
   const controlCenter = new ControlCenterService({
     repository,
+    ...(options.networkProxy ? { networkProxy: options.networkProxy } : {}),
     spiders: options.spiders ?? [],
     systemPreferences: options.systemPreferences ?? new SystemPreferencesService(),
     ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     offlineAssetStoragePath: path.join(tempDir, 'assets'),
     exportStoragePath: path.join(tempDir, 'exports'),
-    assetFetchImpl: async () => new Response('image-binary', {
+    assetFetchImpl: options.assetFetchImpl ?? (async () => new Response('image-binary', {
       status: 200,
       headers: {
         'content-type': 'image/png',
       },
-    }),
+    })),
   });
 
   const app = createServerApp({ controlCenter });

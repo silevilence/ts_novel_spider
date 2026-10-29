@@ -2,6 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import type { NetworkProxyService, ProxyAwareFetch } from './network-proxy';
+import { redactSecrets } from './translation/nodes/redact-secrets';
+
 import type {
   StoredBookmarkRow,
   StoredNovelAliasRow,
@@ -117,7 +120,8 @@ export interface LibraryChapterDetail {
 
 export interface OfflineLibraryAssetServiceOptions {
   storageRoot?: string;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: ProxyAwareFetch;
+  networkProxy?: NetworkProxyService;
 }
 
 interface LibraryStateExtras {
@@ -128,14 +132,17 @@ interface LibraryStateExtras {
 
 const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?)/gi;
 const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*\]\(((?:https?:\/\/|manual:\/\/)[^)\s]+)\)/gi;
+const MEDIA_DOWNLOAD_TIMEOUT_MS = 120_000;
 
 export class OfflineLibraryAssetService {
   readonly #storageRoot: string;
-  readonly #fetchImpl: typeof fetch;
+  readonly #fetchImpl: ProxyAwareFetch;
+  readonly #networkProxy: NetworkProxyService | undefined;
 
   constructor(options: OfflineLibraryAssetServiceOptions = {}) {
     this.#storageRoot = options.storageRoot ?? path.resolve(process.cwd(), 'data', 'offline-assets');
     this.#fetchImpl = options.fetchImpl ?? fetch;
+    this.#networkProxy = options.networkProxy;
     fs.mkdirSync(this.#storageRoot, { recursive: true });
   }
 
@@ -348,22 +355,67 @@ export class OfflineLibraryAssetService {
       return true;
     }
 
-    const response = await this.#fetchImpl(sourceUrl);
+    let transport = '直连';
+    try {
+      const init = {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+          Accept: 'image/avif,image/webp,image/*,*/*;q=0.8',
+        },
+        signal: AbortSignal.timeout(MEDIA_DOWNLOAD_TIMEOUT_MS),
+      };
+      const requestInit = this.#networkProxy?.createRequestInit(sourceUrl, init) ?? init;
+      if ('dispatcher' in requestInit && requestInit.dispatcher) transport = '代理';
+      const response = await this.#fetchImpl(sourceUrl, requestInit);
 
-    if (!response.ok) {
-      throw new Error(`Media download failed with status ${response.status}.`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const extension = inferFileExtension(sourceUrl, response.headers.get('content-type'));
+      const filePath = this.buildAssetFilePath(sourceId, novelId, chapterId, sourceUrl, extension);
+
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, buffer);
+      return false;
+    } catch (error) {
+      const config = this.#networkProxy?.getConfig();
+      const message = sanitizeMediaDiagnostic(
+        `图片缓存失败 [${transport}] ${sourceId}/${novelId}/${chapterId} ${sourceUrl}: ${describeMediaError(error)}`,
+        [config?.password ?? '', config?.username ?? ''],
+      );
+      console.error(`[offline-media] ${message}`);
+      throw new Error(message);
     }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const extension = inferFileExtension(sourceUrl, response.headers.get('content-type'));
-    const filePath = this.buildAssetFilePath(sourceId, novelId, chapterId, sourceUrl, extension);
-
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, buffer);
-
-    return false;
   }
+}
+
+/** 展开 fetch 的 cause（包括多地址连接失败），保留底层错误码。 */
+function describeMediaError(error: unknown, depth = 0): string {
+  if (depth >= 4) return '';
+  if (!error || typeof error !== 'object') return String(error);
+  const detail = error as { message?: unknown; code?: unknown; cause?: unknown; errors?: unknown[] };
+  return [
+    typeof detail.code === 'string' ? detail.code : '',
+    typeof detail.message === 'string' ? detail.message : '',
+    detail.cause ? describeMediaError(detail.cause, depth + 1) : '',
+    ...(Array.isArray(detail.errors) ? detail.errors.map((entry) => describeMediaError(entry, depth + 1)) : []),
+  ].filter(Boolean).join(': ') || 'Unknown error';
+}
+
+/** 日志和前端共用脱敏信息，不输出代理凭据或图片 URL 中的签名参数。 */
+function sanitizeMediaDiagnostic(message: string, secrets: string[]): string {
+  const sanitized = message.replace(/https?:\/\/[^\s]+/g, (value) => {
+    try {
+      const url = new URL(value);
+      return `${url.origin}${url.pathname}`;
+    } catch {
+      return '[invalid URL]';
+    }
+  });
+  return redactSecrets(sanitized, secrets.flatMap((secret) => [secret, encodeURIComponent(secret)]));
 }
 
 function summarizeMediaAssets(assets: LibraryMediaAsset[]): LibraryMediaSummary {

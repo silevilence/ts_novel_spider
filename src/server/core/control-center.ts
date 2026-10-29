@@ -282,6 +282,7 @@ export class ControlCenterService {
       new Map([['astrbot', options.notificationChannel ?? this.#astrbot]]));
     this.#browserCapture = options.browserCapture ?? new BrowserCaptureService({ store: this.#repository });
     this.#offlineLibrary = new OfflineLibraryAssetService({
+      networkProxy: this.#networkProxy,
       ...(options.offlineAssetStoragePath ? { storageRoot: options.offlineAssetStoragePath } : {}),
       ...(options.assetFetchImpl ? { fetchImpl: options.assetFetchImpl } : {}),
     });
