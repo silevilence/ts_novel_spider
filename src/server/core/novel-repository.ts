@@ -2007,6 +2007,39 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       latestDownloadedAt: row.latest_downloaded_at, aliases: [], readingProgress: null, bookmarkCount: 0 }));
   }
 
+  listEbookImports(): import('../contracts/ebook').EbookImport[] {
+    return (this.#database.prepare('SELECT state_json FROM ebook_imports ORDER BY rowid DESC').all() as Array<{ state_json: string }>).map(row => JSON.parse(row.state_json));
+  }
+
+  saveEbookImport(entry: import('../contracts/ebook').EbookImport): void {
+    this.#database.prepare('INSERT INTO ebook_imports (id, sha256, novel_id, state_json) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET novel_id=excluded.novel_id, state_json=excluded.state_json')
+      .run(entry.id, entry.sha256, entry.novelId, JSON.stringify(entry));
+  }
+
+  getEbookForNovel(novelId: string): import('../contracts/ebook').EbookImport | null {
+    const row = this.#database.prepare('SELECT state_json FROM ebook_imports WHERE novel_id=?').get(novelId) as { state_json: string } | undefined;
+    return row ? JSON.parse(row.state_json) : null;
+  }
+
+  commitEbookImport(id: string, metadata: import('../contracts/ebook').EbookMetadata): string {
+    return this.#database.transaction(() => {
+      const entry = this.listEbookImports().find(item => item.id === id);
+      if (!entry) throw new Error('导入记录不存在。');
+      if (entry.novelId) return entry.novelId;
+      if (entry.status !== 'ready' || !entry.preview?.chapters.length) throw new Error('文件尚未解析成功。');
+      const novelId = this.createManualNovel(metadata.title).metadata.novelId;
+      this.updateManualMetadata(novelId, metadata);
+      for (const chapter of entry.preview.chapters) this.saveManualChapter(novelId, { chapterId: chapter.id, title: chapter.title, content: chapter.content });
+      this.saveEbookImport({ ...entry, status: 'completed', novelId, updatedAt: new Date().toISOString() });
+      this.bumpNovelContentUpdatedAt('manual', novelId);
+      return novelId;
+    })();
+  }
+
+  removeEbookImport(id: string): void {
+    this.#database.prepare('DELETE FROM ebook_imports WHERE id=?').run(id);
+  }
+
   createManualNovel(title: string): StoredNovelSnapshot {
     const normalizedTitle = title.trim();
     if (!normalizedTitle) throw new Error('手动小说标题不能为空。');
@@ -4867,6 +4900,10 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   private migrate(): void {
     this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS ebook_imports (
+        id TEXT PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE,
+        novel_id TEXT UNIQUE, state_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS notification_deliveries (
         id TEXT PRIMARY KEY,
         state_json TEXT NOT NULL
