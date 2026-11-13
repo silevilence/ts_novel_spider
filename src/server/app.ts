@@ -7,6 +7,7 @@ import { ControlCenterService } from './core/control-center';
 import { healthRouter } from './routes/health';
 import { createControlCenterRouter } from './routes/control-center';
 import { createLibraryRouter } from './routes/library';
+import { createEbookRouter } from './routes/ebooks';
 import { createRefinedTranslationRouter } from './routes/refined-translation';
 import { createOpdsRouter } from './routes/opds';
 import { createBrowserCaptureRouter } from './routes/browser-capture';
@@ -36,6 +37,7 @@ export function createServerApp(options: ServerAppOptions = {}): Express {
   app.use('/api/control', createControlCenterRouter({ service: controlCenter }));
   app.use('/api/browser', createBrowserCaptureRouter(controlCenter.getBrowserCaptureService()));
   app.use('/api/library', createLibraryRouter({ service: controlCenter }));
+  app.use('/api/library/ebooks', createEbookRouter(controlCenter));
   app.use('/api/refined-translations', createRefinedTranslationRouter({ service: controlCenter }));
   app.use('/opds', createOpdsRouter({ service: controlCenter }));
 

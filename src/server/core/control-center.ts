@@ -386,6 +386,8 @@ export class ControlCenterService {
     return [...this.#registry.values()].map((entry) => entry.descriptor);
   }
 
+  getEbookImportService(): EbookImportService { return this.#ebooks; }
+
   listLibraryNovels(query?: string): LibraryNovelSummary[] {
     const libraryNovels = this.#repository.listNovels().map((novel) => ({
       sourceId: novel.sourceId,

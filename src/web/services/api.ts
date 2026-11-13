@@ -1,4 +1,16 @@
 import type { TranslationMessageFormat } from '../../server/contracts/translation-message-format';
+import type { EbookImportSummary, EbookMetadata } from '../../server/contracts/ebook';
+
+export function fetchEbookImports(): Promise<{ imports: EbookImportSummary[] }> { return requestJson('/api/library/ebooks'); }
+export function uploadEbook(file: File): Promise<{ id: string; duplicate: boolean }> {
+  return requestJson(`/api/library/ebooks?fileName=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+}
+export function retryEbookImport(id: string, encoding?: string): Promise<{ accepted: boolean }> {
+  return requestJson(`/api/library/ebooks/${id}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ encoding }) });
+}
+export function confirmEbookImport(id: string, input: EbookMetadata): Promise<{ sourceId: string; novelId: string }> {
+  return requestJson(`/api/library/ebooks/${id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
 import type { KnownNotificationTargets, NotificationConfig, NotificationConfigInput, NotificationRecord } from '../../server/contracts/notification';
 
 export function fetchNotificationConfig(): Promise<NotificationConfig> { return requestJson('/api/control/preferences/notifications'); }

@@ -200,6 +200,7 @@ export function createLibraryServer(options: {
     ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     offlineAssetStoragePath: path.join(tempDir, 'assets'),
     exportStoragePath: path.join(tempDir, 'exports'),
+    ebookStoragePath: path.join(tempDir, 'ebooks'),
     opdsArtifactsPath: options.opdsArtifactsPath ?? path.join(tempDir, 'opds'),
     assetFetchImpl: options.assetFetchImpl ?? (async () => new Response('image-binary', {
       status: 200,

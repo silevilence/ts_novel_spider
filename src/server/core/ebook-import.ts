@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAX_EBOOK_BYTES, type EbookImport, type EbookMetadata } from '../contracts/ebook';
+import { MAX_EBOOK_BYTES, type EbookImport, type EbookImportSummary, type EbookMetadata } from '../contracts/ebook';
 import type { SqliteNovelRepository } from './novel-repository';
 import { parseTextEbook } from './ebook-txt';
 import { parseEpubEbook, preserveEpubResources } from './ebook-epub';
 
 export class EbookImportService {
+  #queue: Promise<unknown> = Promise.resolve();
   constructor(readonly repository: SqliteNovelRepository, readonly storageRoot: string) {
     fs.mkdirSync(storageRoot, { recursive: true });
     for (const entry of repository.listEbookImports()) {
@@ -15,6 +16,28 @@ export class EbookImportService {
   }
 
   list(): EbookImport[] { return this.repository.listEbookImports(); }
+  summaries(): EbookImportSummary[] {
+    const novels = this.repository.listNovels();
+    return this.list().map(entry => ({ ...entry,
+      deleted: Boolean(entry.novelId && this.repository.getNovelPurgeStatus('manual', entry.novelId)?.deletedAt),
+      sameTitleCount: entry.preview ? novels.filter(novel => novel.metadata.title === entry.preview!.title && novel.metadata.novelId !== entry.novelId).length : 0,
+      preview: entry.preview ? {
+        title: entry.preview.title, author: entry.preview.author, description: entry.preview.description, tags: entry.preview.tags,
+        chapterCount: entry.preview.chapters.length, excerpt: entry.preview.chapters.slice(0, 3).map(chapter => `${chapter.title}\n${chapter.content.slice(0, 1000)}`).join('\n\n'),
+        warnings: entry.preview.warnings, ...(entry.preview.encoding ? { encoding: entry.preview.encoding } : {}),
+      } : null,
+    }));
+  }
+
+  startParse(id: string, encoding?: string): void {
+    const entry = this.get(id);
+    if (entry.status === 'parsing' || entry.novelId) return;
+    this.repository.saveEbookImport({ ...entry, status: 'parsing', error: null });
+    this.#queue = this.#queue.then(async () => {
+      this.repository.saveEbookImport({ ...this.get(id), status: 'uploaded' });
+      await this.parse(id, encoding);
+    }).catch(error => { console.error('Ebook import failed:', error instanceof Error ? error.message : 'unknown'); });
+  }
   get(id: string): EbookImport {
     const entry = this.list().find(item => item.id === id);
     if (!entry) throw new Error('导入记录不存在。');

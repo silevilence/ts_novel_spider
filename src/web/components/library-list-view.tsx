@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { EbookImportPanel } from './ebook-import-panel';
 import {
   Badge, Button, Card, Group, Menu, Modal, Paper, ScrollArea, SimpleGrid, Stack, Text, TextInput, Title, UnstyledButton,
 } from '@mantine/core';
@@ -27,6 +28,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
   const [isSearchGuideOpen, setIsSearchGuideOpen] = useState(false);
   const [descriptionDialog, setDescriptionDialog] = useState<DescriptionDialogState | null>(null);
   const [manualTitle, setManualTitle] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashedNovels, setTrashedNovels] = useState<LibraryModel['novels']>([]);
@@ -37,6 +39,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
 
   return (
     <Stack gap="md">
+      <EbookImportPanel opened={importOpen} onClose={() => setImportOpen(false)} onImported={() => { void model.refresh(); }} onOpenBook={novelId => model.openNovel('manual', novelId)} />
       <Paper p="lg" radius="lg" style={{ background: 'rgba(31,21,16,0.78)', border: '1px solid rgba(168,133,96,0.18)' }}>
         <Stack gap="xs">
           <Group>
@@ -60,6 +63,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
       </Paper>
 
       <Group>
+        <Button onClick={() => setImportOpen(true)}>导入电子书</Button>
         <TextInput
           leftSection={<IconSearch size={16} />}
           placeholder="搜索：name:作品名、tag:标签、alias:别名..."

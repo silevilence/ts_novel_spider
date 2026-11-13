@@ -21,4 +21,9 @@ export interface EbookImport {
   updatedAt: string;
 }
 export type EbookMetadata = Pick<EbookPreview, 'title' | 'author' | 'description' | 'tags'>;
+export interface EbookImportSummary extends Omit<EbookImport, 'preview'> {
+  preview: (EbookMetadata & { chapterCount: number; excerpt: string; warnings: string[]; encoding?: string }) | null;
+  deleted: boolean;
+  sameTitleCount: number;
+}
 export const MAX_EBOOK_BYTES = 32 * 1024 * 1024;
