@@ -17,6 +17,8 @@ import type {
 } from './spider';
 
 export interface LibraryNovelSummary {
+  origin?: 'imported';
+  ebook?: import('../contracts/ebook').EbookOriginalInfo;
   sourceId: string;
   metadata: NovelMetadata;
   updatedAt: string;
@@ -87,6 +89,8 @@ export interface LibraryChapterSummary extends StoredChapterRecord {
 }
 
 export interface LibraryNovelDetail {
+  origin?: 'imported';
+  ebook?: import('../contracts/ebook').EbookOriginalInfo;
   sourceId: string;
   metadata: NovelMetadata;
   updatedAt: string;

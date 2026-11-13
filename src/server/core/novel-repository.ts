@@ -2065,6 +2065,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .run(title, author, description, JSON.stringify(tags), timestamp, novelId);
     const version = this.#nextMetadataVersion('manual', novelId);
     this.#recordMetadataVersion('manual', novelId, version, title, author, description, tags, timestamp);
+    this.bumpNovelContentUpdatedAt('manual', novelId);
     return { changed: true, snapshot: this.getSnapshot('manual', novelId)! };
   }
 
@@ -2088,6 +2089,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       .run(novelId, chapterId, chapterIndex, title, volumeTitle, content, timestamp, timestamp);
     this.#database.prepare(`UPDATE novels SET chapter_count = (SELECT COUNT(*) FROM chapters WHERE source_id='manual' AND novel_id=? AND chapter_id NOT GLOB '__*'), updated_at=? WHERE source_id='manual' AND novel_id=?`).run(novelId, timestamp, novelId);
     this.#reindexManualChapters(novelId);
+    this.bumpNovelContentUpdatedAt('manual', novelId);
     const current = this.getChapter('manual', novelId, chapterId)!;
     const nextVersion = this.#nextChapterVersion('manual', novelId, chapterId);
     if (nextVersion > 0 || content.trim()) {

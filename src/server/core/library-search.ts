@@ -5,6 +5,7 @@ interface LibrarySearchAlias {
 }
 
 export interface LibrarySearchNovel {
+  origin?: 'imported';
   sourceId: string;
   metadata: NovelMetadata;
   aliases: LibrarySearchAlias[];
@@ -301,7 +302,7 @@ function evaluateTerm(node: Extract<SearchNode, { type: 'term' }>, novel: Librar
   }
 
   if (node.field === 'site') {
-    return scoreTextField(novel.sourceId, term, 90);
+    return scoreTextField(novel.origin === 'imported' ? 'imported' : novel.sourceId, term, 90);
   }
 
   if (node.field === 'author') {
@@ -321,7 +322,7 @@ function evaluateTerm(node: Extract<SearchNode, { type: 'term' }>, novel: Librar
     scoreManyTextFields(novel.aliases.map((entry) => entry.alias), term, 140),
     scoreManyTextFields(novel.metadata.tags, term, 120),
     scoreTextField(novel.metadata.author, term, 100),
-    scoreTextField(novel.sourceId, term, 90),
+    scoreTextField(novel.origin === 'imported' ? 'imported' : novel.sourceId, term, 90),
     scoreTextField(novel.metadata.description, term, 50),
   ].filter((entry) => entry.matched);
 

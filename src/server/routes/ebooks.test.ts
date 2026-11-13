@@ -33,6 +33,15 @@ test('batch ebook API isolates failures, previews and confirms, detects duplicat
     const { novelId } = await (await confirm()).json() as { novelId: string };
     assert.equal(repository.getSnapshot('manual', novelId)?.chapters.length, 1);
     assert.equal((await (await confirm()).json() as { novelId: string }).novelId, novelId);
+    const libraryBase = base.replace(/\/ebooks$/, '');
+    const metadataResponse = await fetch(`${libraryBase}/novels/manual/${novelId}/metadata`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...confirmation, title: '修改后书名', tags: ['新标签'] }) });
+    assert.equal(metadataResponse.status, 200);
+    const books = await (await fetch(`${libraryBase}/novels?q=${encodeURIComponent('site:imported + tag:新标签')}`)).json() as { novels: Array<{ origin?: string; ebook?: { format: string }; metadata: { title: string } }> };
+    assert.equal(books.novels.length, 1);
+    assert.equal(books.novels[0]?.origin, 'imported');
+    assert.equal(books.novels[0]?.ebook?.format, 'txt');
+    assert.equal(books.novels[0]?.metadata.title, '修改后书名');
+    assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/metadata-sync`, { method: 'POST' })).status, 422);
     repository.moveNovelToTrash('manual', novelId);
     records = (await (await fetch(base)).json() as { imports: EbookImportSummary[] }).imports;
     assert.equal(records.find(entry => entry.id === good.id)?.deleted, true);

@@ -1,4 +1,5 @@
 export interface OpdsNovelFeedEntry {
+  origin?: 'imported';
   aliases?: Array<{ alias: string }>;
   sourceId: string;
   novelId: string;

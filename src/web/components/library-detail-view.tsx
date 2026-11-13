@@ -196,6 +196,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
             <Text size="xs" fw={700} tt="uppercase" style={{ letterSpacing: '0.12em', color: '#ffd166' }}>书籍详情</Text>
             <Title order={2} style={{ fontFamily: 'Alegreya, Noto Serif SC, Georgia, serif' }}>{detail.metadata.title}</Title>
             <Text size="sm" c="dimmed">作者：{detail.metadata.author || '未知作者'}</Text>
+            {detail.ebook ? <Text size="sm" c="dimmed">导入电子书 · {detail.ebook.format.toUpperCase()} · 原件：{detail.ebook.fileName}。编辑内容不会修改原件。</Text> : null}
             <Group gap="sm">
               <Badge variant="light" color="green" size="lg">已采集 {detail.stats.downloaded}</Badge>
               <Badge variant="light" color="yellow" size="lg">未采集 {detail.stats.pending}</Badge>

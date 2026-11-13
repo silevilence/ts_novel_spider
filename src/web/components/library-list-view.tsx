@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { EbookImportPanel } from './ebook-import-panel';
 import {
-  Badge, Button, Card, Group, Menu, Modal, Paper, ScrollArea, SimpleGrid, Stack, Text, TextInput, Title, UnstyledButton,
+  Badge, Button, Card, Group, Menu, Modal, Paper, ScrollArea, Select, SimpleGrid, Stack, Text, TextInput, Title, UnstyledButton,
 } from '@mantine/core';
 import { IconBook, IconSearch, IconArrowRight, IconDots, IconFileDownload, IconBook2, IconPlus } from '@tabler/icons-react';
 
@@ -29,6 +29,10 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
   const [descriptionDialog, setDescriptionDialog] = useState<DescriptionDialogState | null>(null);
   const [manualTitle, setManualTitle] = useState('');
   const [importOpen, setImportOpen] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const sourceName = (novel: LibraryModel['novels'][number]) => novel.origin === 'imported' ? 'imported' : novel.sourceId;
+  const visibleNovels = model.novels.filter(novel => (!sourceFilter || sourceName(novel) === sourceFilter) && (!tagFilter || novel.metadata.tags.includes(tagFilter)));
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashedNovels, setTrashedNovels] = useState<LibraryModel['novels']>([]);
@@ -49,10 +53,10 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
             </Text>
           </Group>
           <Title order={2} style={{ fontFamily: 'Alegreya, Noto Serif SC, Georgia, serif' }}>
-            已采集的小说
+            我的书库
           </Title>
           <Text size="sm" c="dimmed" maw={640}>
-            这里列出已下载到本地的小说。点击详情可补抓新章节、导出文件或直接阅读。
+            管理采集、手动创建和导入的书籍，查看详情、阅读正文或导出文件。
           </Text>
           <Group gap="sm">
             <Badge variant="light" color="gray" size="lg">已入库 {totalNovels} 本</Badge>
@@ -99,23 +103,28 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
       </Group>
 
       <Paper p="md" radius="lg" style={{ background: 'rgba(31,21,16,0.6)', border: '1px solid rgba(168,133,96,0.12)' }}>
+        <Group mb="md">
+          <Select label="来源" clearable value={sourceFilter} onChange={setSourceFilter} data={[...new Set(model.novels.map(sourceName))].map(value => ({ value, label: value === 'imported' ? '导入电子书' : value === 'manual' ? '手动创建' : value }))} />
+          <Select label="标签" clearable searchable value={tagFilter} onChange={setTagFilter} data={[...new Set(model.novels.flatMap(novel => novel.metadata.tags))]} />
+          <Text size="sm">筛选结果 {visibleNovels.length} 本</Text>
+        </Group>
         <Text size="sm" c="dimmed" mb="md">{model.errorMessage ?? `${model.novels.length} 本作品 · 支持书名、别名、标签、作者和站点组合检索`}</Text>
 
-        {model.novels.length === 0 ? (
+        {visibleNovels.length === 0 ? (
           <Stack align="center" gap="md" py="xl">
-            <Text c="dimmed">{model.loading ? '正在读取书库...' : '书库里还没有小说。'}</Text>
+            <Text c="dimmed">{model.loading ? '正在读取书库...' : '没有匹配的书籍，可调整筛选或导入文件。'}</Text>
             {!model.loading ? (
               <Button variant="filled" color="brand" onClick={onOpenControl}>去采集第一本作品</Button>
             ) : null}
           </Stack>
         ) : (
           <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-            {model.novels.map((novel) => {
+            {visibleNovels.map((novel) => {
               const preview = buildTextPreview(novel.metadata.description, LIBRARY_CARD_DESCRIPTION_LIMIT);
               return (
                 <Card key={`${novel.sourceId}-${novel.metadata.novelId}`} padding="md" radius="lg" h="auto" mih={220} style={{ display: 'flex', flexDirection: 'column' }}>
                   <Group justify="space-between" mb="xs">
-                    <Badge variant="light" color="gray" size="sm">{novel.sourceId}</Badge>
+                    <Badge variant="light" color="gray" size="sm">{novel.ebook ? `导入 · ${novel.ebook.format.toUpperCase()}` : novel.sourceId === 'manual' ? '手动创建' : novel.sourceId}</Badge>
                     <Menu shadow="md" width={160}>
                       <Menu.Target>
                         <Button variant="subtle" size="compact-xs" px={6}><IconDots size={16} /></Button>

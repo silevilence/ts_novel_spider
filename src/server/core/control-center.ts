@@ -388,8 +388,14 @@ export class ControlCenterService {
 
   getEbookImportService(): EbookImportService { return this.#ebooks; }
 
+  private ebookMetadata(sourceId: string, novelId: string): Pick<LibraryNovelSummary, 'origin' | 'ebook'> {
+    const entry = sourceId === 'manual' ? this.#repository.getEbookForNovel(novelId) : null;
+    return entry ? { origin: 'imported', ebook: { id: entry.id, fileName: entry.fileName, format: entry.format, size: entry.size } } : {};
+  }
+
   listLibraryNovels(query?: string): LibraryNovelSummary[] {
     const libraryNovels = this.#repository.listNovels().map((novel) => ({
+      ...this.ebookMetadata(novel.sourceId, novel.metadata.novelId),
       sourceId: novel.sourceId,
       metadata: novel.metadata,
       updatedAt: novel.updatedAt,
@@ -436,6 +442,7 @@ export class ControlCenterService {
       : null;
     return detail ? {
       ...detail,
+      ...this.ebookMetadata(sourceId, novelId),
       chapters: detail.chapters.map((chapter) => ({
         ...chapter,
         versionChangeCount: this.#repository.getChapterVersionChangeCount(sourceId, novelId, chapter.id),
@@ -809,6 +816,7 @@ export class ControlCenterService {
   listVisibleOpdsNovelsWithMetadata(): OpdsNovelFeedEntry[] {
     return this.#repository.listVisibleOpdsNovelsWithMetadata().map(novel => ({
       ...novel,
+      ...this.ebookMetadata(novel.sourceId, novel.novelId),
       aliases: this.#repository.listNovelAliases(novel.sourceId, novel.novelId),
     }));
   }
