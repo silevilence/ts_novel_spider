@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { load } from 'cheerio';
+import JSZip from 'jszip';
 
 import {
   closeServer,
@@ -24,6 +26,34 @@ test('OPDS query includes aliases but excludes hidden and trashed books', async 
     assert.equal((await search()).length, 0);
     assert.equal((await fetch(`${baseUrl}/opds/v2?query=a&query=b`)).status, 400);
   } finally { await closeServer(server); cleanup(); }
+});
+
+test('OPDS search discovery resolves encoded terms and advertises only real artifacts', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opds-search-'));
+  const { app, cleanup, repository } = createLibraryServer({ opdsArtifactsPath: root });
+  const server = app.listen(0, '127.0.0.1');
+  try {
+    repository.updateOpdsVisible('syosetu', 'n1000lib', true);
+    const baseUrl = await waitForServerListening(server);
+    const discovery = load(await (await fetch(`${baseUrl}/opds/search.xml`)).text(), { xml: true });
+    const url = discovery('Url').attr('template')!.replace('{searchTerms}', encodeURIComponent('name:离线'));
+    const search = async () => load(await (await fetch(url)).text(), { xml: true });
+    assert.equal((await search())('entry').length, 1);
+    assert.equal((await search())('link[rel="http://opds-spec.org/acquisition"]').length, 0);
+    const { LocalExportEngine } = await import('../core/export-engine');
+    const { OfflineLibraryAssetService } = await import('../core/offline-library');
+    const engine = new LocalExportEngine({ outputRoot: path.join(root, 'exports'), assetService: new OfflineLibraryAssetService({ storageRoot: path.join(root, 'assets') }) });
+    const artifact = await engine.generate(repository.getSnapshot('syosetu', 'n1000lib')!, 'epub');
+    const target = path.join(root, 'syosetu', 'n1000lib');
+    fs.mkdirSync(target, { recursive: true });
+    fs.copyFileSync(artifact.filePath, path.join(target, 'original.epub'));
+    const link = (await search())('link[rel="http://opds-spec.org/acquisition"]').attr('href')!;
+    const zip = await JSZip.loadAsync(await (await fetch(new URL(link, baseUrl))).arrayBuffer());
+    assert.equal(await zip.file('mimetype')!.async('string'), 'application/epub+zip');
+    const v2 = await (await fetch(`${baseUrl}/opds/v2/search?query=${encodeURIComponent('name:离线')}`)).json() as { links: Array<{ rel: string; templated?: boolean }>; publications: unknown[] };
+    assert(v2.links.some(link => link.rel === 'search' && link.templated));
+    assert.equal(v2.publications.length, 1);
+  } finally { await closeServer(server); cleanup(); fs.rmSync(root, { recursive: true }); }
 });
 
 test('OPDS v1 root feed returns OPDS navigation content type', async () => {

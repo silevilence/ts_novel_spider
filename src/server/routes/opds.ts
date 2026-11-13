@@ -68,6 +68,18 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
 
   // ── OPDS 1.2 (Atom XML) ──
 
+  router.get('/search.xml', (request, response) => {
+    sendXmlResponse(response, 'application/opensearchdescription+xml; charset=utf-8', feedService.buildOpenSearchDescription(resolveRequestOrigin(request) ?? ''));
+  });
+
+  router.get('/v1/search', (request, response) => {
+    const novels = searchOpdsNovels(service.listVisibleOpdsNovelsWithMetadata(), readOpdsQuery(request.query));
+    const availability = new Map(novels.map(novel => [
+      `${novel.sourceId}:${novel.novelId}`, service.getOpdsNovelArtifactAvailability(novel.sourceId, novel.novelId),
+    ]));
+    sendXmlResponse(response, ATOM_ACQUISITION_CONTENT_TYPE, feedService.buildAtomSearchFeed(novels, availability, request.originalUrl));
+  });
+
   router.get('/v1', (request, response) => {
     try {
       respondWithV1RootFeed(request, response);
@@ -101,7 +113,7 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
 
   // ── OPDS 2.0 (JSON-LD) ──
 
-  router.get('/v2', (request, response) => {
+  router.get(['/v2', '/v2/search'], (request, response) => {
     try {
       const novels = searchOpdsNovels(service.listVisibleOpdsNovelsWithMetadata(), readOpdsQuery(request.query));
       const availabilityByNovel = new Map(

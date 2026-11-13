@@ -130,6 +130,7 @@ export class InMemoryNeo4jGraphStore implements Neo4jGraphStore {
 }
 
 export function createLibraryServer(options: {
+  opdsArtifactsPath?: string;
   assetFetchImpl?: ControlCenterServiceOptions['assetFetchImpl'];
   networkProxy?: ControlCenterServiceOptions['networkProxy'];
   systemPreferences?: SystemPreferencesService;
@@ -199,6 +200,7 @@ export function createLibraryServer(options: {
     ...(options.neo4jGraphStore ? { neo4jGraphStore: options.neo4jGraphStore } : {}),
     offlineAssetStoragePath: path.join(tempDir, 'assets'),
     exportStoragePath: path.join(tempDir, 'exports'),
+    opdsArtifactsPath: options.opdsArtifactsPath ?? path.join(tempDir, 'opds'),
     assetFetchImpl: options.assetFetchImpl ?? (async () => new Response('image-binary', {
       status: 200,
       headers: {

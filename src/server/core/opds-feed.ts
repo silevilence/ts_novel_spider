@@ -34,6 +34,35 @@ const EPUB_MEDIA_TYPE = 'application/epub+zip';
 const OPDS2_MEDIA_TYPE = 'application/opds+json';
 
 export class OpdsFeedService {
+  buildOpenSearchDescription(baseUrl: string): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+  <ShortName>小说书库</ShortName><Description>搜索书名、作者、标签和别名</Description>
+  <InputEncoding>UTF-8</InputEncoding>
+  <Url type="application/atom+xml;profile=opds-catalog;kind=acquisition" template="${this.escapeXml(baseUrl)}/opds/v1/search?q={searchTerms}"/>
+</OpenSearchDescription>`;
+  }
+
+  buildAtomSearchFeed(novels: OpdsNovelFeedEntry[], availability: ReadonlyMap<string, OpdsArtifactAvailability>, self: string): string {
+    const entries = novels.map(novel => {
+      const state = availability.get(this.buildNovelKey(novel.sourceId, novel.novelId));
+      const versions = state ? this.collectAvailableVersions(state) : [];
+      return `<entry><id>urn:opds:novel:${this.escapeXml(novel.sourceId)}:${this.escapeXml(novel.novelId)}</id>
+        <title>${this.escapeXml(novel.title)}</title><author><name>${this.escapeXml(novel.author)}</name></author>
+        <summary>${this.escapeXml(novel.description)}</summary><updated>${this.escapeXml(novel.contentUpdatedAt ?? new Date().toISOString())}</updated>
+        ${novel.tags.map(tag => `<category term="${this.escapeXml(tag)}"/>`).join('')}
+        <link rel="alternate" type="${ATOM_ACQUISITION_TYPE}" href="${this.escapeXml(this.buildOpdsV1NovelPath(novel.sourceId, novel.novelId))}"/>
+        ${versions.map(version => `<link rel="http://opds-spec.org/acquisition" type="${EPUB_MEDIA_TYPE}" title="${OPDS_VERSION_LABELS[version]}" href="/opds/artifacts/${this.escapeXml(novel.sourceId)}/${this.escapeXml(novel.novelId)}/${version}.epub"/>`).join('')}
+      </entry>`;
+    }).join('\n');
+    return `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">
+      <id>${this.escapeXml(self)}</id><title>书库搜索</title><updated>${this.computeFeedUpdated(novels)}</updated>
+      <link rel="self" type="${ATOM_ACQUISITION_TYPE}" href="${this.escapeXml(self)}"/>
+      <link rel="start" type="${ATOM_NAVIGATION_TYPE}" href="${OPDS_V1_ROOT_PATH}"/>
+      <link rel="search" type="application/opensearchdescription+xml" href="/opds/search.xml"/>
+      ${entries}</feed>`;
+  }
+
   /** OPDS 1.2 根目录 feed（Atom XML） */
   buildAtomRootFeed(novels: OpdsNovelFeedEntry[], baseUrl?: string): string {
     const updated = this.computeFeedUpdated(novels);
@@ -54,6 +83,7 @@ export class OpdsFeedService {
   </author>
   <icon>${this.escapeXml(rootIconUrl)}</icon>
   <updated>${this.escapeXml(updated)}</updated>
+  <link rel="search" type="application/opensearchdescription+xml" href="/opds/search.xml"/>
   <link rel="alternate" type="text/html" title="Web Page" href="/library"/>
   <link rel="self" href="${this.escapeXml(OPDS_V1_ROOT_PATH)}" type="${ATOM_NAVIGATION_TYPE}" title="This Page"/>
   <link rel="start" href="${this.escapeXml(OPDS_V1_ROOT_PATH)}" type="${ATOM_NAVIGATION_TYPE}" title="Start Page"/>
@@ -77,6 +107,7 @@ ${entries}
   <link rel="self" href="${this.escapeXml(this.buildOpdsV1NovelPath(novel.sourceId, novel.novelId))}" type="${ATOM_ACQUISITION_TYPE}"/>
   <link rel="start" href="${this.escapeXml(OPDS_V1_ROOT_PATH)}" type="${ATOM_NAVIGATION_TYPE}"/>
   <link rel="up" href="${this.escapeXml(OPDS_V1_ROOT_PATH)}" type="${ATOM_NAVIGATION_TYPE}"/>
+  <link rel="search" type="application/opensearchdescription+xml" href="/opds/search.xml"/>
 ${entries}
 </feed>`;
   }
@@ -101,6 +132,7 @@ ${entries}
       links: [
         { rel: 'self', href: '/opds/v2', type: OPDS2_MEDIA_TYPE },
         { rel: 'start', href: '/opds/v2', type: OPDS2_MEDIA_TYPE },
+        { rel: 'search', href: '/opds/v2/search{?query,title,author,tag}', type: OPDS2_MEDIA_TYPE, templated: true },
       ],
       publications,
     }, null, 2);
