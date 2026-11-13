@@ -1,4 +1,5 @@
 export interface OpdsNovelFeedEntry {
+  originalFile?: { href: string; type: string; title: string };
   origin?: 'imported';
   aliases?: Array<{ alias: string }>;
   sourceId: string;
@@ -54,6 +55,7 @@ export class OpdsFeedService {
         ${novel.tags.map(tag => `<category term="${this.escapeXml(tag)}"/>`).join('')}
         <link rel="alternate" type="${ATOM_ACQUISITION_TYPE}" href="${this.escapeXml(this.buildOpdsV1NovelPath(novel.sourceId, novel.novelId))}"/>
         ${versions.map(version => `<link rel="http://opds-spec.org/acquisition" type="${EPUB_MEDIA_TYPE}" title="${OPDS_VERSION_LABELS[version]}" href="/opds/artifacts/${this.escapeXml(novel.sourceId)}/${this.escapeXml(novel.novelId)}/${version}.epub"/>`).join('')}
+        ${this.buildOriginalFileLink(novel)}
       </entry>`;
     }).join('\n');
     return `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">
@@ -96,7 +98,8 @@ ${entries}
   buildAtomNovelFeed(novel: OpdsNovelFeedEntry, availability: OpdsArtifactAvailability, baseUrl?: string): string {
     const updated = novel.epubCompiledAt ?? novel.contentUpdatedAt ?? new Date().toISOString();
     const versions = this.collectAvailableVersions(availability);
-    const entries = versions.map((version) => this.buildAtomVersionEntry(novel, version)).join('\n');
+    const entries = versions.map((version) => this.buildAtomVersionEntry(novel, version)).join('\n')
+      + (novel.originalFile ? `<entry><id>urn:opds:novel:${this.escapeXml(novel.sourceId)}:${this.escapeXml(novel.novelId)}:uploaded</id><title>${this.escapeXml(novel.title)}（上传原件）</title><author><name>${this.escapeXml(novel.author)}</name></author><updated>${this.escapeXml(updated)}</updated>${this.buildOriginalFileLink(novel)}</entry>` : '');
     const novelFeedUrl = this.buildOpdsV1NovelUrl(novel.sourceId, novel.novelId, baseUrl);
     const novelFeedId = novelFeedUrl ?? `urn:opds:novel:${novel.sourceId}:${novel.novelId}`;
 
@@ -167,6 +170,7 @@ ${entries}
       links: [
         { rel: 'self', href: `/opds/v2/${novel.sourceId}/${novel.novelId}`, type: OPDS2_MEDIA_TYPE },
         ...acquisitionLinks,
+        ...(novel.originalFile ? [{ ...novel.originalFile, rel: 'http://opds-spec.org/acquisition' }] : []),
       ],
       images: [],
     }, null, 2);
@@ -228,6 +232,7 @@ ${entries}
       }));
       links.push(...acquisitionLinks);
     }
+    if (novel.originalFile) links.push({ ...novel.originalFile, rel: 'http://opds-spec.org/acquisition' });
 
     return {
       metadata,
@@ -241,6 +246,11 @@ ${entries}
     if (availability.translated) versions.push('translated');
     if (availability.bilingual) versions.push('bilingual');
     return versions;
+  }
+
+  private buildOriginalFileLink(novel: OpdsNovelFeedEntry): string {
+    const file = novel.originalFile;
+    return file ? `<link rel="http://opds-spec.org/acquisition" href="${this.escapeXml(file.href)}" type="${this.escapeXml(file.type)}" title="${this.escapeXml(file.title)}"/>` : '';
   }
 
   private buildOpdsV1NovelPath(sourceId: string, novelId: string): string {

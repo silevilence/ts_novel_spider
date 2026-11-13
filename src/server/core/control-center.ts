@@ -823,11 +823,25 @@ export class ControlCenterService {
     return this.#repository.listVisibleOpdsNovelsWithMetadata().map(novel => ({
       ...novel,
       ...this.ebookMetadata(novel.sourceId, novel.novelId),
+      ...this.opdsOriginalLink(novel.sourceId, novel.novelId),
       aliases: this.#repository.listNovelAliases(novel.sourceId, novel.novelId),
     }));
   }
 
   /** 查询某书某版本制品文件信息 */
+  private opdsOriginalLink(sourceId: string, novelId: string): Pick<OpdsNovelFeedEntry, 'originalFile'> {
+    const entry = sourceId === 'manual' ? this.#repository.getEbookForNovel(novelId) : null;
+    if (!entry || entry.purging || !fs.existsSync(this.#ebooks.originalPath(entry))) return {};
+    return { originalFile: { href: `/opds/originals/${sourceId}/${novelId}`, type: entry.format === 'epub' ? 'application/epub+zip' : 'text/plain', title: `上传原件（${entry.format.toUpperCase()}）` } };
+  }
+
+  getOpdsOriginalFile(sourceId: string, novelId: string): { filePath: string; fileName: string; contentType: string } | null {
+    if (!this.#repository.listVisibleOpdsNovelsWithMetadata().some(novel => novel.sourceId === sourceId && novel.novelId === novelId)) return null;
+    const entry = sourceId === 'manual' ? this.#repository.getEbookForNovel(novelId) : null;
+    if (!entry || entry.purging || !fs.existsSync(this.#ebooks.originalPath(entry))) return null;
+    return { filePath: this.#ebooks.originalPath(entry), fileName: entry.fileName, contentType: entry.format === 'epub' ? 'application/epub+zip' : 'text/plain' };
+  }
+
   getOpdsArtifactInfo(sourceId: string, novelId: string, fileName: string): { exists: boolean; filePath: string; size: number } {
     const allowedFileNames = ['original.epub', 'translated.epub', 'bilingual.epub'];
     if (!allowedFileNames.includes(fileName)) {

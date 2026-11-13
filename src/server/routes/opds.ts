@@ -162,6 +162,13 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
 
   // ── 制品下载 ──
 
+  router.get('/originals/:sourceId/:novelId', (request, response) => {
+    const file = service.getOpdsOriginalFile(request.params.sourceId, request.params.novelId);
+    if (!file) return response.status(404).json({ message: '原件不存在或未公开。' });
+    response.setHeader('Content-Type', file.contentType);
+    response.download(file.filePath, file.fileName);
+  });
+
   router.get('/artifacts/:sourceId/:novelId/:fileName', (request, response) => {
     try {
       const { sourceId, novelId, fileName } = request.params;

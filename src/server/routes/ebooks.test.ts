@@ -42,8 +42,17 @@ test('batch ebook API isolates failures, previews and confirms, detects duplicat
     assert.equal(books.novels[0]?.origin, 'imported');
     assert.equal(books.novels[0]?.ebook?.format, 'txt');
     assert.equal(books.novels[0]?.metadata.title, '修改后书名');
+    const opdsBase = base.replace('/api/library/ebooks', '/opds');
+    const opdsOriginal = `${opdsBase}/originals/manual/${novelId}`;
+    assert.equal((await fetch(opdsOriginal)).status, 404);
+    repository.updateOpdsVisible('manual', novelId, true);
+    const catalog = await (await fetch(`${opdsBase}/v2/search?query=${encodeURIComponent('site:imported + tag:新标签')}`)).json() as { publications: Array<{ links: Array<{ href: string; type: string }> }> };
+    assert.equal(catalog.publications.length, 1);
+    assert(catalog.publications[0]!.links.some(link => link.type === 'text/plain' && link.href.includes('/originals/')));
+    assert.equal(await (await fetch(opdsOriginal)).text(), text);
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/metadata-sync`, { method: 'POST' })).status, 422);
     repository.moveNovelToTrash('manual', novelId);
+    assert.equal((await fetch(opdsOriginal)).status, 404);
     assert.equal((await fetch(`${base}/${good.id}/original`)).status, 404);
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}`)).status, 404);
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/export/txt`)).status, 404);
