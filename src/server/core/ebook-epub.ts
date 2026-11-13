@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import { load } from 'cheerio';
 import type { AnyNode } from 'domhandler';
@@ -22,12 +23,12 @@ async function readZipEntry(entry: JSZip.JSZipObject): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    const stream = entry.internalStream('nodebuffer');
-    stream.on('data', chunk => {
+    const stream = entry.nodeStream('nodebuffer') as Readable;
+    stream.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_ENTRY_BYTES) { stream.pause(); reject(new Error('EPUB 单个资源解压后超过 16 MB。')); return; }
+      if (size > MAX_ENTRY_BYTES) { stream.destroy(new Error('EPUB 单个资源解压后超过 16 MB。')); return; }
       chunks.push(chunk);
-    }).on('error', reject).on('end', () => resolve(Buffer.concat(chunks))).resume();
+    }).on('error', reject).on('end', () => resolve(Buffer.concat(chunks)));
   });
 }
 
