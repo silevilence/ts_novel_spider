@@ -97,4 +97,21 @@ export class EbookImportService {
     const file = path.join(this.directory(entry.id), 'assets', name);
     return fs.existsSync(file) ? file : null;
   }
+
+  purge(novelId: string, relatedDirectories: string[] = []): boolean {
+    const entry = this.repository.getEbookForNovel(novelId);
+    if (!entry || !this.repository.getNovelPurgeStatus('manual', novelId)?.canPurge) return false;
+    this.repository.saveEbookImport({ ...entry, purging: true });
+    for (const directory of [...relatedDirectories, this.directory(entry.id)]) {
+      try { if (fs.existsSync(directory)) fs.rmSync(directory, { recursive: true }); }
+      catch (error) {
+        const message = `清理未完成：${directory}；${error instanceof Error ? error.message : '无法删除文件'}。请处理后重试永久清理。`;
+        this.repository.saveEbookImport({ ...entry, purging: true, error: message });
+        throw new Error(message);
+      }
+    }
+    if (!this.repository.purgeNovel('manual', novelId)) return false;
+    this.repository.removeEbookImport(entry.id);
+    return true;
+  }
 }

@@ -244,6 +244,7 @@ const MAX_STORED_EVENTS = 200;
 const MAX_STORED_TASKS = 100;
 
 export class ControlCenterService {
+  readonly #ebookRelatedRoots: string[];
   readonly #ebooks: EbookImportService;
   readonly #repository: SqliteNovelRepository;
   readonly #ownsRepository: boolean;
@@ -277,6 +278,11 @@ export class ControlCenterService {
     this.#ownsSystemPreferences = options.systemPreferences === undefined;
     this.#repository = options.repository ?? new SqliteNovelRepository(databasePath);
     this.#ebooks = new EbookImportService(this.#repository, options.ebookStoragePath ?? path.resolve(process.cwd(), 'data', 'ebooks'));
+    this.#ebookRelatedRoots = [
+      options.offlineAssetStoragePath ?? path.resolve(process.cwd(), 'data', 'offline-assets'),
+      options.opdsArtifactsPath ?? path.resolve(process.cwd(), 'data', 'opds-artifacts'),
+      options.exportStoragePath ?? defaultExportStoragePath(),
+    ];
     this.#networkProxy =
       options.networkProxy ?? new NetworkProxyService({ storageFilePath: defaultNetworkProxyConfigPath() });
     this.#systemPreferences =
@@ -1216,6 +1222,7 @@ export class ControlCenterService {
   }
 
   restoreLibraryNovelFromTrash(sourceId: string, novelId: string): boolean {
+    if (sourceId === 'manual' && this.#repository.getEbookForNovel(novelId)?.purging) throw new Error('该书永久清理尚未完成，请重试清理，不能恢复部分删除的数据。');
     return this.#repository.restoreNovelFromTrash(sourceId, novelId);
   }
 
@@ -1224,6 +1231,11 @@ export class ControlCenterService {
   }
 
   purgeLibraryNovel(sourceId: string, novelId: string): boolean {
+    if (sourceId === 'manual' && this.#repository.getEbookForNovel(novelId)) {
+      const directories = this.#ebookRelatedRoots.map(root => path.join(root, 'manual', novelId));
+      directories.push(path.resolve(process.cwd(), 'data', 'manual-assets', novelId));
+      return this.#ebooks.purge(novelId, directories);
+    }
     const purged = this.#repository.purgeNovel(sourceId, novelId);
     if (purged) {
       fs.rmSync(path.resolve(process.cwd(), 'data', 'offline-assets', sourceId, novelId), { recursive: true, force: true });

@@ -43,9 +43,13 @@ test('batch ebook API isolates failures, previews and confirms, detects duplicat
     assert.equal(books.novels[0]?.metadata.title, '修改后书名');
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/metadata-sync`, { method: 'POST' })).status, 422);
     repository.moveNovelToTrash('manual', novelId);
+    assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}`)).status, 404);
+    assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/export/txt`)).status, 404);
     records = (await (await fetch(base)).json() as { imports: EbookImportSummary[] }).imports;
     assert.equal(records.find(entry => entry.id === good.id)?.deleted, true);
     assert.equal((await upload('同名.txt', text)).id, good.id);
+    assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/restore`, { method: 'POST' })).status, 204);
+    assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}`)).status, 200);
     const invalid = await fetch(`${base}/${good.id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...confirmation, title: '' }) });
     assert.equal(invalid.status, 422);
   } finally { await closeServer(server); cleanup(); }

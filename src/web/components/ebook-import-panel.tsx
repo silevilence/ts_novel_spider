@@ -65,7 +65,7 @@ export function EbookImportPanel({ opened, onClose, onImported, onOpenBook }: {
               {entry.status === 'failed' || entry.status === 'uploaded' ? <Button size="xs" loading={busy === entry.id} onClick={() => void act(entry.id, () => retryEbookImport(entry.id))}>重试解析</Button> : null}
               {entry.status === 'failed' && entry.format === 'txt' ? <Button size="xs" variant="light" disabled={Boolean(busy)} onClick={() => void act(entry.id, () => retryEbookImport(entry.id, 'gb18030'))}>按 GB18030 重试</Button> : null}
               {entry.novelId && !entry.deleted ? <Button size="xs" variant="light" onClick={() => { onClose(); onOpenBook(entry.novelId!); }}>打开书籍</Button> : null}
-              {entry.novelId && entry.deleted ? <Button size="xs" loading={busy === entry.id} onClick={() => void act(entry.id, async () => { await restoreLibraryNovelFromTrash('manual', entry.novelId!); onImported(); })}>从回收站恢复</Button> : null}
+              {entry.novelId && entry.deleted ? <Button size="xs" disabled={entry.purging} loading={busy === entry.id} onClick={() => void act(entry.id, async () => { await restoreLibraryNovelFromTrash('manual', entry.novelId!); onImported(); })}>从回收站恢复</Button> : null}
             </Group>
           </Stack>
         </Paper>)}

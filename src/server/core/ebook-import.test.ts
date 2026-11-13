@@ -77,3 +77,38 @@ test('ebook migration preserves existing books and restart exposes interrupted i
     assert.equal(fs.readFileSync(service.originalPath(entry), 'utf8'), '测试内容');
   } finally { repository.close(); fs.rmSync(root, { recursive: true }); }
 });
+
+test('ebook purge respects retention, reports partial cleanup and can retry without deleting other books', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ebook-purge-'));
+  const repository = new SqliteNovelRepository(':memory:');
+  try {
+    const service = new EbookImportService(repository, root);
+    const { entry } = service.upload('book.txt', Buffer.from('正文内容'));
+    const parsed = await service.parse(entry.id);
+    const novelId = service.confirm(entry.id, parsed.preview!);
+    const other = service.upload('other.txt', Buffer.from('其他书籍')).entry;
+    repository.updateOpdsVisible('manual', novelId, true);
+    repository.moveNovelToTrash('manual', novelId);
+    assert.equal(service.purge(novelId), false);
+    assert.equal(fs.existsSync(service.originalPath(entry)), true);
+    repository.restoreNovelFromTrash('manual', novelId);
+    assert.equal(repository.getOpdsNovel('manual', novelId)?.opdsVisible, true);
+    repository.moveNovelToTrash('manual', novelId);
+    const deletedAt = repository.getNovelPurgeStatus('manual', novelId)!.deletedAt!;
+    t.mock.method(Date, 'now', () => Date.parse(deletedAt) + 16 * 86400000);
+    const blocked = path.join(root, 'blocked'); fs.mkdirSync(blocked);
+    const remove = fs.rmSync;
+    const mocked = t.mock.method(fs, 'rmSync', (target: fs.PathLike, options?: fs.RmOptions) => {
+      if (target === blocked) throw new Error('File in use');
+      return remove(target, options);
+    });
+    assert.throws(() => service.purge(novelId, [blocked]), /清理未完成.*blocked/);
+    assert.equal(service.get(entry.id).purging, true);
+    assert(repository.getSnapshot('manual', novelId));
+    mocked.mock.restore();
+    assert.equal(service.purge(novelId, [blocked]), true);
+    assert.equal(repository.getSnapshot('manual', novelId), null);
+    assert.equal(fs.existsSync(service.directory(entry.id)), false);
+    assert.equal(fs.readFileSync(service.originalPath(other), 'utf8'), '其他书籍');
+  } finally { t.mock.restoreAll(); repository.close(); fs.rmSync(root, { recursive: true }); }
+});

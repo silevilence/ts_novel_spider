@@ -151,6 +151,12 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
 
   router.use('/novels/:sourceId/:novelId', (request, response, next) => {
     const allowedTrashActions = /\/(restore|purge)(?:\/|$)/.test(request.path);
+    if (request.method === 'GET' && !request.path.startsWith('/purge-status') && request.params.sourceId === 'manual'
+      && service.isLibraryNovelTrashed('manual', request.params.novelId)
+      && service.getEbookImportService().repository.getEbookForNovel(request.params.novelId)) {
+      response.status(404).json({ message: '电子书已移入回收站，请恢复后阅读或下载。' });
+      return;
+    }
     if (request.method !== 'GET' && !allowedTrashActions && service.isLibraryNovelTrashed(request.params.sourceId, request.params.novelId)) {
       response.status(409).json({ message: '小说在回收站中，仅可查看或还原。' });
       return;
@@ -310,14 +316,18 @@ export function createLibraryRouter({ service }: LibraryRouterOptions): Router {
     response.status(204).end();
   });
   router.post('/novels/:sourceId/:novelId/restore', (request, response) => {
-    if (!service.restoreLibraryNovelFromTrash(request.params.sourceId, request.params.novelId)) return response.status(404).json({ message: '回收站中未找到小说。' });
-    response.status(204).end();
+    try {
+      if (!service.restoreLibraryNovelFromTrash(request.params.sourceId, request.params.novelId)) return response.status(404).json({ message: '回收站中未找到小说。' });
+      response.status(204).end();
+    } catch (error) { response.status(422).json({ message: (error as Error).message }); }
   });
   router.get('/novels/:sourceId/:novelId/purge-status', (request, response) => {
     const status = service.getLibraryNovelPurgeStatus(request.params.sourceId, request.params.novelId); if (!status) return response.status(404).json({ message: '小说不存在。' }); response.json(status);
   });
   router.delete('/novels/:sourceId/:novelId/purge', (request, response) => {
-    if (!service.purgeLibraryNovel(request.params.sourceId, request.params.novelId)) return response.status(409).json({ message: '小说尚未满足永久删除条件。' }); response.status(204).end();
+    try {
+      if (!service.purgeLibraryNovel(request.params.sourceId, request.params.novelId)) return response.status(409).json({ message: '小说尚未满足永久删除条件。' }); response.status(204).end();
+    } catch (error) { response.status(422).json({ message: error instanceof Error ? error.message : '清理失败，请重试。' }); }
   });
 
   router.get('/novels/:sourceId/:novelId/graph', (request, response) => {

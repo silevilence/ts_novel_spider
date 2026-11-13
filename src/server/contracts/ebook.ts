@@ -9,6 +9,7 @@ export interface EbookPreview {
   encoding?: string;
 }
 export interface EbookImport {
+  purging?: boolean;
   id: string;
   fileName: string;
   format: 'epub' | 'txt';
