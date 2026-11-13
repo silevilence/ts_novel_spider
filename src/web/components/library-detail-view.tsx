@@ -509,6 +509,8 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
                 </Group>
               </Group>
               <Button color="brand" size="compact-sm" onClick={() => setIsExportDialogOpen(true)} disabled={detail.stats.downloaded === 0}>选择导出格式</Button>
+              {detail.ebook ? <Button component="a" href={`/api/library/ebooks/${detail.ebook.id}/original`} variant="light" size="compact-sm" ml="sm">下载原始文件</Button> : null}
+              {detail.ebook ? <Text size="xs" c="dimmed" mt="xs">原件保留上传时内容与样式；导出当前内容使用已编辑的信息和项目排版。TXT 不包含图片，Markdown 图片随 ZIP 一起提供。</Text> : null}
               <Text size="xs" c="dimmed" mt="sm">
                 {detail.stats.downloaded === 0 ? '当前还没有已采集章节，先补录正文后才能导出文件。' : '一个入口按用途选格式：Markdown 整理、EPUB 阅读、TXT 备份。'}
               </Text>

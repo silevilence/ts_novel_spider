@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 
 import JSZip from 'jszip';
@@ -92,7 +93,8 @@ interface LibraryExportStrategy {
 }
 
 const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?)/gi;
-const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\(((?:https?:\/\/|manual:\/\/)[^)\s]+)\)/gi;
+const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\(((?:https?:\/\/|manual:\/\/|ebook:\/\/)[^)\s]+)\)/gi;
+const EBOOK_ANCHOR_DEFINITION = /^\[(ebook-[a-f0-9-]{36}-[a-f0-9]{16})\]: #\s*$/gm;
 const CHAPTER_SECTION_DIVIDER = '---';
 
 export interface ExportTranslationOptions {
@@ -145,7 +147,9 @@ export class LocalExportEngine {
     const filePath = path.join(outputDirectory, output.fileName);
 
     fs.mkdirSync(outputDirectory, { recursive: true });
-    fs.writeFileSync(filePath, output.data);
+    const temporaryFile = `${filePath}.${crypto.randomUUID()}.tmp`;
+    try { fs.writeFileSync(temporaryFile, output.data); fs.renameSync(temporaryFile, filePath); }
+    finally { if (fs.existsSync(temporaryFile)) fs.rmSync(temporaryFile); }
 
     return {
       format,
@@ -472,7 +476,7 @@ function renderMarkdownDocument(context: ExportRenderContext): string {
       const chHeading = localizedText(formatChapterHeading(chapter), context.translatedChapterTitles?.get(chapter.id), translationMode);
 
       lines.push(`### ${chHeading}`, '');
-      lines.push(rewriteMarkdownContent(content, assets), '');
+      lines.push(rewriteMarkdownContent(content, assets).replace(EBOOK_ANCHOR_DEFINITION, '<a id="$1"></a>'), '');
     }
   }
 
@@ -578,7 +582,12 @@ function renderEpubChapter(
 ): string {
   const assets = context.assetsByChapterId.get(chapter.id) ?? [];
   const content = resolveChapterExportContent(context, chapter);
-  const body = renderEpubMarkdown(content, assets);
+  const ordered = context.volumeGroups.flatMap(volume => volume.chapters);
+  const linkedContent = content.replace(/\]\(#(ebook-([a-f0-9-]{36})-[a-f0-9]{16})\)/g, (match, anchor: string, chapterId: string) => {
+    const index = ordered.findIndex(item => item.id === chapterId);
+    return index < 0 ? match : `](chapter-${String(index + 1).padStart(4, '0')}.xhtml#${anchor})`;
+  });
+  const body = renderEpubMarkdown(linkedContent, assets);
   const modeNote = context.translationMode === 'bilingual'
     ? '<p class="meta">双语对照 · 原文<span style="opacity:0.55"> / 译文</span></p>'
     : context.translationMode === 'translated'
@@ -763,8 +772,10 @@ function rewriteMarkdownContent(content: string, assets: PreparedMediaAsset[]): 
 
 function renderEpubMarkdown(content: string, assets: PreparedMediaAsset[]): string {
   const rewritten = rewriteMarkdownContent(content, assets)
-    .replace(/<\/?[a-z][^>]*>/gi, (tag) => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
-  return String(marked.parse(rewritten, { async: false, gfm: true, breaks: false })).replace(/<hr>/g, '<hr class="section-divider"/>');
+    .replace(/<\/?[a-z][^>]*>/gi, (tag) => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+    .replace(EBOOK_ANCHOR_DEFINITION, '<span id="$1"></span>');
+  return String(marked.parse(rewritten, { async: false, gfm: true, breaks: false }))
+    .replace(/<hr>/g, '<hr class="section-divider"/>').replace(/<(img|br)(\b[^>]*?)(?<!\/)>(?!<\/\1>)/g, '<$1$2/>');
 }
 
 function splitParagraphs(content: string): string[] {

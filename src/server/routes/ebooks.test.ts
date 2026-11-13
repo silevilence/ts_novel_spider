@@ -31,6 +31,7 @@ test('batch ebook API isolates failures, previews and confirms, detects duplicat
     const confirmation = { title: '同名', author: '测试', description: '', tags: ['导入'] };
     const confirm = () => fetch(`${base}/${good.id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(confirmation) });
     const { novelId } = await (await confirm()).json() as { novelId: string };
+    assert.equal(await (await fetch(`${base}/${good.id}/original`)).text(), text);
     assert.equal(repository.getSnapshot('manual', novelId)?.chapters.length, 1);
     assert.equal((await (await confirm()).json() as { novelId: string }).novelId, novelId);
     const libraryBase = base.replace(/\/ebooks$/, '');
@@ -43,6 +44,7 @@ test('batch ebook API isolates failures, previews and confirms, detects duplicat
     assert.equal(books.novels[0]?.metadata.title, '修改后书名');
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/metadata-sync`, { method: 'POST' })).status, 422);
     repository.moveNovelToTrash('manual', novelId);
+    assert.equal((await fetch(`${base}/${good.id}/original`)).status, 404);
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}`)).status, 404);
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/export/txt`)).status, 404);
     records = (await (await fetch(base)).json() as { imports: EbookImportSummary[] }).imports;

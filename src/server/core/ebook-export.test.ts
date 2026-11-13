@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import JSZip from 'jszip';
+import { load } from 'cheerio';
+import { EbookImportService } from './ebook-import';
+import { SqliteNovelRepository } from './novel-repository';
+import { LocalExportEngine } from './export-engine';
+import { OfflineLibraryAssetService } from './offline-library';
+import { makeEpubFixture } from './ebook-test-fixtures';
+
+test('ebook exports contain offline images, footnote targets, edited metadata and untouched originals', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ebook-export-'));
+  const repository = new SqliteNovelRepository(':memory:');
+  try {
+    const imports = new EbookImportService(repository, path.join(root, 'imports'));
+    const bytes = await makeEpubFixture();
+    const { entry } = imports.upload('原始.epub', bytes);
+    const parsed = await imports.parse(entry.id);
+    const novelId = imports.confirm(entry.id, { ...parsed.preview!, title: '新的标题' });
+    const assets = new OfflineLibraryAssetService({ storageRoot: path.join(root, 'cache'), ebookAssetPath: (id, name) => imports.assetPath(id, name) });
+    const engine = new LocalExportEngine({ outputRoot: path.join(root, 'exports'), assetService: assets });
+    const snapshot = repository.getSnapshot('manual', novelId)!;
+    const epub = await engine.generate(snapshot, 'epub');
+    const zip = await JSZip.loadAsync(fs.readFileSync(epub.filePath));
+    const chapter = load(await zip.file('OEBPS/chapter-0001.xhtml')!.async('string'), { xml: true });
+    const image = chapter('img').attr('src')!;
+    assert(zip.file(path.posix.join('OEBPS', image)));
+    const href = chapter('a').filter((_, node) => chapter(node).text() === '注释').attr('href')!;
+    const [targetFile, anchor] = href.split('#');
+    const target = load(await zip.file(`OEBPS/${targetFile}`)!.async('string'), { xml: true });
+    assert.equal(target(`[id="${anchor}"]`).length, 1);
+    assert.match(await zip.file('OEBPS/content.opf')!.async('string'), /新的标题/);
+    const markdown = await engine.generate(snapshot, 'markdown');
+    const mdZip = await JSZip.loadAsync(fs.readFileSync(markdown.filePath));
+    const md = await mdZip.file(/\.md$/)[0]!.async('string');
+    assert.match(md, /<a id="ebook-/);
+    const imagePath = /!\[[^\]]*\]\(([^)]+)\)/.exec(md)![1]!;
+    assert(mdZip.file(imagePath.replace(/^\.\//, '')));
+    const txt = await engine.generate(snapshot, 'txt');
+    const plain = fs.readFileSync(txt.filePath, 'utf8');
+    assert(plain.indexOf('正文') < plain.indexOf('后记'));
+    assert(!plain.includes('ebook://'));
+    assert.deepEqual(fs.readFileSync(imports.originalPath(entry)), bytes);
+    const previous = fs.readFileSync(epub.filePath);
+    const mocked = t.mock.method(fs, 'writeFileSync', () => { throw new Error('Disk full'); });
+    await assert.rejects(engine.generate(snapshot, 'epub'), /Disk full/);
+    mocked.mock.restore();
+    assert.deepEqual(fs.readFileSync(epub.filePath), previous);
+  } finally { repository.close(); fs.rmSync(root, { recursive: true }); }
+});

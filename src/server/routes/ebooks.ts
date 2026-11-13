@@ -9,6 +9,14 @@ export function createEbookRouter(service: ControlCenterService): Router {
   const router = Router();
   const imports = service.getEbookImportService();
   router.get('/', (_request, response) => response.json({ imports: imports.summaries() }));
+  router.get('/:id/original', (request, response) => {
+    try {
+      const entry = imports.get(request.params.id);
+      if (!entry.novelId || entry.purging || imports.repository.getNovelPurgeStatus('manual', entry.novelId)?.deletedAt) return response.status(404).json({ message: '原件不存在或书籍已删除。' });
+      response.type(entry.format === 'epub' ? 'application/epub+zip' : 'application/octet-stream');
+      response.download(imports.originalPath(entry), entry.fileName);
+    } catch { response.status(404).json({ message: '原件不存在。' }); }
+  });
   router.post('/', express.raw({ type: 'application/octet-stream', limit: MAX_EBOOK_BYTES }), (request, response) => {
     try {
       if (typeof request.query.fileName !== 'string' || !Buffer.isBuffer(request.body)) return response.status(400).json({ message: '请上传 EPUB/TXT 文件。' });
