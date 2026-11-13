@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { EbookImportService } from './ebook-import';
 import { SqliteNovelRepository } from './novel-repository';
+import { makeEpubFixture } from './ebook-test-fixtures';
+import { OfflineLibraryAssetService } from './offline-library';
 
 test('ebook originals survive metadata edits; confirmation is atomic and idempotent', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ebook-import-'));
@@ -31,6 +33,30 @@ test('ebook originals survive metadata edits; confirmation is atomic and idempot
     assert.deepEqual(fs.readFileSync(service.originalPath(entry)), data);
     assert.equal(repository.getSnapshot('manual', novelId)?.chapters[0]?.content, '正文');
     assert.equal(repository.getOpdsNovel('manual', novelId)?.opdsVisible, false);
+  } finally { repository.close(); fs.rmSync(root, { recursive: true }); }
+});
+
+test('EPUB package images and cross-chapter footnotes survive import without network', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ebook-assets-'));
+  const repository = new SqliteNovelRepository(':memory:');
+  try {
+    const service = new EbookImportService(repository, root);
+    const { entry } = service.upload('book.epub', await makeEpubFixture());
+    const parsed = await service.parse(entry.id);
+    assert.equal(parsed.status, 'ready');
+    const novelId = service.confirm(entry.id, parsed.preview!);
+    const snapshot = repository.getSnapshot('manual', novelId)!;
+    assert.match(snapshot.chapters[0]!.content!, /\]\(#ebook-/);
+    assert.match(snapshot.chapters[1]!.content!, /\[返回\]\(#ebook-/);
+    const assets = new OfflineLibraryAssetService({ storageRoot: path.join(root, 'cache'), ebookAssetPath: (id, name) => service.assetPath(id, name), fetchImpl: async () => { throw new Error('Network is forbidden'); } });
+    const media = assets.listMediaAssets(snapshot, snapshot.chapters[0]!);
+    assert.equal(media.length, 1);
+    assert.equal(media[0]!.cached, true);
+    const file = assets.getCachedMediaFilePath(snapshot, snapshot.chapters[0]!.id, media[0]!.id)!;
+    assert.equal(fs.readFileSync(file).subarray(1, 4).toString(), 'PNG');
+    assert.equal(service.assetPath(novelId, '../../outside'), null);
+    repository.moveNovelToTrash('manual', novelId);
+    assert.equal(assets.getCachedMediaFilePath(snapshot, snapshot.chapters[0]!.id, media[0]!.id), null);
   } finally { repository.close(); fs.rmSync(root, { recursive: true }); }
 });
 

@@ -1,4 +1,5 @@
 import { resolveNovelTarget } from '../contracts/novel-target';
+import { EbookImportService } from './ebook-import';
 import { TermCorrectionService } from './term-correction';
 import { LibraryProcessingService } from './library-processing';
 import { LibraryTermExtractionService } from './library-term-extraction';
@@ -223,6 +224,7 @@ export type ControlCenterStreamEvent =
     };
 
 export interface ControlCenterServiceOptions {
+  ebookStoragePath?: string;
   notificationChannel?: NotificationChannel;
   notificationFetchImpl?: typeof fetch;
   databasePath?: string;
@@ -242,6 +244,7 @@ const MAX_STORED_EVENTS = 200;
 const MAX_STORED_TASKS = 100;
 
 export class ControlCenterService {
+  readonly #ebooks: EbookImportService;
   readonly #repository: SqliteNovelRepository;
   readonly #ownsRepository: boolean;
   readonly #networkProxy: NetworkProxyService;
@@ -273,6 +276,7 @@ export class ControlCenterService {
     this.#ownsNetworkProxy = options.networkProxy === undefined;
     this.#ownsSystemPreferences = options.systemPreferences === undefined;
     this.#repository = options.repository ?? new SqliteNovelRepository(databasePath);
+    this.#ebooks = new EbookImportService(this.#repository, options.ebookStoragePath ?? path.resolve(process.cwd(), 'data', 'ebooks'));
     this.#networkProxy =
       options.networkProxy ?? new NetworkProxyService({ storageFilePath: defaultNetworkProxyConfigPath() });
     this.#systemPreferences =
@@ -282,6 +286,7 @@ export class ControlCenterService {
       new Map([['astrbot', options.notificationChannel ?? this.#astrbot]]));
     this.#browserCapture = options.browserCapture ?? new BrowserCaptureService({ store: this.#repository });
     this.#offlineLibrary = new OfflineLibraryAssetService({
+      ebookAssetPath: (novelId, name) => this.#ebooks.assetPath(novelId, name),
       networkProxy: this.#networkProxy,
       ...(options.offlineAssetStoragePath ? { storageRoot: options.offlineAssetStoragePath } : {}),
       ...(options.assetFetchImpl ? { fetchImpl: options.assetFetchImpl } : {}),

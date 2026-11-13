@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { load } from 'cheerio';
@@ -120,7 +121,7 @@ export function htmlToEbookMarkdown(html: string, mapImage?: (src: string) => st
     const anchor = el.attr('id') && mapAnchor ? `\n\n${mapAnchor(el.attr('id')!)}\n\n` : '';
     let text: string;
     switch (node.name) {
-      case 'img': text = mapImage ? `![${(el.attr('alt') ?? '图片').replace(/[\[\]]/g, '')}](${mapImage(el.attr('src') ?? '')})` : ''; break;
+      case 'img': { const src = mapImage?.(el.attr('src') ?? ''); text = src ? `![${(el.attr('alt') ?? '图片').replace(/[\[\]]/g, '')}](${src})` : '[图片未转换]'; break; }
       case 'br': text = '  \n'; break;
       case 'hr': text = '\n\n---\n\n'; break;
       case 'strong': case 'b': text = `**${inside()}**`; break;
@@ -141,4 +142,40 @@ export function htmlToEbookMarkdown(html: string, mapImage?: (src: string) => st
     return anchor + text;
   }
   return $('body').contents().toArray().map(render).join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export function preserveEpubResources(parsed: Awaited<ReturnType<typeof parseEpubEbook>>, directory: string): EbookPreview {
+  const { preview, material } = parsed;
+  const anchor = (chapterId: string, fragment: string) => `ebook-${chapterId}-${crypto.createHash('sha256').update(fragment).digest('hex').slice(0, 16)}`;
+  const warnings = new Set(preview.warnings);
+  const paths = [...material.chapterFiles.keys()];
+  preview.chapters.forEach((chapter, index) => {
+    const base = paths[index]!;
+    const image = (src: string) => {
+      try {
+        const target = resolveEpubPath(base, src);
+        const data = material.files.get(target);
+        const extension = path.posix.extname(target).toLowerCase();
+        if (!data || !['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(extension)) throw new Error('图片缺失或格式不支持');
+        const name = `${crypto.createHash('sha256').update(data).digest('hex')}${extension}`;
+        fs.mkdirSync(directory, { recursive: true });
+        fs.writeFileSync(path.join(directory, name), data);
+        return `ebook://${name}`;
+      } catch { warnings.add(`章节“${chapter.title}”有图片缺失、不支持或属于外部资源，未自动下载。`); return ''; }
+    };
+    const link = (href: string) => {
+      if (!href) return '';
+      if (/^https?:\/\//i.test(href)) return href.replace(/[()\s]/g, encodeURIComponent);
+      try {
+        const target = href.startsWith('#') ? base : resolveEpubPath(base, href);
+        const chapterId = material.chapterFiles.get(target);
+        if (!chapterId) throw new Error('无法定位');
+        return `#${anchor(chapterId, decodeURIComponent(href.split('#').slice(1).join('#')))}`;
+      } catch { warnings.add(`章节“${chapter.title}”有无法转换的内部链接。`); return ''; }
+    };
+    const markAnchor = (fragment: string) => `[${anchor(chapter.id, fragment)}]: #`;
+    chapter.content = `${markAnchor('')}\n\n${htmlToEbookMarkdown(material.html[index]!, image, link, markAnchor)}`;
+  });
+  preview.warnings = [...warnings];
+  return preview;
 }

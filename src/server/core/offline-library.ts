@@ -119,6 +119,7 @@ export interface LibraryChapterDetail {
 }
 
 export interface OfflineLibraryAssetServiceOptions {
+  ebookAssetPath?: (novelId: string, name: string) => string | null;
   storageRoot?: string;
   fetchImpl?: ProxyAwareFetch;
   networkProxy?: NetworkProxyService;
@@ -131,15 +132,17 @@ interface LibraryStateExtras {
 }
 
 const IMAGE_URL_PATTERN = /(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s)]*)?)/gi;
-const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*\]\(((?:https?:\/\/|manual:\/\/)[^)\s]+)\)/gi;
+const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*\]\(((?:https?:\/\/|manual:\/\/|ebook:\/\/)[^)\s]+)\)/gi;
 const MEDIA_DOWNLOAD_TIMEOUT_MS = 120_000;
 
 export class OfflineLibraryAssetService {
+  readonly #ebookAssetPath: OfflineLibraryAssetServiceOptions['ebookAssetPath'];
   readonly #storageRoot: string;
   readonly #fetchImpl: ProxyAwareFetch;
   readonly #networkProxy: NetworkProxyService | undefined;
 
   constructor(options: OfflineLibraryAssetServiceOptions = {}) {
+    this.#ebookAssetPath = options.ebookAssetPath;
     this.#storageRoot = options.storageRoot ?? path.resolve(process.cwd(), 'data', 'offline-assets');
     this.#fetchImpl = options.fetchImpl ?? fetch;
     this.#networkProxy = options.networkProxy;
@@ -305,6 +308,7 @@ export class OfflineLibraryAssetService {
     chapterId: string,
     sourceUrl: string,
   ): string | null {
+    if (sourceId === 'manual' && sourceUrl.startsWith('ebook://')) return this.#ebookAssetPath?.(novelId, sourceUrl.slice(8)) ?? null;
     if (sourceId === 'manual' && sourceUrl.startsWith('manual://')) {
       const assetId = sourceUrl.slice('manual://'.length);
       const directory = path.resolve(process.cwd(), 'data', 'manual-assets', novelId);
@@ -348,6 +352,7 @@ export class OfflineLibraryAssetService {
     chapterId: string,
     sourceUrl: string,
   ): Promise<boolean> {
+    if (sourceUrl.startsWith('ebook://')) return this.findCachedAssetFile(sourceId, novelId, chapterId, sourceUrl) !== null;
     if (sourceId === 'manual' && sourceUrl.startsWith('manual://')) return this.findCachedAssetFile(sourceId, novelId, chapterId, sourceUrl) !== null;
     const cachedFilePath = this.findCachedAssetFile(sourceId, novelId, chapterId, sourceUrl);
 
@@ -480,6 +485,7 @@ function normalizeMediaUrl(sourceUrl: string): string | null {
   const trimmed = sourceUrl.trim().replace(/[),.!?]+$/g, '');
 
   if (/^manual:\/\/[a-f0-9-]{36}$/i.test(trimmed)) return trimmed;
+  if (/^ebook:\/\/[a-f0-9]{64}\.(png|jpe?g|gif|webp)$/.test(trimmed)) return trimmed;
 
   try {
     const url = new URL(trimmed);

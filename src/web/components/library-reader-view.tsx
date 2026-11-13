@@ -5,6 +5,7 @@ import MDEditor from '@uiw/react-md-editor';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
+import { ebookLinkTarget, remarkEbookAnchors } from '../services/ebook-anchors';
 import { ChapterDirectory } from './chapter-directory';
 import { FontFamilyPicker } from './font-family-picker';
 import { ReaderFabBar } from './reader-fab-bar';
@@ -52,6 +53,13 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
   const [chapterHistoryOpen, setChapterHistoryOpen] = useState(false);
   const [chapterVersions, setChapterVersions] = useState<LibraryVersion[]>([]);
   const pendingAssetsRef = useRef<PendingManualAsset[]>([]);
+  const pendingAnchor = useRef<string | null>(null);
+  useEffect(() => {
+    if (pendingAnchor.current && readerChapter) {
+      const element = document.getElementById(pendingAnchor.current);
+      if (element) { element.scrollIntoView(); pendingAnchor.current = null; }
+    }
+  }, [readerChapter?.id]);
 
   const discardPendingAssets = () => {
     setPendingAssets((current) => {
@@ -86,9 +94,10 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
   }
   const currentChapterBookmarks = detail.bookmarks.filter((b) => b.chapterId === model.location.chapterId);
   const isManual = detail.sourceId === 'manual';
-  const renderedChapterContent = isManual
+  const localChapterContent = isManual
     ? resolveManualAssetUrls(readerChapter.content, detail.metadata.novelId)
     : readerChapter.content;
+  const renderedChapterContent = chapter.mediaAssets.reduce((content, asset) => asset.publicUrl ? content.replaceAll(asset.sourceUrl, asset.publicUrl) : content, localChapterContent);
 
   return (
     <Stack gap="md">
@@ -162,7 +171,16 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
         <Group mb="md"><Badge variant="light" color="gray">{chapter.mediaAssets.length} 张图片</Badge>
           <Text size="xs" c="dimmed">{chapter.mediaAssets.length === 0 ? '无图片。' : `已缓存 ${readerChapter.media.cached} 张。`}</Text></Group>
         <div className="reader-copy" style={{ fontSize: `${model.readerTypography?.fontSize ?? 1.03}rem`, lineHeight: model.readerTypography?.lineHeight ?? 1.9, fontFamily: resolveReaderFontFamily(model.readerTypography), '--reader-para-gap': `${model.readerTypography?.paragraphSpacing ?? 1}rem` } as CSSProperties}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={{ img: ({ src, alt }) => <img src={src} alt={alt ?? ''} style={{ maxWidth: '100%', borderRadius: 14 }} /> }}>{renderedChapterContent}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkEbookAnchors]} rehypePlugins={[rehypeSanitize]} components={{
+            img: ({ src, alt }) => <img src={src} alt={alt ?? ''} style={{ maxWidth: '100%', borderRadius: 14 }} />,
+            a: ({ href, children }) => <a href={href} onClick={(event) => {
+              const target = ebookLinkTarget(href ?? '');
+              if (!target) return;
+              event.preventDefault();
+              if (target.chapterId === readerChapter.id) document.getElementById(target.anchor)?.scrollIntoView();
+              else { pendingAnchor.current = target.anchor; model.openChapter(detail.sourceId, detail.metadata.novelId, target.chapterId); }
+            }}>{children}</a>,
+          }}>{renderedChapterContent}</ReactMarkdown>
         </div>
         <Group justify="center" mt="lg">
           {chapter.previousChapterId ? <Button variant="default" size="compact-sm" onClick={() => model.openChapter(detail.sourceId, detail.metadata.novelId, chapter.previousChapterId!)}>上一章</Button> : <div style={{ width: 80 }} />}

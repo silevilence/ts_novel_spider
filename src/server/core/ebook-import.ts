@@ -4,7 +4,7 @@ import path from 'node:path';
 import { MAX_EBOOK_BYTES, type EbookImport, type EbookMetadata } from '../contracts/ebook';
 import type { SqliteNovelRepository } from './novel-repository';
 import { parseTextEbook } from './ebook-txt';
-import { parseEpubEbook } from './ebook-epub';
+import { parseEpubEbook, preserveEpubResources } from './ebook-epub';
 
 export class EbookImportService {
   constructor(readonly repository: SqliteNovelRepository, readonly storageRoot: string) {
@@ -58,11 +58,20 @@ export class EbookImportService {
     this.repository.saveEbookImport({ ...entry, status: 'parsing', error: null });
     try {
       const data = await fs.promises.readFile(this.originalPath(entry));
-      const preview = entry.format === 'txt' ? parseTextEbook(data, entry.fileName, encoding) : (await parseEpubEbook(data, entry.fileName)).preview;
+      const preview = entry.format === 'txt' ? parseTextEbook(data, entry.fileName, encoding)
+        : preserveEpubResources(await parseEpubEbook(data, entry.fileName), path.join(this.directory(entry.id), 'assets'));
       this.repository.saveEbookImport({ ...entry, status: 'ready', preview, error: null, updatedAt: new Date().toISOString() });
     } catch (error) {
       this.repository.saveEbookImport({ ...entry, status: 'failed', preview: null, error: error instanceof Error ? error.message : '解析失败。', updatedAt: new Date().toISOString() });
     }
     return this.get(id);
+  }
+
+  assetPath(novelId: string, name: string): string | null {
+    if (!/^[a-f0-9]{64}\.(png|jpe?g|gif|webp)$/.test(name) || this.repository.getNovelPurgeStatus('manual', novelId)?.deletedAt) return null;
+    const entry = this.repository.getEbookForNovel(novelId);
+    if (!entry) return null;
+    const file = path.join(this.directory(entry.id), 'assets', name);
+    return fs.existsSync(file) ? file : null;
   }
 }
