@@ -125,7 +125,7 @@ export function LibraryDetailView({ model, onOpenControl, onNotify }: LibraryDet
 
   const preferredChapterId = findPreferredReaderChapter(detail);
   const detailDescriptionPreview = buildTextPreview(detail.metadata.description, LIBRARY_DETAIL_DESCRIPTION_LIMIT);
-  const resumeChapterId = detail.readingProgress?.highestChapterId ?? preferredChapterId;
+  const resumeChapterId = detail.readingProgress?.currentChapterId ?? preferredChapterId;
   const resumeCurrentChapterId = detail.readingProgress?.currentChapterId ?? null;
   const preferredMediaChapterId = detail.chapters.find((c) => c.hasContent && c.media.total > 0)?.id
     ?? detail.chapters.find((c) => c.status === 'downloaded' && c.media.total > 0)?.id

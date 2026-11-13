@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { ebookLinkTarget, remarkEbookAnchors } from '../services/ebook-anchors';
+import { useReaderPosition } from '../services/reader-position';
 import { ChapterDirectory } from './chapter-directory';
 import { FontFamilyPicker } from './font-family-picker';
 import { ReaderFabBar } from './reader-fab-bar';
@@ -47,6 +48,9 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
   const detail = model.detail?.novel;
   const chapter = model.chapter?.chapter;
   const readerChapter = model.chapter?.chapter.chapter;
+  const readerBody = useRef<HTMLDivElement>(null);
+  const positionNotice = useReaderPosition(readerBody, detail && readerChapter && model.location.chapterId === readerChapter.id
+    ? `${detail.sourceId}:${detail.metadata.novelId}:${readerChapter.id}:${model.translationViewMode}` : null, readerChapter?.content ?? '');
   const [editingContent, setEditingContent] = useState(false);
   const [contentDraft, setContentDraft] = useState('');
   const [pendingAssets, setPendingAssets] = useState<PendingManualAsset[]>([]);
@@ -168,9 +172,11 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
       </Paper>
 
       <Paper p="lg" radius="lg" maw={760} mx="auto" w="100%" style={{ background: 'rgba(38,26,20,0.7)', border: '1px solid rgba(168,133,96,0.12)' }}>
+        {detail.ebook ? <Text size="xs" c="dimmed" mb="xs">已转换为项目排版，原书完整样式请下载原始文件。</Text> : null}
+        {positionNotice ? <Alert mb="sm" color="yellow">{positionNotice}</Alert> : null}
         <Group mb="md"><Badge variant="light" color="gray">{chapter.mediaAssets.length} 张图片</Badge>
           <Text size="xs" c="dimmed">{chapter.mediaAssets.length === 0 ? '无图片。' : `已缓存 ${readerChapter.media.cached} 张。`}</Text></Group>
-        <div className="reader-copy" style={{ fontSize: `${model.readerTypography?.fontSize ?? 1.03}rem`, lineHeight: model.readerTypography?.lineHeight ?? 1.9, fontFamily: resolveReaderFontFamily(model.readerTypography), '--reader-para-gap': `${model.readerTypography?.paragraphSpacing ?? 1}rem` } as CSSProperties}>
+        <div ref={readerBody} className="reader-copy" style={{ fontSize: `${model.readerTypography?.fontSize ?? 1.03}rem`, lineHeight: model.readerTypography?.lineHeight ?? 1.9, fontFamily: resolveReaderFontFamily(model.readerTypography), '--reader-para-gap': `${model.readerTypography?.paragraphSpacing ?? 1}rem` } as CSSProperties}>
           <ReactMarkdown remarkPlugins={[remarkGfm, remarkEbookAnchors]} rehypePlugins={[rehypeSanitize]} components={{
             img: ({ src, alt }) => <img src={src} alt={alt ?? ''} style={{ maxWidth: '100%', borderRadius: 14 }} />,
             a: ({ href, children }) => <a href={href} onClick={(event) => {

@@ -136,7 +136,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
                         </Menu.Item>
                         {novel.readingProgress ? (
                           <Menu.Item leftSection={<IconBook2 size={14} />}
-                            onClick={() => model.openChapter(novel.sourceId, novel.metadata.novelId, novel.readingProgress!.highestChapterId)}>
+                            onClick={() => model.openChapter(novel.sourceId, novel.metadata.novelId, novel.readingProgress!.currentChapterId)}>
                             继续阅读
                           </Menu.Item>
                         ) : null}
@@ -173,8 +173,8 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
                   {novel.readingProgress ? (
                     <Card mt="sm" padding="xs" radius="md" style={{ background: 'rgba(38,26,20,0.6)' }}>
                       <Group justify="space-between" wrap="nowrap">
-                        <div><Text size="xs" c="dimmed">继续阅读</Text><Text size="xs" fw={600}>第 {novel.readingProgress.highestChapterIndex} 章</Text></div>
-                        <Button variant="light" size="compact-xs" onClick={() => model.openChapter(novel.sourceId, novel.metadata.novelId, novel.readingProgress!.highestChapterId)}>继续</Button>
+                        <div><Text size="xs" c="dimmed">继续阅读</Text><Text size="xs" fw={600}>第 {novel.readingProgress.currentChapterIndex} 章</Text></div>
+                        <Button variant="light" size="compact-xs" onClick={() => model.openChapter(novel.sourceId, novel.metadata.novelId, novel.readingProgress!.currentChapterId)}>继续</Button>
                       </Group>
                     </Card>
                   ) : null}

@@ -199,6 +199,9 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   const currentTaskRef = useRef<ApiTaskSnapshot | null>(null);
   const lastObservedTaskRef = useRef<{ id: string; status: ApiTaskSnapshot['status'] } | null>(null);
   const lastPersistedProgressChapterRef = useRef<string | null>(null);
+  const progressWriteQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const currentReaderIdentity = useRef('');
+  currentReaderIdentity.current = `${location.sourceId}:${location.novelId}:${location.chapterId}`;
   const publishNotice = useEffectEvent(onNotice);
 
   latestLocationRef.current = location;
@@ -348,17 +351,20 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
   }, [location.sourceId, location.novelId]);
 
   useEffect(() => {
-    if (location.view !== 'reader' || !location.sourceId || !location.novelId || !location.chapterId || !chapter) {
+    if (location.view !== 'reader' || !location.sourceId || !location.novelId || !location.chapterId || !chapter || chapter.chapter.chapter.id !== location.chapterId) {
       return;
     }
 
-    if (lastPersistedProgressChapterRef.current === location.chapterId) {
+    const identity = `${location.sourceId}:${location.novelId}:${location.chapterId}`;
+    if (lastPersistedProgressChapterRef.current === identity) {
       return;
     }
 
-    void updateLibraryReadingProgress(location.sourceId, location.novelId, location.chapterId)
+    const { sourceId, novelId, chapterId } = location;
+    lastPersistedProgressChapterRef.current = identity;
+    progressWriteQueue.current = progressWriteQueue.current.then(() => updateLibraryReadingProgress(sourceId, novelId, chapterId))
       .then((payload) => {
-        lastPersistedProgressChapterRef.current = location.chapterId;
+        if (currentReaderIdentity.current !== identity) return;
         startTransition(() => {
           setDetail((current) => current ? {
             ...current,
@@ -378,6 +384,7 @@ export function useLibraryModel({ location, onNavigate, onNotice }: UseLibraryMo
         });
       })
       .catch(() => {
+        if (lastPersistedProgressChapterRef.current === identity) lastPersistedProgressChapterRef.current = null;
       });
   }, [chapter, location.chapterId, location.novelId, location.sourceId, location.view]);
 
