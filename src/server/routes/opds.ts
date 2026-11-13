@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 
 import type { ControlCenterService } from '../core/control-center';
 import { OpdsFeedService } from '../core/opds-feed';
+import { readOpdsQuery, searchOpdsNovels } from '../core/opds-query';
 
 export interface OpdsRouterOptions {
   service: ControlCenterService;
@@ -17,6 +18,11 @@ const OPDS_SUFFIX = '.opds';
 export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
   const router = Router();
   const feedService = new OpdsFeedService();
+
+  router.use((request, response, next) => {
+    try { readOpdsQuery(request.query); next(); }
+    catch (error) { response.status(400).json({ message: (error as Error).message }); }
+  });
 
   function sendXmlResponse(response: Response, contentType: string, xml: string) {
     response.status(200);
@@ -34,7 +40,7 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
   }
 
   function respondWithV1RootFeed(request: Request, response: Response) {
-    const novels = service.listVisibleOpdsNovelsWithMetadata();
+    const novels = searchOpdsNovels(service.listVisibleOpdsNovelsWithMetadata(), readOpdsQuery(request.query));
     const xml = feedService.buildAtomRootFeed(novels, resolveRequestOrigin(request));
     sendXmlResponse(response, ATOM_NAVIGATION_CONTENT_TYPE, xml);
   }
@@ -95,9 +101,9 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
 
   // ── OPDS 2.0 (JSON-LD) ──
 
-  router.get('/v2', (_request, response) => {
+  router.get('/v2', (request, response) => {
     try {
-      const novels = service.listVisibleOpdsNovelsWithMetadata();
+      const novels = searchOpdsNovels(service.listVisibleOpdsNovelsWithMetadata(), readOpdsQuery(request.query));
       const availabilityByNovel = new Map(
         novels.map((novel) => [
           `${novel.sourceId}:${novel.novelId}`,

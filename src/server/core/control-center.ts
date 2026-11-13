@@ -800,7 +800,10 @@ export class ControlCenterService {
 
   /** 列出所有 OPDS 可见书籍（含完整元数据，供 feed 构造） */
   listVisibleOpdsNovelsWithMetadata(): OpdsNovelFeedEntry[] {
-    return this.#repository.listVisibleOpdsNovelsWithMetadata();
+    return this.#repository.listVisibleOpdsNovelsWithMetadata().map(novel => ({
+      ...novel,
+      aliases: this.#repository.listNovelAliases(novel.sourceId, novel.novelId),
+    }));
   }
 
   /** 查询某书某版本制品文件信息 */

@@ -10,6 +10,22 @@ import {
   waitForServerListening,
 } from './library-test-helpers';
 
+test('OPDS query includes aliases but excludes hidden and trashed books', async () => {
+  const { app, cleanup, repository } = createLibraryServer();
+  const server = app.listen(0, '127.0.0.1');
+  try {
+    const baseUrl = await waitForServerListening(server);
+    repository.createNovelAlias('syosetu', 'n1000lib', '別名 A&B');
+    const search = async () => (await (await fetch(`${baseUrl}/opds/v2?query=${encodeURIComponent('alias:別名')}`)).json() as { publications: unknown[] }).publications;
+    assert.equal((await search()).length, 0);
+    repository.updateOpdsVisible('syosetu', 'n1000lib', true);
+    assert.equal((await search()).length, 1);
+    repository.moveNovelToTrash('syosetu', 'n1000lib');
+    assert.equal((await search()).length, 0);
+    assert.equal((await fetch(`${baseUrl}/opds/v2?query=a&query=b`)).status, 400);
+  } finally { await closeServer(server); cleanup(); }
+});
+
 test('OPDS v1 root feed returns OPDS navigation content type', async () => {
   const { app, cleanup, repository } = createLibraryServer();
   const server = app.listen(0, '127.0.0.1');
