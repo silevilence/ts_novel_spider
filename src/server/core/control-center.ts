@@ -1138,6 +1138,7 @@ export class ControlCenterService {
 
   listTrashedLibraryNovels(): LibraryNovelSummary[] {
     return this.#repository.listTrashedNovels().map((novel) => ({
+      ...this.ebookMetadata(novel.sourceId, novel.metadata.novelId),
       sourceId: novel.sourceId, metadata: novel.metadata, updatedAt: novel.updatedAt,
       downloadedChapters: novel.downloadedChapters, failedChapters: novel.failedChapters, indexedChapters: novel.indexedChapters,
       latestDownloadedAt: novel.latestDownloadedAt, aliases: [], readingProgress: null, bookmarkCount: 0,

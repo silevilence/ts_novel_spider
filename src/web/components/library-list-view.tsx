@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { EbookImportPanel } from './ebook-import-panel';
 import {
-  Badge, Button, Card, Group, Menu, Modal, Paper, ScrollArea, Select, SimpleGrid, Stack, Text, TextInput, Title, UnstyledButton,
+  Alert, Badge, Button, Card, Group, Menu, Modal, Paper, ScrollArea, Select, SimpleGrid, Stack, Text, TextInput, Title, UnstyledButton,
 } from '@mantine/core';
 import { IconBook, IconSearch, IconArrowRight, IconDots, IconFileDownload, IconBook2, IconPlus } from '@tabler/icons-react';
 
@@ -36,6 +36,23 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashedNovels, setTrashedNovels] = useState<LibraryModel['novels']>([]);
+  const [pendingTrash, setPendingTrash] = useState<LibraryModel['novels'][number] | null>(null);
+  const [trashBusy, setTrashBusy] = useState(false);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashError, setTrashError] = useState('');
+
+  const loadTrash = async () => {
+    setTrashLoading(true); setTrashError('');
+    try { setTrashedNovels((await fetchTrashedLibraryNovels()).novels); }
+    catch (error) { setTrashError(error instanceof Error ? error.message : '读取回收站失败。'); }
+    finally { setTrashLoading(false); }
+  };
+  const mutateTrash = async (operation: () => Promise<void>) => {
+    setTrashBusy(true); setTrashError('');
+    try { await operation(); }
+    catch (error) { setTrashError(error instanceof Error ? error.message : '操作失败，请重试。'); }
+    finally { setTrashBusy(false); }
+  };
 
   const totalNovels = model.libraryOverview.totalNovels;
   const downloadedChapters = model.libraryOverview.downloadedChapters;
@@ -73,7 +90,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
           placeholder="搜索：name:作品名、tag:标签、alias:别名..."
           value={model.searchQuery}
           onChange={(e) => model.setSearchQuery(e.target.value)}
-          style={{ flex: 1 }}
+          style={{ flex: '1 1 300px', minWidth: 0 }}
         />
         <Button variant="subtle" size="compact-sm" onClick={() => setIsSearchGuideOpen((v) => !v)}>
           {isSearchGuideOpen ? '收起语法提示' : '查询语法'}
@@ -98,7 +115,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
       <Group>
         <Button variant="light" size="compact-sm" onClick={onOpenControl}>去采集新作品</Button>
         <Button color="brand" size="compact-sm" leftSection={<IconPlus size={15} />} onClick={() => setManualDialogOpen(true)}>新建手动小说</Button>
-        <Button variant="subtle" size="compact-sm" onClick={() => { setTrashOpen(true); void fetchTrashedLibraryNovels().then((payload) => setTrashedNovels(payload.novels)); }}>回收站</Button>
+        <Button variant="subtle" size="compact-sm" onClick={() => { setTrashOpen(true); void loadTrash(); }}>回收站</Button>
         <Button variant="subtle" size="compact-sm" onClick={() => void model.refresh()} loading={model.loading}>刷新书库</Button>
       </Group>
 
@@ -127,7 +144,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
                     <Badge variant="light" color="gray" size="sm">{novel.ebook ? `导入 · ${novel.ebook.format.toUpperCase()}` : novel.sourceId === 'manual' ? '手动创建' : novel.sourceId}</Badge>
                     <Menu shadow="md" width={160}>
                       <Menu.Target>
-                        <Button variant="subtle" size="compact-xs" px={6}><IconDots size={16} /></Button>
+                        <Button aria-label={`管理《${novel.metadata.title}》`} variant="subtle" size="compact-xs" px={6}><IconDots size={16} /></Button>
                       </Menu.Target>
                       <Menu.Dropdown>
                         <Menu.Item leftSection={<IconArrowRight size={14} />}
@@ -140,10 +157,7 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
                             继续阅读
                           </Menu.Item>
                         ) : null}
-                        <Menu.Item color="red" onClick={() => {
-                          if (!window.confirm(`将《${novel.metadata.title}》移入回收站？15 天后才能永久删除。`)) return;
-                          void moveLibraryNovelToTrash(novel.sourceId, novel.metadata.novelId).then(() => model.refresh()).then(() => onNotify({ tone: 'success', title: '已移入回收站', message: '可在回收站恢复。' })).catch((error: unknown) => onNotify({ tone: 'error', title: '删除失败', message: error instanceof Error ? error.message : '请稍后重试。' }));
-                        }}>移入回收站</Menu.Item>
+                        <Menu.Item color="red" onClick={() => { setTrashError(''); setPendingTrash(novel); }}>移入回收站</Menu.Item>
                       </Menu.Dropdown>
                     </Menu>
                   </Group>
@@ -210,7 +224,50 @@ export function LibraryListView({ model, onOpenControl, onNotify }: LibraryListV
         </Stack>
       </Modal>
 
-      <Modal opened={trashOpen} onClose={() => setTrashOpen(false)} title="书库回收站" size="lg"><Stack>{trashedNovels.length ? trashedNovels.map((novel) => <Paper key={`${novel.sourceId}-${novel.metadata.novelId}`} p="sm"><Group justify="space-between"><div><Text fw={600}>{novel.metadata.title}</Text><Text size="xs" c="dimmed">{novel.sourceId} · 已移入回收站（只读）</Text></div><Group gap="xs"><Button size="compact-xs" variant="subtle" onClick={() => { setTrashOpen(false); model.openNovel(novel.sourceId, novel.metadata.novelId); }}>查看</Button><Button size="compact-xs" onClick={() => void restoreLibraryNovelFromTrash(novel.sourceId, novel.metadata.novelId).then(() => fetchTrashedLibraryNovels()).then((payload) => { setTrashedNovels(payload.novels); return model.refresh(); }).then(() => onNotify({ tone: 'success', title: '已恢复小说', message: '已恢复原有定时更新与 OPDS 状态。' }))}>恢复</Button><Button size="compact-xs" color="red" variant="light" onClick={() => void fetchLibraryNovelPurgeStatus(novel.sourceId, novel.metadata.novelId).then((status) => { if (!status.canPurge) { onNotify({ tone: 'info', title: '暂不可永久删除', message: `还需保留 ${status.remainingDays} 天。` }); return; } if (!window.confirm(`永久删除《${novel.metadata.title}》及所有关联数据？`)) return; return purgeLibraryNovel(novel.sourceId, novel.metadata.novelId).then(() => fetchTrashedLibraryNovels()).then((payload) => setTrashedNovels(payload.novels)).then(() => onNotify({ tone: 'success', title: '已永久删除', message: '关联素材与导出制品已清理。' })); })}>永久删除</Button></Group></Group></Paper>) : <Text c="dimmed">回收站为空。</Text>}</Stack></Modal>
+      <Modal opened={pendingTrash !== null} onClose={() => { if (!trashBusy) setPendingTrash(null); }} title="移入回收站" size="sm">
+        <Stack>
+          <Text>将《{pendingTrash?.metadata.title}》移入回收站？可恢复，15 天后才能永久删除。</Text>
+          {trashError ? <Alert color="red">{trashError}</Alert> : null}
+          <Group justify="flex-end">
+            <Button variant="subtle" disabled={trashBusy} onClick={() => setPendingTrash(null)}>取消</Button>
+            <Button color="red" loading={trashBusy} onClick={() => void mutateTrash(async () => {
+              if (!pendingTrash) return;
+              await moveLibraryNovelToTrash(pendingTrash.sourceId, pendingTrash.metadata.novelId);
+              await model.refresh(); setPendingTrash(null);
+              onNotify({ tone: 'success', title: '已移入回收站', message: '可在回收站恢复。' });
+            })}>确认移入</Button>
+          </Group>
+        </Stack>
+      </Modal>
+      <Modal opened={trashOpen} onClose={() => { if (!trashBusy) setTrashOpen(false); }} title="书库回收站" size="lg">
+        <Stack>
+          {trashError ? <Alert color="red" title="操作未完成">{trashError}</Alert> : null}
+          <Button variant="subtle" loading={trashLoading} disabled={trashBusy} onClick={() => void loadTrash()}>刷新回收站</Button>
+          {trashLoading ? <Text role="status">正在读取回收站…</Text> : trashedNovels.length ? trashedNovels.map((novel) => (
+            <Paper key={`${novel.sourceId}-${novel.metadata.novelId}`} p="sm">
+              <Group justify="space-between">
+                <div><Text fw={600}>{novel.metadata.title}</Text><Text size="xs" c="dimmed">{novel.ebook ? '导入电子书 · 恢复后可阅读和导出' : `${novel.sourceId} · 已移入回收站（只读）`}</Text></div>
+                <Group gap="xs">
+                  {!novel.ebook ? <Button size="compact-xs" variant="subtle" onClick={() => { setTrashOpen(false); model.openNovel(novel.sourceId, novel.metadata.novelId); }}>查看</Button> : null}
+                  <Button size="compact-xs" disabled={trashBusy} onClick={() => void mutateTrash(async () => {
+                    await restoreLibraryNovelFromTrash(novel.sourceId, novel.metadata.novelId);
+                    setTrashedNovels((await fetchTrashedLibraryNovels()).novels); await model.refresh();
+                    onNotify({ tone: 'success', title: '已恢复小说', message: '已恢复原有定时更新与 OPDS 状态。' });
+                  })}>恢复</Button>
+                  <Button size="compact-xs" color="red" variant="light" disabled={trashBusy} onClick={() => void mutateTrash(async () => {
+                    const status = await fetchLibraryNovelPurgeStatus(novel.sourceId, novel.metadata.novelId);
+                    if (!status.canPurge) { onNotify({ tone: 'info', title: '暂不可永久删除', message: `还需保留 ${status.remainingDays} 天。` }); return; }
+                    if (!window.confirm(`永久删除《${novel.metadata.title}》及所有关联数据？`)) return;
+                    await purgeLibraryNovel(novel.sourceId, novel.metadata.novelId);
+                    setTrashedNovels((await fetchTrashedLibraryNovels()).novels);
+                    onNotify({ tone: 'success', title: '已永久删除', message: '关联素材与导出制品已清理。' });
+                  })}>永久删除</Button>
+                </Group>
+              </Group>
+            </Paper>
+          )) : !trashError ? <Text c="dimmed">回收站为空。</Text> : null}
+        </Stack>
+      </Modal>
     </Stack>
   );
 }

@@ -52,6 +52,9 @@ test('batch ebook API isolates failures, previews and confirms, detects duplicat
     assert.equal(await (await fetch(opdsOriginal)).text(), text);
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}/metadata-sync`, { method: 'POST' })).status, 422);
     repository.moveNovelToTrash('manual', novelId);
+    const trashed = await (await fetch(`${libraryBase}/trash`)).json() as { novels: Array<{ origin?: string; ebook?: { format: string } }> };
+    assert.equal(trashed.novels[0]?.origin, 'imported');
+    assert.equal(trashed.novels[0]?.ebook?.format, 'txt');
     assert.equal((await fetch(opdsOriginal)).status, 404);
     assert.equal((await fetch(`${base}/${good.id}/original`)).status, 404);
     assert.equal((await fetch(`${libraryBase}/novels/manual/${novelId}`)).status, 404);
