@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MAX_EBOOK_BYTES, type EbookImport, type EbookMetadata } from '../contracts/ebook';
 import type { SqliteNovelRepository } from './novel-repository';
+import { parseTextEbook } from './ebook-txt';
 
 export class EbookImportService {
   constructor(readonly repository: SqliteNovelRepository, readonly storageRoot: string) {
@@ -48,5 +49,20 @@ export class EbookImportService {
     const entry = this.get(id);
     if (!fs.existsSync(this.originalPath(entry))) throw new Error('原始文件缺失，请重新上传。');
     return this.repository.commitEbookImport(id, metadata);
+  }
+
+  async parse(id: string, encoding?: string): Promise<EbookImport> {
+    const entry = this.get(id);
+    if (entry.status === 'parsing' || entry.novelId) return entry;
+    this.repository.saveEbookImport({ ...entry, status: 'parsing', error: null });
+    try {
+      const data = await fs.promises.readFile(this.originalPath(entry));
+      if (entry.format !== 'txt') throw new Error('EPUB 解析尚未就绪。');
+      const preview = parseTextEbook(data, entry.fileName, encoding);
+      this.repository.saveEbookImport({ ...entry, status: 'ready', preview, error: null, updatedAt: new Date().toISOString() });
+    } catch (error) {
+      this.repository.saveEbookImport({ ...entry, status: 'failed', preview: null, error: error instanceof Error ? error.message : '解析失败。', updatedAt: new Date().toISOString() });
+    }
+    return this.get(id);
   }
 }
