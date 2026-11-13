@@ -36,11 +36,6 @@ export function LibraryWorkspace({ model, onOpenControl, onNotify }: LibraryWork
     setEditingBookmarkNote('');
   }, [model.location.path]);
 
-  useEffect(() => {
-    if (model.location.view !== 'reader' || !model.chapter?.chapter.chapter.id) return;
-    window.scrollTo({ top: 0, behavior: 'auto' });
-  }, [model.location.view, model.chapter?.chapter.chapter.id]);
-
   if (model.location.view === 'page') {
     return <LibraryListView model={model} onOpenControl={onOpenControl} onNotify={onNotify} />;
   }

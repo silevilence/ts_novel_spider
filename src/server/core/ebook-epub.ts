@@ -26,7 +26,11 @@ async function readZipEntry(entry: JSZip.JSZipObject): Promise<Buffer> {
     const stream = entry.nodeStream('nodebuffer') as Readable;
     stream.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_ENTRY_BYTES) { stream.destroy(new Error('EPUB 单个资源解压后超过 16 MB。')); return; }
+      if (size > MAX_ENTRY_BYTES) {
+        reject(new Error('EPUB 单个资源解压后超过 16 MB。'));
+        stream.destroy();
+        return;
+      }
       chunks.push(chunk);
     }).on('error', reject).on('end', () => resolve(Buffer.concat(chunks)));
   });

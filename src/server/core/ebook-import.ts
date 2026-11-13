@@ -6,6 +6,12 @@ import type { SqliteNovelRepository } from './novel-repository';
 import { parseTextEbook } from './ebook-txt';
 import { parseEpubEbook, preserveEpubResources } from './ebook-epub';
 
+function previewText(content: string): string {
+  return content.replace(/^\[ebook-[a-f0-9-]+\]: #\s*$/gm, '')
+    .replace(/!\[[^\]]*\]\(ebook:\/\/[^)]*\)/g, '[图片]')
+    .replace(/\[([^\]]+)\]\(#ebook-[^)]*\)/g, '$1').trim().slice(0, 1000);
+}
+
 export class EbookImportService {
   #queue: Promise<unknown> = Promise.resolve();
   constructor(readonly repository: SqliteNovelRepository, readonly storageRoot: string) {
@@ -23,7 +29,7 @@ export class EbookImportService {
       sameTitleCount: entry.preview ? novels.filter(novel => novel.metadata.title === entry.preview!.title && novel.metadata.novelId !== entry.novelId).length : 0,
       preview: entry.preview ? {
         title: entry.preview.title, author: entry.preview.author, description: entry.preview.description, tags: entry.preview.tags,
-        chapterCount: entry.preview.chapters.length, excerpt: entry.preview.chapters.slice(0, 3).map(chapter => `${chapter.title}\n${chapter.content.slice(0, 1000)}`).join('\n\n'),
+        chapterCount: entry.preview.chapters.length, excerpt: entry.preview.chapters.slice(0, 3).map(chapter => `${chapter.title}\n${previewText(chapter.content)}`).join('\n\n'),
         warnings: entry.preview.warnings, ...(entry.preview.encoding ? { encoding: entry.preview.encoding } : {}),
       } : null,
     }));

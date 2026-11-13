@@ -44,6 +44,7 @@ test('EPUB package images and cross-chapter footnotes survive import without net
     const { entry } = service.upload('book.epub', await makeEpubFixture());
     const parsed = await service.parse(entry.id);
     assert.equal(parsed.status, 'ready');
+    assert.doesNotMatch(service.summaries()[0]!.preview!.excerpt, /ebook[-:]/);
     const novelId = service.confirm(entry.id, parsed.preview!);
     const snapshot = repository.getSnapshot('manual', novelId)!;
     assert.match(snapshot.chapters[0]!.content!, /\]\(#ebook-/);
@@ -111,4 +112,39 @@ test('ebook purge respects retention, reports partial cleanup and can retry with
     assert.equal(fs.existsSync(service.directory(entry.id)), false);
     assert.equal(fs.readFileSync(service.originalPath(other), 'utf8'), '其他书籍');
   } finally { t.mock.restoreAll(); repository.close(); fs.rmSync(root, { recursive: true }); }
+});
+
+test('imported edits, ordering and version restores invalidate OPDS generated editions', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ebook-opds-edits-'));
+  const repository = new SqliteNovelRepository(':memory:');
+  try {
+    const service = new EbookImportService(repository, root);
+    const { entry } = service.upload('book.txt', Buffer.from('第一章 开始\n正文\n第二章 结束\n结尾'));
+    const parsed = await service.parse(entry.id);
+    const id = service.confirm(entry.id, parsed.preview!);
+    repository.updateOpdsVisible('manual', id, true);
+    const chapters = repository.getSnapshot('manual', id)!.chapters;
+    const first = chapters[0]!;
+    repository.updateManualMetadata(id, { ...parsed.preview!, author: '作者' });
+    const metadataVersion = repository.listMetadataVersions('manual', id)[0]!.version;
+    const chapterVersion = repository.listChapterVersions('manual', id, first.id)[0]!.version;
+    const actions = [
+      () => repository.updateManualMetadata(id, { ...parsed.preview!, title: '新书名' }),
+      () => repository.saveManualChapter(id, { chapterId: first.id, title: '新章名', content: '新正文', volumeTitle: '第一卷' }),
+      () => repository.reorderManualChapters(id, chapters.map(chapter => chapter.id).reverse()),
+      () => repository.renameManualVolume(id, '第一卷', '新卷'),
+      () => repository.restoreMetadataVersion('manual', id, metadataVersion),
+      () => repository.restoreChapterVersion('manual', id, first.id, chapterVersion),
+      () => repository.deleteManualChapter(id, chapters[1]!.id),
+      () => repository.deleteManualVolume(id, '新卷'),
+    ];
+    for (const action of actions) {
+      const compiled = repository.getOpdsNovel('manual', id)!.contentUpdatedAt!;
+      repository.updateNovelEpubCompiledAt('manual', id, compiled);
+      await new Promise(resolve => setTimeout(resolve, 3));
+      action();
+      assert(repository.getOpdsNovel('manual', id)!.contentUpdatedAt! > compiled);
+    }
+    assert.equal(fs.readFileSync(service.originalPath(entry), 'utf8'), '第一章 开始\n正文\n第二章 结束\n结尾');
+  } finally { repository.close(); fs.rmSync(root, { recursive: true }); }
 });

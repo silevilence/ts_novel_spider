@@ -2100,7 +2100,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
 
   deleteManualChapter(novelId: string, chapterId: string): boolean {
     const result = this.#database.prepare(`DELETE FROM chapters WHERE source_id='manual' AND novel_id=? AND chapter_id=?`).run(novelId, chapterId);
-    if (result.changes) this.#reindexManualChapters(novelId);
+    if (result.changes) { this.#reindexManualChapters(novelId); this.bumpNovelContentUpdatedAt('manual', novelId); }
     return result.changes > 0;
   }
 
@@ -2110,6 +2110,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     if (new Set(chapterIds).size !== realIds.length || chapterIds.some((id) => !realIds.includes(id))) throw new Error('章节排序数据不完整。');
     const transaction = this.#database.transaction(() => chapterIds.forEach((id, index) => this.#database.prepare(`UPDATE chapters SET chapter_index=?, updated_at=? WHERE source_id='manual' AND novel_id=? AND chapter_id=?`).run(index + 1, new Date().toISOString(), novelId, id)));
     transaction();
+    this.bumpNovelContentUpdatedAt('manual', novelId);
   }
 
   listManualVolumes(novelId: string): StoredManualVolumeRow[] {
@@ -2133,13 +2134,14 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
       if (!changed) throw new Error('卷不存在。');
       this.#database.prepare(`UPDATE chapters SET volume_title=?, updated_at=? WHERE source_id='manual' AND novel_id=? AND volume_title=?`).run(normalized, new Date().toISOString(), novelId, title);
     }); transaction();
+    this.bumpNovelContentUpdatedAt('manual', novelId);
   }
 
   deleteManualVolume(novelId: string, title: string): number {
     const transaction = this.#database.transaction(() => {
       const deleted = this.#database.prepare(`DELETE FROM chapters WHERE source_id='manual' AND novel_id=? AND volume_title=?`).run(novelId, title).changes;
       this.#database.prepare(`DELETE FROM manual_volumes WHERE novel_id=? AND volume_title=?`).run(novelId, title);
-      this.#reindexManualChapters(novelId); return deleted;
+      this.#reindexManualChapters(novelId); this.bumpNovelContentUpdatedAt('manual', novelId); return deleted;
     }); return transaction();
   }
 
@@ -2167,6 +2169,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const timestamp = new Date().toISOString();
     this.#database.prepare(`UPDATE novels SET title=?, author=?, description=?, tags_json=?, updated_at=? WHERE source_id=? AND novel_id=?`).run(row.title, row.author, row.description, row.tags_json, timestamp, sourceId, novelId);
     this.#recordMetadataVersion(sourceId, novelId, this.#nextMetadataVersion(sourceId, novelId), row.title, row.author, row.description, parseTagsJson(row.tags_json), timestamp);
+    this.bumpNovelContentUpdatedAt(sourceId, novelId);
     return this.getSnapshot(sourceId, novelId)!;
   }
 
@@ -2177,6 +2180,7 @@ export class SqliteNovelRepository implements BrowserCaptureStore {
     const timestamp = new Date().toISOString();
     this.#database.prepare(`UPDATE chapters SET title=?, content=?, status='downloaded', downloaded_at=?, updated_at=? WHERE source_id=? AND novel_id=? AND chapter_id=?`).run(row.title, row.content, timestamp, timestamp, sourceId, novelId, chapterId);
     this.#recordChapterVersion(sourceId, novelId, chapterId, this.#nextChapterVersion(sourceId, novelId, chapterId), row.title, row.content, timestamp);
+    this.bumpNovelContentUpdatedAt(sourceId, novelId);
     return this.getChapter(sourceId, novelId, chapterId)!;
   }
 

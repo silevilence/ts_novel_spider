@@ -2046,3 +2046,6 @@ button.graph-node:focus-visible {
   .refined-terms-table input[type="checkbox"] { width: 24px; height: 24px; flex-shrink: 0; }
   .refined-workspace .mantine-ActionIcon-root { min-width: 40px; min-height: 40px; }
 }
+.reader-copy {
+  overflow-anchor: none;
+}

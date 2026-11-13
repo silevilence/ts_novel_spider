@@ -21,3 +21,9 @@ test('EPUB missing TOC falls back; malformed, fixed-layout, missing body and zip
   await assert.rejects(parseEpubEbook(Buffer.from('invalid'), 'x.epub'), /损坏/);
   for (const options of [{ fixed: true }, { missing: true }, { extra: { '../outside': 'bad' } }]) await assert.rejects(parseEpubEbook(await makeEpubFixture(options), 'x.epub'));
 });
+
+test('EPUB enforces inflated entry limits on highly compressed input', async () => {
+  const bytes = await makeEpubFixture({ extra: { 'oversized.txt': Buffer.alloc(16 * 1024 * 1024 + 1, 65) } });
+  assert(bytes.length < 32 * 1024 * 1024);
+  await assert.rejects(parseEpubEbook(bytes, 'compressed.epub'), /16 MB/);
+});

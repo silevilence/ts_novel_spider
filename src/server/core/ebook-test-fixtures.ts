@@ -12,7 +12,7 @@ export async function makeEpubFixture(options: { version?: 2 | 3; noToc?: boolea
     : '<html><body><nav><ol><li><a href="parts/b.xhtml">第一章</a><ol><li><a href="a.xhtml">第二章</a></li></ol></li></ol></nav></body></html>');
   zip.file('OPS/a.xhtml', '<html><body><h1>结尾</h1><p id="note">后记<a href="parts/b.xhtml#ref">返回</a></p></body></html>');
   if (!options.missing) zip.file('OPS/parts/b.xhtml', '<html><body><h1>开始</h1><p id="ref">正文<strong>重点</strong><a href="../a.xhtml#note">注释</a></p><img src="../images/pic.png"/><table><tr><th>项目</th><th>值</th></tr><tr><td>A</td><td>1</td></tr></table><script>alert(1)</script></body></html>');
-  zip.file('OPS/images/pic.png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6BxkAAAAASUVORK5CYII=', 'base64'));
+  zip.file('OPS/images/pic.png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGP4UGFDEmIY1TCqYfhqAAD8vaQQiVjx+AAAAABJRU5ErkJggg==', 'base64'));
   for (const [name, data] of Object.entries(options.extra ?? {})) zip.file(name, data);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }

@@ -22,7 +22,7 @@ export function positionAtViewport(rects: Array<{ top: number; height: number }>
   return { fingerprint, block, fraction: rect ? Math.max(0, Math.min(1, (80 - rect.top) / Math.max(1, rect.height))) : 0 };
 }
 
-export function useReaderPosition(ref: RefObject<HTMLDivElement | null>, identity: string | null, content: string): string | null {
+export function useReaderPosition(ref: RefObject<HTMLDivElement | null>, identity: string | null, content: string, layoutKey = ''): string | null {
   const fingerprint = useMemo(() => readerFingerprint(content), [content]);
   const [notice, setNotice] = useState<string | null>(null);
   useLayoutEffect(() => {
@@ -64,6 +64,6 @@ export function useReaderPosition(ref: RefObject<HTMLDivElement | null>, identit
       cancelAnimationFrame(frame); observer.disconnect(); root.removeEventListener('load', restore, true);
       window.removeEventListener('resize', restore); window.removeEventListener('scroll', onScroll); window.removeEventListener('pagehide', save); save();
     };
-  }, [identity, fingerprint, ref]);
+  }, [identity, fingerprint, layoutKey, ref]);
   return notice;
 }

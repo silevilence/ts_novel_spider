@@ -50,7 +50,7 @@ export function LibraryReaderView(props: LibraryReaderViewProps) {
   const readerChapter = model.chapter?.chapter.chapter;
   const readerBody = useRef<HTMLDivElement>(null);
   const positionNotice = useReaderPosition(readerBody, detail && readerChapter && model.location.chapterId === readerChapter.id
-    ? `${detail.sourceId}:${detail.metadata.novelId}:${readerChapter.id}:${model.translationViewMode}` : null, readerChapter?.content ?? '');
+    ? `${detail.sourceId}:${detail.metadata.novelId}:${readerChapter.id}:${model.translationViewMode}` : null, readerChapter?.content ?? '', JSON.stringify(model.readerTypography));
   const [editingContent, setEditingContent] = useState(false);
   const [contentDraft, setContentDraft] = useState('');
   const [pendingAssets, setPendingAssets] = useState<PendingManualAsset[]>([]);
