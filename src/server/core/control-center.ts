@@ -831,6 +831,7 @@ export class ControlCenterService {
 
   /** 获取制品文件绝对路径（供路由 sendFile 使用） */
   getOpdsArtifactFilePath(sourceId: string, novelId: string, fileName: string): string | null {
+    if (!this.#repository.listVisibleOpdsNovelsWithMetadata().some(novel => novel.sourceId === sourceId && novel.novelId === novelId)) return null;
     const info = this.getOpdsArtifactInfo(sourceId, novelId, fileName);
     return info.exists ? info.filePath : null;
   }

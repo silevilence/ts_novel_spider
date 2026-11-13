@@ -130,6 +130,8 @@ export function OpdsDashboard({ onNotify }: OpdsDashboardProps) {
         <Text size="sm" c="dimmed" maw={640}>
           将书库中的作品通过 OPDS 协议分发给阅读器应用。开启后，支持 OPDS 1.2 与 2.0 的阅读器可通过书源地址浏览和下载。
         </Text>
+        <Text size="sm" mt="sm">阅读器可搜索书名、作者、标签和别名，也可从“按作者”“按标签”目录浏览。</Text>
+        <Text size="xs" c="dimmed">组合查询示例：author:夏目 + tag:奇幻。分类目录按完整标签筛选，搜索框支持模糊匹配。安卓静读天下优先使用 OPDS 1.2 地址。</Text>
       </Paper>
 
       {/* 配置区 */}

@@ -50,9 +50,14 @@ test('OPDS search discovery resolves encoded terms and advertises only real arti
     const link = (await search())('link[rel="http://opds-spec.org/acquisition"]').attr('href')!;
     const zip = await JSZip.loadAsync(await (await fetch(new URL(link, baseUrl))).arrayBuffer());
     assert.equal(await zip.file('mimetype')!.async('string'), 'application/epub+zip');
+    repository.updateOpdsVisible('syosetu', 'n1000lib', false);
+    assert.equal((await fetch(new URL(link, baseUrl))).status, 404);
+    repository.updateOpdsVisible('syosetu', 'n1000lib', true);
     const v2 = await (await fetch(`${baseUrl}/opds/v2/search?query=${encodeURIComponent('name:离线')}`)).json() as { links: Array<{ rel: string; templated?: boolean }>; publications: unknown[] };
     assert(v2.links.some(link => link.rel === 'search' && link.templated));
     assert.equal(v2.publications.length, 1);
+    repository.moveNovelToTrash('syosetu', 'n1000lib');
+    assert.equal((await fetch(new URL(link, baseUrl))).status, 404);
   } finally { await closeServer(server); cleanup(); fs.rmSync(root, { recursive: true }); }
 });
 

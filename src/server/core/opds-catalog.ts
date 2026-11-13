@@ -45,7 +45,7 @@ export function prepareOpdsCatalog(novels: OpdsNovelFeedEntry[], options: OpdsPa
 }
 
 export function decorateOpdsCatalog(feed: string, catalog: ReturnType<typeof prepareOpdsCatalog>): string {
-  const type = catalog.v1 ? 'application/atom+xml;profile=opds-catalog' : 'application/opds+json';
+  const type = catalog.v1 ? `application/atom+xml;profile=opds-catalog${!catalog.browse && catalog.links[0]!.href.includes('/search') ? ';kind=acquisition' : ''}` : 'application/opds+json';
   if (!catalog.v1) {
     const json = JSON.parse(feed);
     json.metadata = { ...json.metadata, ...catalog.metadata };
