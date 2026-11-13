@@ -4,6 +4,7 @@ import path from 'node:path';
 import { MAX_EBOOK_BYTES, type EbookImport, type EbookMetadata } from '../contracts/ebook';
 import type { SqliteNovelRepository } from './novel-repository';
 import { parseTextEbook } from './ebook-txt';
+import { parseEpubEbook } from './ebook-epub';
 
 export class EbookImportService {
   constructor(readonly repository: SqliteNovelRepository, readonly storageRoot: string) {
@@ -57,8 +58,7 @@ export class EbookImportService {
     this.repository.saveEbookImport({ ...entry, status: 'parsing', error: null });
     try {
       const data = await fs.promises.readFile(this.originalPath(entry));
-      if (entry.format !== 'txt') throw new Error('EPUB 解析尚未就绪。');
-      const preview = parseTextEbook(data, entry.fileName, encoding);
+      const preview = entry.format === 'txt' ? parseTextEbook(data, entry.fileName, encoding) : (await parseEpubEbook(data, entry.fileName)).preview;
       this.repository.saveEbookImport({ ...entry, status: 'ready', preview, error: null, updatedAt: new Date().toISOString() });
     } catch (error) {
       this.repository.saveEbookImport({ ...entry, status: 'failed', preview: null, error: error instanceof Error ? error.message : '解析失败。', updatedAt: new Date().toISOString() });
