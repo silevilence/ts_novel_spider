@@ -2,7 +2,8 @@ import { Router, type Request, type Response } from 'express';
 
 import type { ControlCenterService } from '../core/control-center';
 import { OpdsFeedService } from '../core/opds-feed';
-import { readOpdsQuery, searchOpdsNovels } from '../core/opds-query';
+import { readOpdsPage, readOpdsQuery, searchOpdsNovels } from '../core/opds-query';
+import { decorateOpdsCatalog, prepareOpdsCatalog } from '../core/opds-catalog';
 
 export interface OpdsRouterOptions {
   service: ControlCenterService;
@@ -20,7 +21,7 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
   const feedService = new OpdsFeedService();
 
   router.use((request, response, next) => {
-    try { readOpdsQuery(request.query); next(); }
+    try { readOpdsQuery(request.query); readOpdsPage(request.query); next(); }
     catch (error) { response.status(400).json({ message: (error as Error).message }); }
   });
 
@@ -41,8 +42,9 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
 
   function respondWithV1RootFeed(request: Request, response: Response) {
     const novels = searchOpdsNovels(service.listVisibleOpdsNovelsWithMetadata(), readOpdsQuery(request.query));
-    const xml = feedService.buildAtomRootFeed(novels, resolveRequestOrigin(request));
-    sendXmlResponse(response, ATOM_NAVIGATION_CONTENT_TYPE, xml);
+    const catalog = prepareOpdsCatalog(novels, readOpdsPage(request.query), request.originalUrl);
+    const xml = feedService.buildAtomRootFeed(catalog.books, resolveRequestOrigin(request));
+    sendXmlResponse(response, ATOM_NAVIGATION_CONTENT_TYPE, decorateOpdsCatalog(xml, catalog));
   }
 
   function normalizeOpdsNovelId(novelId: string): string {
@@ -74,10 +76,11 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
 
   router.get('/v1/search', (request, response) => {
     const novels = searchOpdsNovels(service.listVisibleOpdsNovelsWithMetadata(), readOpdsQuery(request.query));
-    const availability = new Map(novels.map(novel => [
+    const catalog = prepareOpdsCatalog(novels, readOpdsPage(request.query), request.originalUrl);
+    const availability = new Map(catalog.books.map(novel => [
       `${novel.sourceId}:${novel.novelId}`, service.getOpdsNovelArtifactAvailability(novel.sourceId, novel.novelId),
     ]));
-    sendXmlResponse(response, ATOM_ACQUISITION_CONTENT_TYPE, feedService.buildAtomSearchFeed(novels, availability, request.originalUrl));
+    sendXmlResponse(response, catalog.browse ? ATOM_NAVIGATION_CONTENT_TYPE : ATOM_ACQUISITION_CONTENT_TYPE, decorateOpdsCatalog(feedService.buildAtomSearchFeed(catalog.books, availability, request.originalUrl), catalog));
   });
 
   router.get('/v1', (request, response) => {
@@ -116,13 +119,14 @@ export function createOpdsRouter({ service }: OpdsRouterOptions): Router {
   router.get(['/v2', '/v2/search'], (request, response) => {
     try {
       const novels = searchOpdsNovels(service.listVisibleOpdsNovelsWithMetadata(), readOpdsQuery(request.query));
+      const catalog = prepareOpdsCatalog(novels, readOpdsPage(request.query), request.originalUrl);
       const availabilityByNovel = new Map(
-        novels.map((novel) => [
+        catalog.books.map((novel) => [
           `${novel.sourceId}:${novel.novelId}`,
           service.getOpdsNovelArtifactAvailability(novel.sourceId, novel.novelId),
         ]),
       );
-      const json = feedService.buildOpds2RootFeed(novels, availabilityByNovel);
+      const json = decorateOpdsCatalog(feedService.buildOpds2RootFeed(catalog.books, availabilityByNovel), catalog);
       response.setHeader('Content-Type', OPDS2_MEDIA_TYPE);
       response.send(json);
     } catch (error) {

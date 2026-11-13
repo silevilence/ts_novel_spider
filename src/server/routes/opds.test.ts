@@ -73,7 +73,7 @@ test('OPDS v1 root feed returns OPDS navigation content type', async () => {
     const xml = await response.text();
     assert.ok(xml.includes('<?xml version="1.0"'));
     assert.ok(xml.includes('xmlns="http://www.w3.org/2005/Atom"'));
-    assert.ok(xml.includes('离线书库样例'));
+    assert.ok(load(xml, { xml: true })('entry title').text().includes('离线书库样例'));
   } finally {
     await closeServer(server);
     cleanup();
