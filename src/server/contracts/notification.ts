@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+export interface ScheduledScanFailure {
+  description: string;
+  notifyOnUpdate: boolean;
+}
+
 /** 首版一个渠道与一个目标；业务事件不依赖渠道鉴权或 HTTP 协议。 */
 export interface NotificationEvent {
   id: string;
@@ -11,6 +16,7 @@ export interface NotificationEvent {
   summary: string;
   occurredAt: string;
   error: boolean;
+  scanFailures?: ScheduledScanFailure[];
   update?: { discovered: number; downloaded: number; failed: number; enabled: boolean };
 }
 

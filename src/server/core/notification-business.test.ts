@@ -11,6 +11,7 @@ import { NotificationService } from './notification-service';
 import { SchedulingService } from './scheduling';
 import { SpiderLogDispatcher } from './logging';
 import { ControlCenterService, type SpiderRegistryEntry } from './control-center';
+import type { NotificationEvent } from '../contracts/notification';
 
 function fixture(failChapterIds: string[] = [], transient = false): SpiderRegistryEntry {
   return { descriptor: { sourceId: 'mock-html', label: 'mock', description: 'mock', defaultNovelId: 'n1' }, spider: new MockHtmlSpiderAdapter({
@@ -50,7 +51,7 @@ test('scheduled notifications default off, survive partial saves/trash/restore a
   } finally { repo.close(); fs.rmSync(dir, { recursive: true }); }
 });
 
-test('scheduled download reports actual success/partial/all failures once, before translation, and no update stays quiet', async (t) => {
+test('scheduled downloads notify successes before translation and report partial or total failures at round end', async (t) => {
   for (const failed of [[], ['c2'], ['c1', 'c2']]) {
     const repo = new SqliteNovelRepository(':memory:'); const prefs = preferences(); const texts: string[] = [];
     seed(repo); repo.upsertScheduledNovel('mock-html', 'n1', true, true, false, null, true);
@@ -59,11 +60,12 @@ test('scheduled download reports actual success/partial/all failures once, befor
     t.mock.method(globalThis, 'setInterval', (callback: () => void) => { callbacks.push(callback); return 0; });
     t.mock.method(globalThis, 'clearInterval', () => {});
     let complete = () => {};
+    let notificationsBeforeTranslation: number | undefined;
     prefs.updateScheduling({ enabled: true });
     const scheduler = new SchedulingService({ repository: repo, preferences: prefs, spiderRegistry: [fixture(failed)], controlCenter: { getActiveTaskNovelKeys: () => [] },
       notifications, logger: new SpiderLogDispatcher([{ log: async (event) => { if (event.type === 'scheduling_round_completed') complete(); } }]),
       translation: { getAutoTranslationReadiness: () => {
-        assert.equal(repo.listNotifications().length, 1, 'notification was enqueued before starting translation');
+        notificationsBeforeTranslation = repo.listNotifications().length;
         return { ready: false, reason: 'not configured' };
       }, startTranslation: () => { throw new Error('unused'); } },
       summary: { getAutoSummaryReadiness: () => ({ ready: false }), summarizeNewChapters: async () => { throw new Error('unused'); } },
@@ -76,7 +78,9 @@ test('scheduled download reports actual success/partial/all failures once, befor
     try {
       scheduler.start(); await run(); await notifications.drain();
       assert.equal(texts.length, 1);
+      assert.equal(notificationsBeforeTranslation, failed.length ? 0 : 1);
       assert.match(texts[0]!, new RegExp(`发现 2 章，成功下载 ${2 - failed.length} 章，失败 ${failed.length} 章`));
+      for (const chapterId of failed) assert.ok(texts[0]!.includes(`Permanent failure for ${chapterId}`));
       await run(); await notifications.drain(); assert.equal(texts.length, 1, 'no new chapters sends nothing');
       const entry = repo.listNotifications()[0]!;
       assert.equal(notifications.submit(entry.event), false);
@@ -84,22 +88,40 @@ test('scheduled download reports actual success/partial/all failures once, befor
   }
 });
 
-test('update-check failure aggregates once per novel/round and broken notifier does not stop the next book', async (t) => {
+test('one scan collects check and download failures for all books even when the notifier throws', async (t) => {
   const repo = new SqliteNovelRepository(':memory:'); const prefs = preferences(); prefs.updateScheduling({ enabled: true });
   seed(repo, 'n1'); seed(repo, 'n2'); repo.upsertScheduledNovel('mock-html', 'n1', true); repo.upsertScheduledNovel('mock-html', 'n2', true);
-  const source = fixture(); const checked: string[] = []; let notified = 0;
-  source.spider.fetchMetadata = async (context) => { checked.push(context.novelId); throw new Error('check failed'); };
+  seed(repo, 'n3'); repo.upsertScheduledNovel('mock-html', 'n3', true, false, false, null, true);
+  const source = fixture(['c2']);
+  const metadata = source.spider.fetchMetadata.bind(source.spider);
+  source.spider.fetchMetadata = async (context) => {
+    if (context.novelId === 'n1') throw new Error('目录服务不可用');
+    if (context.novelId === 'n2' && fetchingDownload) throw new Error('下载连接中断');
+    if (context.novelId === 'n2') fetchingDownload = true;
+    return metadata(context);
+  };
+  let fetchingDownload = false;
+  const events: NotificationEvent[] = [];
   let tick = () => {}; let complete = () => {};
   t.mock.method(globalThis, 'setInterval', (callback: () => void) => { tick = callback; return 0; }); t.mock.method(globalThis, 'clearInterval', () => {});
   const scheduler = new SchedulingService({ repository: repo, preferences: prefs, spiderRegistry: [source], controlCenter: { getActiveTaskNovelKeys: () => [] },
-    notifications: { submit: (event) => { notified++; assert.equal(event.kind, '更新检查失败'); throw new Error('notification broken'); } },
+    notifications: { submit: (event) => { events.push(event); throw new Error('notification broken'); } },
     logger: new SpiderLogDispatcher([{ log: async (event) => { if (event.type === 'scheduling_round_completed') complete(); } }]),
     translation: { getAutoTranslationReadiness: () => ({ ready: false }), startTranslation: () => { throw new Error('unused'); } },
     summary: { getAutoSummaryReadiness: () => ({ ready: false }), summarizeNewChapters: async () => { throw new Error('unused'); } },
   });
   try {
     const done = new Promise<void>((resolve) => { complete = resolve; }); scheduler.start(); scheduler.scheduleNextTick({ ...prefs.getScheduling(), intervalHours: 0 }); tick(); await done;
-    assert.deepEqual(checked, ['n1', 'n2']); assert.equal(notified, 2);
+    assert.equal(events.length, 1);
+    const failures = events[0]?.scanFailures;
+    assert.equal(failures?.length, 3);
+    for (const [id, reason, subscribed] of [
+      ['n1', '目录服务不可用', false], ['n2', '下载连接中断', false], ['n3', 'Permanent failure for c2', true],
+    ] as const) {
+      const failure = failures?.find((item) => item.description.includes(`mock-html/${id}`));
+      assert.ok(failure?.description.includes(reason));
+      assert.equal(failure.notifyOnUpdate, subscribed);
+    }
   } finally { scheduler.stop(); repo.close(); }
 });
 

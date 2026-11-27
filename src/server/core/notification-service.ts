@@ -12,6 +12,22 @@ export interface NotificationStore {
   getNotification(id: string): NotificationRecord | null;
 }
 
+function matchesRules(event: NotificationEvent, errorEnabled: boolean): boolean {
+  return (event.error && errorEnabled) || Boolean(event.update?.enabled || event.scanFailures?.some((failure) => failure.notifyOnUpdate));
+}
+
+function formatMessage(event: NotificationEvent, errorEnabled: boolean): string {
+  if (event.scanFailures) {
+    const failures = event.scanFailures.filter((failure) => errorEnabled || failure.notifyOnUpdate);
+    return [`${event.title}（${failures.length} 本）`, ...failures.map((failure) => failure.description),
+      event.summary, `轮次：${event.runId}`, `时间：${event.occurredAt}`].join('\n');
+  }
+  return [event.title, `业务：${event.kind}`, `小说：${event.sourceId}/${event.novelId}`,
+    `任务/轮次：${event.runId}`, event.summary,
+    ...(event.update ? [`发现 ${event.update.discovered} 章，成功下载 ${event.update.downloaded} 章，失败 ${event.update.failed} 章`] : []),
+    `时间：${event.occurredAt}`].join('\n');
+}
+
 /** 后台串行发送，失败只落本地记录；绝不通过通知服务报告通知自身的失败。 */
 export class NotificationService {
   #tail: Promise<void> = Promise.resolve();
@@ -31,7 +47,7 @@ export class NotificationService {
     if (this.#closed) return false;
     try {
       const config = override ?? this.preferences.resolveNotification();
-      const allowed = test || config.enabled && ((event.error && config.errorEnabled) || Boolean(event.update?.enabled));
+      const allowed = test || config.enabled && matchesRules(event, config.errorEnabled);
       const now = new Date().toISOString();
       const entry: NotificationRecord = {
         id: event.id, event: this.#sanitize(event, config), channel: config.channel,
@@ -83,14 +99,12 @@ export class NotificationService {
 
   async #send(entry: NotificationRecord, config: StoredNotificationConfig, test: boolean): Promise<void> {
     const channel = this.channels.get(config.channel);
-    const message = [entry.event.title, `业务：${entry.event.kind}`, `小说：${entry.event.sourceId}/${entry.event.novelId}`,
-      `任务/轮次：${entry.event.runId}`, entry.event.summary,
-      ...(entry.event.update ? [`发现 ${entry.event.update.discovered} 章，成功下载 ${entry.event.update.downloaded} 章，失败 ${entry.event.update.failed} 章`] : []),
-      `时间：${entry.event.occurredAt}`].join('\n');
     for (let attempt = 1; attempt <= 3 && !this.#closed; attempt++) {
+      let errorEnabled = config.errorEnabled;
       if (!test) {
         const current = this.preferences.resolveNotification();
-        const allowed = current.enabled && ((entry.event.error && current.errorEnabled) || entry.event.update?.enabled);
+        errorEnabled = errorEnabled && current.errorEnabled;
+        const allowed = current.enabled && matchesRules(entry.event, errorEnabled);
         if (!allowed || current.channel !== config.channel || current.baseUrl !== config.baseUrl || current.apiKey !== config.apiKey || current.target.umo !== config.target.umo) {
           entry.status = 'skipped'; entry.updatedAt = new Date().toISOString();
           entry.result = { status: 'failed', category: 'configuration', retryable: false, message: '发送前通知被关闭或渠道/目标已变化，已跳过待发送通知' };
@@ -98,6 +112,7 @@ export class NotificationService {
           return;
         }
       }
+      const message = formatMessage(entry.event, errorEnabled);
       entry.status = 'sending'; entry.attempts = attempt; entry.updatedAt = new Date().toISOString();
       this.store.saveNotification(entry);
       const controller = new AbortController();

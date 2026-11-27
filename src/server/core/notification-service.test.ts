@@ -109,6 +109,37 @@ test('notification persistence failure is isolated and in-flight shutdown is rec
   assert.equal(broken.submit(event), false); broken.close();
 });
 
+test('scan digest filters by error and book subscriptions at enqueue and delivery', async () => {
+  const repo = new SqliteNovelRepository(':memory:');
+  const prefs = new SystemPreferencesService();
+  const texts: string[] = [];
+  const service = new NotificationService(repo, prefs, new Map([['astrbot', {
+    send: async (_config, text) => { texts.push(text); return accepted; },
+  }]]));
+  try {
+    for (const errorEnabled of [true, false]) {
+      for (const errorEnabledAtSend of [true, false]) {
+        prefs.updateNotification({ ...config, errorEnabled });
+        service.submit({ ...event, id: `round-${errorEnabled}-${errorEnabledAtSend}`, scanFailures: [
+          { description: '目录检查失败', notifyOnUpdate: false },
+          { description: '已订阅下载失败 secret-test', notifyOnUpdate: true },
+        ] });
+        prefs.updateNotification({ ...config, errorEnabled: errorEnabledAtSend });
+        await service.drain();
+        assert.equal(texts.length, 1);
+        const [message] = texts.splice(0);
+        assert.ok(message?.includes('已订阅下载失败 [REDACTED]'));
+        const all = errorEnabled && errorEnabledAtSend;
+        assert.equal(message.includes('目录检查失败'), all);
+        assert.ok(message.includes(all ? '（2 本）' : '（1 本）'));
+      }
+    }
+    service.submit({ ...event, id: 'unsubscribed', scanFailures: [{ description: '目录检查失败', notifyOnUpdate: false }] });
+    await service.drain();
+    assert.equal(texts.length, 0);
+  } finally { service.close(); repo.close(); }
+});
+
 test('queued background events honor disabling and connection changes before sending', async () => {
   for (const change of [{ enabled: false }, { errorEnabled: false }, { baseUrl: 'http://changed:6185' }, { target: { umo: 'qq:GroupMessage:other' } }]) {
     const repo = new SqliteNovelRepository(':memory:'); const prefs = new SystemPreferencesService(); prefs.updateNotification(config);
